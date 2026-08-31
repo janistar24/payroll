@@ -692,34 +692,45 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
       {/* Recent list */}
       <div className="card" style={{ padding: 24 }}>
         <div className="flex items-center justify-between mb-4">
-          <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>รายการล่าสุด — {currentPeriod ? periodLabel(currentPeriod) : ''}</div>
-          <button className="btn btn-ghost btn-sm" style={{ color: 'var(--purple-600)' }} onClick={() => { if (currentPeriod) { setActivePeriodId(currentPeriod.id); setPage('period-detail') } }}>ดูทั้งหมด →</button>
+          <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>รายการรอบเงินเดือนล่าสุด</div>
+          <button className="btn btn-ghost btn-sm" style={{ color: 'var(--purple-600)' }} onClick={() => setPage('periods')}>ดูทั้งหมด →</button>
         </div>
-        <table className="tbl">
-          <thead>
-            <tr>
-              <th>ฝ่าย</th>
-              <th>จำนวนพนักงาน</th>
-              <th style={{ textAlign: 'right' }}>ยอดรับสุทธิรวม (บาท)</th>
-              <th>สถานะ</th>
-              <th>แก้ไขล่าสุด</th>
-            </tr>
-          </thead>
-          <tbody>
-            {currentPeriod?.depts.map(d => {
-              const t = deptTotals(d)
-              return (
-                <tr key={d.id} style={{ cursor: 'pointer' }} onClick={() => { setActivePeriodId(currentPeriod.id); setActiveDeptId(d.id); setPage(role === 'director' ? 'director-detail' : 'dept-table') }}>
-                  <td style={{ fontWeight: 500 }}>{d.department}</td>
-                  <td>{t.count} คน</td>
-                  <td className="num" style={{ fontWeight: 600 }}>{thb(t.totalNet)}</td>
-                  <td><StatusBadge s={d.status} /></td>
-                  <td style={{ color: 'var(--text-muted)', fontSize: 12 }}>{new Date(d.updatedAt).toLocaleDateString('th-TH')}</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
+        <div style={{ overflowX: 'auto' }}>
+          <table className="tbl" style={{ minWidth: 760 }}>
+            <thead>
+              <tr>
+                <th>รอบเงินเดือน</th>
+                <th>วันที่จ่าย</th>
+                <th>จำนวนพนักงาน</th>
+                <th style={{ textAlign: 'right' }}>รายการรับรวม (บาท)</th>
+                <th style={{ textAlign: 'right' }}>ยอดรับสุทธิรวม (บาท)</th>
+                <th>สถานะ</th>
+              </tr>
+            </thead>
+            <tbody>
+              {periods.slice(0, 6).map(period => {
+                const totals = periodTotals(period)
+                const statuses = (['draft', 'pending', 'approved', 'rejected'] as DeptStatus[])
+                  .map(status => ({ status, count: period.depts.filter(department => department.status === status).length }))
+                  .filter(item => item.count > 0)
+                return (
+                  <tr key={period.id} style={{ cursor: 'pointer' }} onClick={() => { setActivePeriodId(period.id); setPage('period-detail') }}>
+                    <td style={{ fontWeight: 600 }}>{periodLabel(period)}</td>
+                    <td style={{ color: 'var(--text-secondary)' }}>{new Date(period.payDate).toLocaleDateString('th-TH')}</td>
+                    <td>{totals.emps} คน</td>
+                    <td className="num">{thb(totals.gross)}</td>
+                    <td className="num" style={{ fontWeight: 600, color: 'var(--purple-600)' }}>{thb(totals.net)}</td>
+                    <td>
+                      <div className="flex gap-2 flex-wrap">
+                        {statuses.map(item => <span key={item.status} className={`badge badge-${item.status}`}>{item.count > 1 ? `${item.count} ` : ''}{statusLabel[item.status]}</span>)}
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   )

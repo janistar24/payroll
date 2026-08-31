@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 import psycopg
 from dotenv import load_dotenv
 
@@ -42,6 +43,18 @@ class DBHelper:
         self.__connect__()
         try:
             self.cur.execute(sql, params or ())
+            self.con.commit()
+        except Exception:
+            self.con.rollback()
+            raise
+        finally:
+            self.__disconnect__()
+
+    @contextmanager
+    def transaction(self):
+        self.__connect__()
+        try:
+            yield self.cur
             self.con.commit()
         except Exception:
             self.con.rollback()

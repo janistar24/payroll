@@ -1,5 +1,10 @@
+from datetime import date
+from decimal import Decimal
+
+import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field, field_validator
 
 from DBHelper import DBHelper
 from departments import Departments
@@ -118,6 +123,122 @@ def get_employees():
                 "error": str(error)
             }
         )
+
+
+EMPLOYEE_TYPES = {
+    "CIVIL_SERVANT",
+    "MUNICIPAL_EMPLOYEE",
+    "PERMANENT_WORKER",
+    "TEMPORARY_EMPLOYEE"
+}
+EMPLOYEE_STATUSES = {
+    "ACTIVE",
+    "ON_LEAVE",
+    "RESIGNED",
+    "RETIRED",
+    "TERMINATED"
+}
+
+
+class EmployeeSave(BaseModel):
+    employee_code: str = Field(min_length=1, max_length=30)
+    national_id: str = Field(min_length=13, max_length=13)
+    prefix: str | None = Field(default=None, max_length=20)
+    first_name: str = Field(min_length=1, max_length=150)
+    last_name: str = Field(min_length=1, max_length=150)
+    department_id: int | None = None
+    position_id: int | None = None
+    employee_type: str
+    status: str = "ACTIVE"
+    start_date: date | None = None
+    end_date: date | None = None
+    email: str | None = Field(default=None, max_length=255)
+    phone: str | None = Field(default=None, max_length=30)
+    bank_name: str | None = Field(default=None, max_length=150)
+    bank_account_no: str | None = Field(default=None, max_length=50)
+    base_salary: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
+
+    @field_validator("national_id")
+    @classmethod
+    def validate_national_id(cls, value):
+        if not value.isdigit():
+            raise ValueError("เลขประจำตัวประชาชนต้องเป็นตัวเลข 13 หลัก")
+        return value
+
+    @field_validator("employee_type")
+    @classmethod
+    def validate_employee_type(cls, value):
+        if value not in EMPLOYEE_TYPES:
+            raise ValueError("ประเภทพนักงานไม่ถูกต้อง")
+        return value
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value):
+        if value not in EMPLOYEE_STATUSES:
+            raise ValueError("สถานะพนักงานไม่ถูกต้อง")
+        return value
+
+
+class EmployeeStatusUpdate(BaseModel):
+    status: str
+
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, value):
+        if value not in EMPLOYEE_STATUSES:
+            raise ValueError("สถานะพนักงานไม่ถูกต้อง")
+        return value
+
+
+def _employee_database_error(error):
+    if isinstance(error, psycopg.errors.UniqueViolation):
+        raise HTTPException(
+            status_code=409,
+            detail="รหัสพนักงานหรือเลขประจำตัวประชาชนถูกใช้งานแล้ว"
+        )
+    if isinstance(error, ValueError):
+        raise HTTPException(status_code=400, detail=str(error))
+    raise HTTPException(
+        status_code=500,
+        detail={"message": "บันทึกข้อมูลพนักงานไม่สำเร็จ", "error": str(error)}
+    )
+
+
+@app.get("/api/employees/{employee_id}")
+def get_employee(employee_id: int):
+    error, employee = employees_service.read(employee_id)
+    if error["Is Error"]:
+        raise HTTPException(status_code=404, detail=error["Error Message"])
+    return {"success": True, "data": employee}
+
+
+@app.post("/api/employees", status_code=201)
+def create_employee(request: EmployeeSave):
+    try:
+        employee_id = employees_service.create(request)
+        return {"success": True, "data": {"id": employee_id}}
+    except Exception as error:
+        _employee_database_error(error)
+
+
+@app.put("/api/employees/{employee_id}")
+def update_employee(employee_id: int, request: EmployeeSave):
+    try:
+        if not employees_service.update(employee_id, request):
+            raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as error:
+        _employee_database_error(error)
+
+
+@app.patch("/api/employees/{employee_id}/status")
+def update_employee_status(employee_id: int, request: EmployeeStatusUpdate):
+    if not employees_service.update_status(employee_id, request.status):
+        raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
+    return {"success": True}
 
 @app.get("/api/positions")
 def get_positions():

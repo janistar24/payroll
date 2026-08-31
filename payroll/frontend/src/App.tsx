@@ -172,10 +172,10 @@ const SEED_USERS: UserAccount[] = [
   { id: 'U4', username: 'hr02',       name: 'นางพรทิพย์ ขยันดี',      role: 'hr',       active: true },
 ]
 
-const LOGIN_MAP: Record<string, { name: string; role: Role }> = {
-  hr01:       { name: 'นางสาวสมใจ รักงาน',  role: 'hr' },
-  director01: { name: 'นายวิเชียร บริหารดี', role: 'director' },
-  admin01:    { name: 'นายสุทธิ IT Support', role: 'admin' },
+const LOGIN_MAP: Record<string, { name: string; role: Role; department: string | null }> = {
+  hr01:       { name: 'นางสาวสมใจ รักงาน',  role: 'hr', department: 'กองคลัง' },
+  director01: { name: 'นายวิเชียร บริหารดี', role: 'director', department: null },
+  admin01:    { name: 'นายสุทธิ IT Support', role: 'admin', department: null },
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -264,7 +264,7 @@ function Modal({ title, children, onClose, size }: { title: string; children: Re
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
-function Sidebar({ role, name, page, setPage }: { role: Role; name: string; page: Page; setPage: (p: Page) => void }) {
+function Sidebar({ role, name, department, page, setPage }: { role: Role; name: string; department: string | null; page: Page; setPage: (p: Page) => void }) {
   type NavEntry = { id: Page; label: string; icon: string }
   const hrNav: NavEntry[] = [
     { id: 'dashboard', label: 'หน้าหลัก', icon: '⊞' },
@@ -318,7 +318,7 @@ function Sidebar({ role, name, page, setPage }: { role: Role; name: string; page
           </div>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1A1A1A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{roleLabel[role]}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{role === 'hr' && department ? `พนักงานธุรการฝ่าย${department}` : roleLabel[role]}</div>
           </div>
         </div>
       </div>
@@ -470,7 +470,7 @@ function DonutChart({ segments }: { segments: { label: string; count: number; co
 
 // ─── Login Page ───────────────────────────────────────────────────────────────
 
-function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Role) => void }) {
+function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Role, department: string | null) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPw, setShowPw] = useState(false)
@@ -485,7 +485,7 @@ function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Ro
     setTimeout(() => {
       const user = LOGIN_MAP[username]
       if (user && password === '1234') {
-        onLogin(username, user.name, user.role)
+        onLogin(username, user.name, user.role, user.department)
       } else {
         setError('Username หรือ Password ไม่ถูกต้อง')
         setLoading(false)
@@ -551,8 +551,8 @@ function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Ro
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
-function Dashboard({ role, userName, periods, setPage, setActivePeriodId, setActiveDeptId }: {
-  role: Role; userName: string; periods: PayrollPeriod[];
+function Dashboard({ role, userName, userDepartment, periods, setPage, setActivePeriodId, setActiveDeptId }: {
+  role: Role; userName: string; userDepartment: string | null; periods: PayrollPeriod[];
   setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; setActiveDeptId: (id: string) => void;
 }) {
   const currentPeriod = periods[0]
@@ -581,6 +581,21 @@ function Dashboard({ role, userName, periods, setPage, setActivePeriodId, setAct
   const hour = now.getHours()
   const greet = hour < 12 ? 'สวัสดีตอนเช้า' : hour < 17 ? 'สวัสดีตอนบ่าย' : 'สวัสดีตอนเย็น'
 
+  const openCurrentDepartment = () => {
+    const department = currentPeriod?.depts[0]
+    if (!currentPeriod || !department) return
+    setActivePeriodId(currentPeriod.id)
+    setActiveDeptId(department.id)
+    setPage('dept-table')
+  }
+
+  const quickMenuItems = role === 'hr' ? [
+    { step: '①', icon: '◉', label: 'ตรวจรายชื่อพนักงาน', sub: `ตรวจข้อมูลพนักงานใน${userDepartment ?? 'ฝ่ายของคุณ'}`, action: () => setPage('employees') },
+    { step: '②', icon: '▦', label: 'จัดทำข้อมูลเงินเดือน', sub: 'กรอกรายการรับและรายการหักของรอบปัจจุบัน', action: openCurrentDepartment },
+    { step: '③', icon: '➜', label: 'ตรวจและส่งอนุมัติ', sub: 'ตรวจยอดรวมของฝ่ายก่อนส่งให้ผู้อำนวยการ', action: openCurrentDepartment },
+    { step: '④', icon: '✉', label: 'ติดตามสลิปเงินเดือน', sub: 'ตรวจสถานะ PDF และการส่งอีเมลหลังอนุมัติ', action: () => setPage('payslip-status') },
+  ] : []
+
   return (
     <div className="anim flex flex-col gap-5">
       {/* Welcome */}
@@ -588,24 +603,41 @@ function Dashboard({ role, userName, periods, setPage, setActivePeriodId, setAct
         <div className="flex items-start justify-between gap-4">
           <div>
             <div style={{ fontSize: 12.5, fontWeight: 600, color: 'var(--purple-600)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 4 }}>{greet}</div>
-            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 22, color: '#1A1A1A', letterSpacing: '-0.02em' }}>{userName}</div>
+            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 22, color: '#1A1A1A', letterSpacing: '-0.02em' }}>
+              {userName}{role === 'hr' && userDepartment ? <span style={{ fontFamily: 'var(--font-sans)', fontSize: 14, fontWeight: 500, color: 'var(--text-secondary)', marginLeft: 10 }}>พนักงานธุรการฝ่าย{userDepartment}</span> : null}
+            </div>
             {currentPeriod && (
               <div style={{ fontSize: 13.5, color: 'var(--text-secondary)', marginTop: 6 }}>
                 รอบเงินเดือน <strong style={{ color: '#1A1A1A' }}>{periodLabel(currentPeriod)}</strong> · วันที่จ่าย {new Date(currentPeriod.payDate).toLocaleDateString('th-TH')}
-                {pendingDepts.length > 0 && <span style={{ marginLeft: 12, color: 'var(--status-pending-text)', fontWeight: 600 }}>◔ {pendingDepts.length} ฝ่ายรออนุมัติ</span>}
+                {pendingDepts.length > 0 && <span style={{ marginLeft: 12, color: 'var(--status-pending-text)', fontWeight: 600 }}>◔ ข้อมูลฝ่ายรออนุมัติ</span>}
               </div>
             )}
           </div>
           <div className="flex gap-2">
-            {role === 'hr' && <button className="btn btn-primary" onClick={() => { setPage('periods') }}>+ สร้างรอบเงินเดือน</button>}
+            {role === 'hr' && <button className="btn btn-primary" onClick={openCurrentDepartment}>จัดทำเงินเดือนฝ่าย</button>}
             {role === 'director' && pendingDepts.length > 0 && <button className="btn btn-primary" onClick={() => setPage('director-approvals')}>◈ ดูรายการรออนุมัติ ({pendingDepts.length})</button>}
           </div>
         </div>
       </div>
 
+      {role === 'hr' && (
+        <div>
+          <div style={{ fontFamily: 'var(--font-display)', fontSize: 15, fontWeight: 700, marginBottom: 10 }}>ขั้นตอนการทำงานเงินเดือน</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
+            {quickMenuItems.map(item => (
+              <button key={item.step} onClick={item.action} style={{ minHeight: 132, padding: '18px 20px', border: '1px solid rgba(112,78,190,0.72)', borderRadius: 16, cursor: 'pointer', textAlign: 'left', background: 'linear-gradient(135deg, #7654c2 0%, #8262ca 100%)', boxShadow: '0 5px 16px rgba(104,72,180,0.18)', color: '#fff', fontFamily: 'var(--font-sans)' }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 20, marginBottom: 10 }}><span>{item.step}</span><span>{item.icon}</span></div>
+                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>{item.label}</div>
+                <div style={{ fontSize: 11.5, lineHeight: 1.5, color: 'rgba(255,255,255,0.76)' }}>{item.sub}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* KPI Row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
-        <KpiCard label="จำนวนพนักงานทั้งหมด" value={thbInt(currentTotals.emps)} unit="คน" icon="◉" sub={`${DEPARTMENTS.length} ฝ่าย`} accent="var(--purple-600)" />
+        <KpiCard label="จำนวนพนักงานทั้งหมด" value={thbInt(currentTotals.emps)} unit="คน" icon="◉" sub={role === 'hr' ? userDepartment ?? undefined : `${DEPARTMENTS.length} ฝ่าย`} accent="var(--purple-600)" />
         <KpiCard label="ยอดรายการรับรวม" value={thbInt(Math.round(currentTotals.gross))} unit="บาท" icon="▲" sub={prevTotals ? `เดือนก่อน ${thbInt(Math.round(prevTotals.gross))} บาท` : undefined} accent="#22C55E" />
         <KpiCard label="ยอดรับสุทธิรวม" value={thbInt(Math.round(currentTotals.net))} unit="บาท" icon="◈" sub={prevTotals ? `เดือนก่อน ${thbInt(Math.round(prevTotals.net))} บาท` : undefined} accent="#3B82F6" />
       </div>
@@ -672,9 +704,9 @@ function Dashboard({ role, userName, periods, setPage, setActivePeriodId, setAct
 
 // ─── Payroll Periods List ─────────────────────────────────────────────────────
 
-function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, role }: {
+function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, role, userDepartment }: {
   periods: PayrollPeriod[]; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
-  setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; role: Role;
+  setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; role: Role; userDepartment: string | null;
 }) {
   const [showCreate, setShowCreate] = useState(false)
   const [createMonth, setCreateMonth] = useState(String(new Date().getMonth() + 1))
@@ -683,11 +715,12 @@ function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, role }: 
   const [createNote, setCreateNote] = useState('')
 
   const handleCreate = () => {
+    const periodDepartments = role === 'hr' && userDepartment ? [userDepartment] : DEPARTMENTS
     const newPeriod: PayrollPeriod = {
       id: `PP-${createYear}-${createMonth.padStart(2,'0')}`,
       month: parseInt(createMonth), year: parseInt(createYear), payDate: createPayDate, note: createNote,
       createdAt: new Date().toISOString(), createdBy: 'นางสาวสมใจ รักงาน',
-      depts: DEPARTMENTS.map((d, i) => buildDept(`DP-NEW-${i}`, `PP-${createYear}-${createMonth.padStart(2,'0')}`, d, 'draft')),
+      depts: periodDepartments.map((d, i) => buildDept(`DP-NEW-${i}`, `PP-${createYear}-${createMonth.padStart(2,'0')}`, d, 'draft')),
     }
     setPeriods(prev => [newPeriod, ...prev])
     setActivePeriodId(newPeriod.id)
@@ -1946,6 +1979,7 @@ export default function App() {
   const [loggedIn, setLoggedIn] = useState(false)
   const [role, setRole] = useState<Role>('hr')
   const [userName, setUserName] = useState('')
+  const [userDepartment, setUserDepartment] = useState<string | null>(null)
   const [page, setPage] = useState<Page>('dashboard')
   const [periods, setPeriods] = useState<PayrollPeriod[]>(SEED_PERIODS)
   const [users] = useState<UserAccount[]>(SEED_USERS)
@@ -1982,15 +2016,26 @@ export default function App() {
     setToast({ msg, type, key: ++toastKey.current })
   }, [])
 
-  const handleLogin = (username: string, name: string, r: Role) => {
-    setUserName(name); setRole(r); setLoggedIn(true); setPage('dashboard')
+  const handleLogin = (username: string, name: string, r: Role, department: string | null) => {
+    setUserName(name); setRole(r); setUserDepartment(department); setLoggedIn(true); setPage('dashboard')
   }
 
   const handleLogout = () => { setLoggedIn(false); setPage('login' as Page) }
 
   if (!loggedIn) return <LoginPage onLogin={handleLogin} />
 
-  const activePeriod = periods.find(p => p.id === activePeriodId) ?? periods[0]
+  const visiblePeriods = role === 'hr' && userDepartment
+    ? periods.map(period => ({ ...period, depts: period.depts.filter(department => department.department === userDepartment) }))
+    : periods
+  const visibleDepartments = role === 'hr' && userDepartment
+    ? departments.filter(department => department.name === userDepartment)
+    : departments
+  const visibleDepartmentIds = new Set(visibleDepartments.map(department => department.id))
+  const visibleEmployees = role === 'hr'
+    ? databaseEmployees.filter(employee => employee.department_id !== null && visibleDepartmentIds.has(employee.department_id))
+    : databaseEmployees
+
+  const activePeriod = visiblePeriods.find(p => p.id === activePeriodId) ?? visiblePeriods[0]
   const activeDept = activePeriod?.depts.find(d => d.id === activeDeptId) ?? activePeriod?.depts[0]
 
   const pageTitle: Partial<Record<Page, string>> = {
@@ -2002,14 +2047,14 @@ export default function App() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       <Background />
-      <Sidebar role={role} name={userName} page={page} setPage={setPage} />
+      <Sidebar role={role} name={userName} department={userDepartment} page={page} setPage={setPage} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
         {/* Topbar */}
         <header style={{ background: 'rgba(255,255,255,0.80)', backdropFilter: 'blur(16px)', borderBottom: '1px solid rgba(0,0,0,0.06)', padding: '0 28px', height: 56, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, position: 'sticky', top: 0, zIndex: 10 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: '#1A1A1A' }}>{pageTitle[page] ?? ''}</div>
           <div className="flex items-center gap-3">
-            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>รอบปัจจุบัน: <strong style={{ color: '#1A1A1A' }}>{periodLabel(periods[0])}</strong></div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>รอบปัจจุบัน: <strong style={{ color: '#1A1A1A' }}>{periodLabel(visiblePeriods[0])}</strong></div>
             <button className="btn btn-ghost btn-sm" style={{ color: 'var(--text-secondary)', fontSize: 13 }} onClick={handleLogout}>ออกจากระบบ</button>
           </div>
         </header>
@@ -2017,11 +2062,11 @@ export default function App() {
         {/* Content */}
         <main style={{ flex: 1, padding: '28px 32px', overflowY: 'auto' }}>
           {page === 'dashboard' && (
-            <Dashboard role={role} userName={userName} periods={periods} setPage={setPage}
+            <Dashboard role={role} userName={userName} userDepartment={userDepartment} periods={visiblePeriods} setPage={setPage}
               setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
           )}
           {page === 'periods' && (
-            <PeriodsPage periods={periods} setPeriods={setPeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} role={role} />
+            <PeriodsPage periods={visiblePeriods} setPeriods={setPeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} role={role} userDepartment={userDepartment} />
           )}
           {page === 'period-detail' && activePeriod && (
             <PeriodDetail period={activePeriod} setPage={setPage} setActiveDeptId={setActiveDeptId} role={role} />
@@ -2030,15 +2075,15 @@ export default function App() {
             <DeptPayrollTable period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} />
           )}
           {page === 'director-approvals' && (
-            <DirectorApprovals periods={periods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
+            <DirectorApprovals periods={visiblePeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
           )}
           {page === 'director-detail' && activePeriod && activeDept && (
             <DirectorDetail period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} />
           )}
           {page === 'employees' && (
             <EmployeesPage
-              employees={databaseEmployees}
-              departments={departments}
+              employees={visibleEmployees}
+              departments={visibleDepartments}
               positions={positions}
               loading={employeeLoading}
               error={employeeError}
@@ -2047,11 +2092,11 @@ export default function App() {
             />
           )}
           {page === 'employee-form' && (
-            <EmployeeForm empId={editEmpId} employees={databaseEmployees} departments={departments} positions={positions}
+            <EmployeeForm empId={editEmpId} employees={visibleEmployees} departments={visibleDepartments} positions={positions}
               setPage={setPage} showToast={showToast} onSaved={loadEmployeeData} />
           )}
-          {page === 'payslip-status' && <PayslipStatus periods={periods} />}
-          {page === 'reports' && <ReportsPage periods={periods} />}
+          {page === 'payslip-status' && <PayslipStatus periods={visiblePeriods} />}
+          {page === 'reports' && <ReportsPage periods={visiblePeriods} />}
           {page === 'admin-users' && <AdminUsers users={users} />}
           {page === 'admin-settings' && (
             <div className="anim">

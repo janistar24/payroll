@@ -494,10 +494,21 @@ function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Ro
   }
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center" style={{ background: 'linear-gradient(160deg,#F5F4FF 0%,#EDF5FF 50%,#FFF5F3 100%)' }}>
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 24,
+        overflowY: 'auto',
+        background: 'linear-gradient(160deg,#F5F4FF 0%,#EDF5FF 50%,#FFF5F3 100%)',
+      }}
+    >
       <div className="orb" style={{ width: 500, height: 500, top: -120, left: -80, background: 'radial-gradient(circle,rgba(205,180,255,0.28) 0%,transparent 70%)' }} />
       <div className="orb" style={{ width: 400, height: 400, bottom: -80, right: -60, background: 'radial-gradient(circle,rgba(189,224,254,0.24) 0%,transparent 70%)' }} />
-      <div className="glass" style={{ width: 400, borderRadius: 'var(--radius-xl)', padding: '40px 40px 36px', position: 'relative', zIndex: 1 }}>
+      <div className="glass" style={{ width: '100%', maxWidth: 400, borderRadius: 'var(--radius-xl)', padding: '40px 40px 36px', position: 'relative', zIndex: 1, margin: 'auto' }}>
         {/* Logo */}
         <div className="text-center mb-8">
           <img src={takhliLogo} alt="โลโก้หน่วยงาน" style={{ width: 72, height: 72, borderRadius: 18, objectFit: 'cover', margin: '0 auto 14px', display: 'block', boxShadow: '0 8px 24px rgba(108,82,217,0.18)' }} />

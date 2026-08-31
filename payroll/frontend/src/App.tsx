@@ -677,28 +677,36 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
 
 // ─── Payroll Periods List ─────────────────────────────────────────────────────
 
-function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, role, userDepartment }: {
+function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, setActiveDeptId, role, userDepartment }: {
   periods: PayrollPeriod[]; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
-  setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; role: Role; userDepartment: string | null;
+  setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; setActiveDeptId: (id: string) => void;
+  role: Role; userDepartment: string | null;
 }) {
   const [showCreate, setShowCreate] = useState(false)
   const [createMonth, setCreateMonth] = useState(String(new Date().getMonth() + 1))
-  const [createYear, setCreateYear] = useState(String(new Date().getFullYear()))
+  const [createYear, setCreateYear] = useState(String(new Date().getFullYear() + 543))
   const [createPayDate, setCreatePayDate] = useState('')
   const [createNote, setCreateNote] = useState('')
 
   const handleCreate = () => {
     const periodDepartments = role === 'hr' && userDepartment ? [userDepartment] : DEPARTMENTS
+    const gregorianYear = parseInt(createYear) - 543
+    const periodId = `PP-${gregorianYear}-${createMonth.padStart(2,'0')}`
     const newPeriod: PayrollPeriod = {
-      id: `PP-${createYear}-${createMonth.padStart(2,'0')}`,
-      month: parseInt(createMonth), year: parseInt(createYear), payDate: createPayDate, note: createNote,
+      id: periodId,
+      month: parseInt(createMonth), year: gregorianYear, payDate: createPayDate, note: createNote,
       createdAt: new Date().toISOString(), createdBy: 'นางสาวสมใจ รักงาน',
-      depts: periodDepartments.map((d, i) => buildDept(`DP-NEW-${i}`, `PP-${createYear}-${createMonth.padStart(2,'0')}`, d, 'draft')),
+      depts: periodDepartments.map((d, i) => buildDept(`DP-NEW-${i}`, periodId, d, 'draft')),
     }
     setPeriods(prev => [newPeriod, ...prev])
     setActivePeriodId(newPeriod.id)
     setShowCreate(false)
-    setPage('period-detail')
+    if (role === 'hr' && newPeriod.depts[0]) {
+      setActiveDeptId(newPeriod.depts[0].id)
+      setPage('dept-table')
+    } else {
+      setPage('period-detail')
+    }
   }
 
   return (
@@ -758,7 +766,7 @@ function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, role, us
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>ปี (พ.ศ.) <span style={{ color: 'red' }}>*</span></label>
-                <input className="inp" type="number" value={createYear} onChange={e => setCreateYear(e.target.value)} />
+                <input className="inp" type="number" min="2500" max="2700" value={createYear} onChange={e => setCreateYear(e.target.value)} />
               </div>
             </div>
             <div>
@@ -1010,25 +1018,17 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
         </div>
       </div>
 
-      {/* Summary strip */}
-      <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
-        {[
-          { label: 'จำนวนพนักงาน', val: `${emps.length} คน` },
-          { label: 'ฐานเงินเดือนรวม', val: `${thb(totals.base)} บาท` },
-          { label: 'รายการรับรวม', val: `${thb(totals.gross)} บาท`, color: '#15803D' },
-          { label: 'รายการหักรวม', val: `${thb(totals.deduct)} บาท`, color: '#B91C1C' },
-          { label: 'ยอดรับสุทธิรวม', val: `${thb(totals.net)} บาท`, color: 'var(--purple-600)', bold: true },
-        ].map(s => (
-          <div key={s.label} className="glass-sm" style={{ borderRadius: 12, padding: '8px 16px' }}>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 2 }}>{s.label}</div>
-            <div style={{ fontFamily: 'var(--font-display)', fontWeight: s.bold ? 700 : 600, fontSize: 14, color: s.color || '#1A1A1A' }}>{s.val}</div>
-          </div>
-        ))}
+      {/* Compact period metadata */}
+      <div className="payroll-period-meta">
+        <span>📅 วันที่จ่าย {new Date(period.payDate).toLocaleDateString('th-TH')}</span>
+        <span>👥 {emps.length} คน</span>
+        <span>🕘 แก้ไขล่าสุด {new Date(dept.updatedAt).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })}</span>
+        <StatusBadge s={dept.status} />
       </div>
 
       {/* Table */}
       <div className="card" style={{ padding: 0, overflow: 'auto', maxHeight: 'calc(100vh - 320px)' }}>
-        <table className="tbl" style={{ minWidth: 1200 }}>
+        <table className="tbl payroll-detail-table" style={{ minWidth: 1200 }}>
           <thead>
             <tr>
               <th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
@@ -2092,7 +2092,7 @@ export default function App() {
               setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
           )}
           {page === 'periods' && (
-            <PeriodsPage periods={visiblePeriods} setPeriods={setPeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} role={role} userDepartment={userDepartment} />
+            <PeriodsPage periods={visiblePeriods} setPeriods={setPeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} />
           )}
           {page === 'period-detail' && activePeriod && (
             <PeriodDetail period={activePeriod} setPage={setPage} setActiveDeptId={setActiveDeptId} role={role} />

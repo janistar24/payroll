@@ -354,10 +354,31 @@ html, body {
   padding: 5px 8px; letter-spacing: 0.04em;
   border-bottom: 2px solid;
 }
+.tbl th.th-group { text-align: center; }
 .th-group-emp    { background: #E8EEFF; color: #3B4DA0; border-color: #A0AAEE; }
 .th-group-income { background: #EDFAF4; color: #166534; border-color: #86EFAC; }
 .th-group-deduct { background: #FFF2EE; color: #9A3412; border-color: #FCA5A5; }
 .th-group-net    { background: #EDE8FF; color: #5B21B6; border-color: #C4B5FD; }
+.payroll-detail-table .th-group-income,
+.payroll-detail-table .th-group-deduct,
+.payroll-detail-table .th-group-net { border-left: 2px solid #AFC3F2; }
+
+.payroll-period-meta {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  margin-bottom: 12px; padding: 0 2px;
+  color: var(--text-secondary); font-size: 11.5px;
+}
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(6),
+.payroll-detail-table tbody tr > *:nth-child(6),
+.payroll-detail-table tfoot tr > *:nth-child(3),
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(9),
+.payroll-detail-table tbody tr > *:nth-child(9),
+.payroll-detail-table tfoot tr > *:nth-child(6),
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(16),
+.payroll-detail-table tbody tr > *:nth-child(16),
+.payroll-detail-table tfoot tr > *:nth-child(8) {
+  border-left: 2px solid #AFC3F2;
+}
 
 /* ── Scrollbar ─────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }

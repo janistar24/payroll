@@ -590,10 +590,10 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
   }
 
   const quickMenuItems = role === 'hr' ? [
-    { step: '①', icon: '◉', label: 'ตรวจรายชื่อพนักงาน', sub: `ตรวจข้อมูลพนักงานใน${userDepartment ?? 'ฝ่ายของคุณ'}`, action: () => setPage('employees') },
-    { step: '②', icon: '▦', label: 'จัดทำข้อมูลเงินเดือน', sub: 'กรอกรายการรับและรายการหักของรอบปัจจุบัน', action: openCurrentDepartment },
-    { step: '③', icon: '➜', label: 'ตรวจและส่งอนุมัติ', sub: 'ตรวจยอดรวมของฝ่ายก่อนส่งให้ผู้อำนวยการ', action: openCurrentDepartment },
-    { step: '④', icon: '✉', label: 'ติดตามสลิปเงินเดือน', sub: 'ตรวจสถานะ PDF และการส่งอีเมลหลังอนุมัติ', action: () => setPage('payslip-status') },
+    { step: '①', icon: '👥', label: 'ตรวจรายชื่อพนักงาน', sub: `ตรวจข้อมูลพนักงานใน${userDepartment ?? 'ฝ่ายของคุณ'}`, action: () => setPage('employees') },
+    { step: '②', icon: '🧾', label: 'จัดทำข้อมูลเงินเดือน', sub: 'กรอกรายการรับและรายการหักของรอบปัจจุบัน', action: openCurrentDepartment },
+    { step: '③', icon: '✅', label: 'ตรวจและส่งอนุมัติ', sub: 'ตรวจยอดรวมของฝ่ายก่อนส่งให้ผู้อำนวยการ', action: openCurrentDepartment },
+    { step: '④', icon: '📨', label: 'ติดตามสลิปเงินเดือน', sub: 'ตรวจสถานะ PDF และการส่งอีเมลหลังอนุมัติ', action: () => setPage('payslip-status') },
   ] : []
 
   return (
@@ -926,7 +926,12 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
   setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void;
 }) {
-  const emps = useMemo(() => EMPLOYEES.filter(e => e.department === dept.department), [dept.department])
+  const allDepartmentEmployees = useMemo(() => EMPLOYEES.filter(e => e.department === dept.department), [dept.department])
+  const [includedEmployeeIds, setIncludedEmployeeIds] = useState<string[]>(() => Object.keys(dept.rows))
+  const emps = useMemo(
+    () => allDepartmentEmployees.filter(employee => includedEmployeeIds.includes(employee.id)),
+    [allDepartmentEmployees, includedEmployeeIds]
+  )
   const [rows, setRows] = useState<Record<string, PayrollRow>>(() => {
     const r: Record<string, PayrollRow> = {}
     emps.forEach(e => { r[e.id] = dept.rows[e.id] ?? makeDefaultRow(e) })
@@ -934,8 +939,17 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
   })
   const [dirty, setDirty] = useState(false)
   const [showSubmitModal, setShowSubmitModal] = useState(false)
+  const [showAddEmployeeModal, setShowAddEmployeeModal] = useState(false)
   const [focusRow, setFocusRow] = useState<string | null>(null)
+  const [editing, setEditing] = useState(false)
+  const [search, setSearch] = useState('')
   const isReadonly = dept.status === 'pending' || dept.status === 'approved' || dept.status === 'closed'
+  const availableEmployees = allDepartmentEmployees.filter(employee => !includedEmployeeIds.includes(employee.id))
+  const visibleEmployees = emps.filter(employee => {
+    const keyword = search.trim().toLowerCase()
+    if (!keyword) return true
+    return employee.id.toLowerCase().includes(keyword) || `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(keyword)
+  })
 
   const setCell = useCallback((empId: string, field: keyof PayrollRow, val: number) => {
     setRows(prev => ({ ...prev, [empId]: { ...prev[empId], [field]: val } }))
@@ -947,7 +961,17 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
       ...p, depts: p.depts.map(d => d.id === dept.id ? { ...d, rows: { ...rows }, updatedAt: new Date().toISOString() } : d)
     } : p))
     setDirty(false)
+    setEditing(false)
     showToast('บันทึกข้อมูลแบบร่างเรียบร้อยแล้ว', 'success')
+  }
+
+  const addEmployeeToTable = (employee: Employee) => {
+    setRows(previous => ({ ...previous, [employee.id]: makeDefaultRow(employee) }))
+    setIncludedEmployeeIds(previous => [...previous, employee.id])
+    setDirty(true)
+    setEditing(true)
+    setShowAddEmployeeModal(false)
+    showToast(`เพิ่ม ${employee.firstName} ${employee.lastName} เข้าตารางแล้ว`, 'success')
   }
 
   const submitForApproval = () => {
@@ -987,7 +1011,6 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
         actions={!isReadonly ? (
           <>
             {dirty && <span style={{ fontSize: 12, color: 'var(--status-pending-text)', fontWeight: 600 }}>● ยังไม่ได้บันทึก</span>}
-            <button className="btn btn-secondary" onClick={save}>บันทึกแบบร่าง</button>
             {dept.status !== 'pending' && <button className="btn btn-primary" onClick={() => { save(); setShowSubmitModal(true) }}>ส่งให้ผู้อำนวยการอนุมัติ →</button>}
           </>
         ) : <StatusBadge s={dept.status} />}
@@ -999,6 +1022,20 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
           <strong>เหตุผลที่ไม่อนุมัติ:</strong> {dept.rejectionReason}
         </div>
       )}
+
+      <div className="card" style={{ padding: '12px 14px', marginBottom: 16 }}>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap" style={{ flex: 1 }}>
+            <input className="inp" style={{ maxWidth: 300 }} value={search} onChange={event => setSearch(event.target.value)} placeholder="🔍 ค้นหาชื่อหรือรหัสพนักงาน" />
+            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{visibleEmployees.length} รายการ</span>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button className="btn btn-secondary" onClick={() => setShowAddEmployeeModal(true)} disabled={isReadonly} title={isReadonly ? 'รอบนี้ถูกส่งอนุมัติหรืออนุมัติแล้ว จึงไม่สามารถเพิ่มพนักงานได้' : undefined}>➕ เพิ่มพนักงานเข้าตาราง</button>
+            <button className="btn btn-secondary" onClick={() => setEditing(true)} disabled={isReadonly} title={isReadonly ? 'รอบนี้ถูกล็อก ไม่สามารถแก้ไขข้อมูลได้' : undefined}>✏️ แก้ไขข้อมูล</button>
+            <button className="btn btn-primary" onClick={save} disabled={isReadonly || !dirty} title={isReadonly ? 'รอบนี้ถูกล็อก ไม่สามารถบันทึกข้อมูลได้' : undefined}>💾 บันทึก</button>
+          </div>
+        </div>
+      </div>
 
       {/* Summary strip */}
       <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -1050,7 +1087,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
             </tr>
           </thead>
           <tbody>
-            {emps.map((e, idx) => {
+            {visibleEmployees.map((e, idx) => {
               const r = rows[e.id]
               const g = rowGross(e, r), d = rowDeduct(r), n = rowNet(e, r)
               const isActive = focusRow === e.id
@@ -1061,15 +1098,15 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
                   <td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{e.title}{e.firstName} {e.lastName}</td>
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.position}</td>
                   <td className="num readonly">{thb(e.baseSalary)}</td>
-                  <CellInput empId={e.id} field="extra"        value={r.extra}        isReadonly={isReadonly} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="posAllowance" value={r.posAllowance} isReadonly={isReadonly} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="extra"        value={r.extra}        isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="posAllowance" value={r.posAllowance} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
                   <td className="num total" style={{ background: '#F0FDF4', color: '#15803D' }}>{thb(g)}</td>
-                  <CellInput empId={e.id} field="debtKTB" value={r.debtKTB} isReadonly={isReadonly} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="tax"     value={r.tax}     isReadonly={isReadonly} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="social"  value={r.social}  isReadonly={isReadonly} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="funeral" value={r.funeral} isReadonly={isReadonly} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="ktb"     value={r.ktb}     isReadonly={isReadonly} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="gsb"     value={r.gsb}     isReadonly={isReadonly} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="debtKTB" value={r.debtKTB} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="tax"     value={r.tax}     isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="social"  value={r.social}  isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="funeral" value={r.funeral} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="ktb"     value={r.ktb}     isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="gsb"     value={r.gsb}     isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
                   <td className="num total" style={{ background: '#FFF8F6', color: '#B91C1C' }}>{thb(d)}</td>
                   <td className="num total" style={{ background: '#F5F3FF', color: 'var(--purple-600)', fontFamily: 'var(--font-display)' }}>{thb(n)}</td>
                 </tr>
@@ -1090,6 +1127,22 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
           </tfoot>
         </table>
       </div>
+
+      {showAddEmployeeModal && (
+        <Modal title="เพิ่มพนักงานเข้าตารางเงินเดือน" onClose={() => setShowAddEmployeeModal(false)}>
+          {availableEmployees.length === 0 ? (
+            <div className="empty-state"><div className="empty-icon">👥</div><div>พนักงานในฝ่ายถูกเพิ่มเข้าตารางครบแล้ว</div><div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>หากต้องการเพิ่มคนใหม่ ให้เพิ่มในเมนูพนักงานก่อน</div></div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {availableEmployees.map(employee => (
+                <button key={employee.id} className="btn btn-secondary" style={{ justifyContent: 'space-between' }} onClick={() => addEmployeeToTable(employee)}>
+                  <span>{employee.title}{employee.firstName} {employee.lastName}</span><span style={{ color: 'var(--text-muted)' }}>{employee.id} · เพิ่ม</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </Modal>
+      )}
 
       {/* Submit modal */}
       {showSubmitModal && (

@@ -1058,7 +1058,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
         <table className="tbl" style={{ minWidth: 1200 }}>
           <thead>
             <tr>
-              <th colSpan={6} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
+              <th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
               <th colSpan={3} className="th-group th-group-income">รายการรับ</th>
               <th colSpan={7} className="th-group th-group-deduct">รายการหัก</th>
               <th colSpan={1} className="th-group th-group-net">ยอดรับสุทธิ</th>

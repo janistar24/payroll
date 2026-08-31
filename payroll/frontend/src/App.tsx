@@ -4,6 +4,8 @@ import {
   getDepartments,
   type Department
 } from './api/departments'
+import { getEmployees, type Employee as DatabaseEmployee } from './api/employees'
+import { getPositions, type Position } from './api/positions'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Role = 'hr' | 'director' | 'admin'
@@ -1344,30 +1346,55 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
 
 // ─── Employees ────────────────────────────────────────────────────────────────
 
-function EmployeesPage({ setPage, setEditEmpId }: { setPage: (p: Page) => void; setEditEmpId: (id: string | null) => void }) {
+function EmployeesPage({ employees, departments, positions, loading, error }: {
+  employees: DatabaseEmployee[]
+  departments: Department[]
+  positions: Position[]
+  loading: boolean
+  error: string
+}) {
   const [search, setSearch] = useState('')
   const [filterDept, setFilterDept] = useState('all')
 
-  const filtered = useMemo(() => EMPLOYEES.filter(e => {
-    const name = `${e.firstName} ${e.lastName}`
-    if (filterDept !== 'all' && e.department !== filterDept) return false
-    if (search && !name.includes(search) && !e.id.includes(search)) return false
+  const departmentById = useMemo(
+    () => new Map(departments.map(department => [department.id, department.name])),
+    [departments]
+  )
+  const positionById = useMemo(
+    () => new Map(positions.map(position => [position.id, position.name])),
+    [positions]
+  )
+
+  const filtered = useMemo(() => employees.filter(e => {
+    const name = `${e.prefix ?? ''}${e.first_name} ${e.last_name}`
+    if (filterDept !== 'all' && String(e.department_id) !== filterDept) return false
+    if (search && !name.includes(search) && !e.employee_code.includes(search)) return false
     return true
-  }), [search, filterDept])
+  }), [employees, search, filterDept])
+
+  const activeCount = employees.filter(employee => employee.status === 'ACTIVE').length
+
+  const statusLabel: Record<DatabaseEmployee['status'], string> = {
+    ACTIVE: 'ปกติ',
+    ON_LEAVE: 'ลา',
+    RESIGNED: 'ลาออก',
+    RETIRED: 'เกษียณ',
+    TERMINATED: 'สิ้นสุดการจ้าง',
+  }
 
   return (
     <div className="anim">
       <PageHeader
         title="พนักงาน"
-        subtitle={`พนักงานที่ใช้งานอยู่ ${EMPLOYEES.filter(e => e.status === 'active').length} คน จากทั้งหมด ${EMPLOYEES.length} คน`}
-        actions={<button className="btn btn-primary" onClick={() => { setEditEmpId(null); setPage('employee-form') }}>+ เพิ่มพนักงาน</button>}
+        subtitle={`พนักงานที่ใช้งานอยู่ ${activeCount} คน จากทั้งหมด ${employees.length} คน`}
+        actions={<button className="btn btn-primary" disabled title="จะเปิดใช้งานเมื่อเพิ่ม CRUD ในชุดถัดไป">+ เพิ่มพนักงาน</button>}
       />
       <div className="card" style={{ padding: '14px 18px', marginBottom: 14 }}>
         <div className="flex items-center gap-3">
           <input className="inp" style={{ maxWidth: 240 }} placeholder="ค้นหาชื่อหรือรหัสพนักงาน..." value={search} onChange={e => setSearch(e.target.value)} />
           <select className="inp" style={{ maxWidth: 220 }} value={filterDept} onChange={e => setFilterDept(e.target.value)}>
             <option value="all">ทุกฝ่าย</option>
-            {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+            {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
         </div>
       </div>
@@ -1386,19 +1413,20 @@ function EmployeesPage({ setPage, setEditEmpId }: { setPage: (p: Page) => void; 
             </tr>
           </thead>
           <tbody>
+            {loading && <tr><td colSpan={8}><div className="empty-state">กำลังโหลดข้อมูลพนักงานจากฐานข้อมูล...</div></td></tr>}
+            {!loading && error && <tr><td colSpan={8}><div className="empty-state" style={{ color: '#B42318' }}>ไม่สามารถโหลดข้อมูลพนักงานได้: {error}</div></td></tr>}
+            {!loading && !error && filtered.length === 0 && <tr><td colSpan={8}><div className="empty-state">ไม่พบพนักงานที่ตรงกับเงื่อนไข</div></td></tr>}
             {filtered.map(e => (
               <tr key={e.id}>
-                <td style={{ color: 'var(--text-secondary)', fontSize: 12.5 }}>{e.id}</td>
-                <td style={{ fontWeight: 500 }}>{e.title}{e.firstName} {e.lastName}</td>
-                <td style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{e.position}</td>
-                <td style={{ fontSize: 12.5 }}>{e.department}</td>
-                <td className="num" style={{ fontWeight: 600 }}>{thb(e.baseSalary)}</td>
-                <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{e.email}</td>
-                <td><span className={`badge ${e.status === 'active' ? 'badge-approved' : 'badge-rejected'}`}>{e.status === 'active' ? '● ปกติ' : '● ปิดการใช้งาน'}</span></td>
+                <td style={{ color: 'var(--text-secondary)', fontSize: 12.5 }}>{e.employee_code}</td>
+                <td style={{ fontWeight: 500 }}>{e.prefix}{e.first_name} {e.last_name}</td>
+                <td style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{e.position_id ? positionById.get(e.position_id) ?? 'ไม่พบตำแหน่ง' : '–'}</td>
+                <td style={{ fontSize: 12.5 }}>{e.department_id ? departmentById.get(e.department_id) ?? 'ไม่พบหน่วยงาน' : '–'}</td>
+                <td className="num" style={{ fontWeight: 600 }}>{thb(Number(e.base_salary))}</td>
+                <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{e.email ?? '–'}</td>
+                <td><span className={`badge ${e.status === 'ACTIVE' ? 'badge-approved' : 'badge-rejected'}`}>● {statusLabel[e.status]}</span></td>
                 <td>
-                  <div className="flex items-center gap-1">
-                    <button className="btn btn-ghost btn-xs" onClick={() => { setEditEmpId(e.id); setPage('employee-form') }}>แก้ไข</button>
-                  </div>
+                  <button className="btn btn-ghost btn-xs" disabled title="จะเปิดใช้งานเมื่อเพิ่ม CRUD ในชุดถัดไป">แก้ไข</button>
                 </td>
               </tr>
             ))}
@@ -1804,8 +1832,10 @@ function DatabaseDepartmentsPanel() {
 
 export default function App() {
   const [departments, setDepartments] = useState<Department[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
+  const [databaseEmployees, setDatabaseEmployees] = useState<DatabaseEmployee[]>([])
+  const [positions, setPositions] = useState<Position[]>([])
+  const [employeeLoading, setEmployeeLoading] = useState(true)
+  const [employeeError, setEmployeeError] = useState('')
   const [loggedIn, setLoggedIn] = useState(false)
   const [role, setRole] = useState<Role>('hr')
   const [userName, setUserName] = useState('')
@@ -1817,6 +1847,36 @@ export default function App() {
   const [editEmpId, setEditEmpId] = useState<string | null>(null)
   const [toast, setToast] = useState<{ msg: string; type?: 'success' | 'error'; key: number } | null>(null)
   const toastKey = useRef(0)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadEmployeeData() {
+      try {
+        setEmployeeLoading(true)
+        setEmployeeError('')
+        const [employeeData, departmentData, positionData] = await Promise.all([
+          getEmployees(),
+          getDepartments(),
+          getPositions(),
+        ])
+        if (!cancelled) {
+          setDatabaseEmployees(employeeData)
+          setDepartments(departmentData)
+          setPositions(positionData)
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setEmployeeError(loadError instanceof Error ? loadError.message : 'เกิดข้อผิดพลาดในการโหลดข้อมูล')
+        }
+      } finally {
+        if (!cancelled) setEmployeeLoading(false)
+      }
+    }
+
+    loadEmployeeData()
+    return () => { cancelled = true }
+  }, [])
 
   const showToast = useCallback((msg: string, type?: 'success' | 'error') => {
     setToast({ msg, type, key: ++toastKey.current })
@@ -1856,7 +1916,6 @@ export default function App() {
 
         {/* Content */}
         <main style={{ flex: 1, padding: '28px 32px', overflowY: 'auto' }}>
-        <DatabaseDepartmentsPanel />
           {page === 'dashboard' && (
             <Dashboard role={role} userName={userName} periods={periods} setPage={setPage}
               setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
@@ -1876,7 +1935,15 @@ export default function App() {
           {page === 'director-detail' && activePeriod && activeDept && (
             <DirectorDetail period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} />
           )}
-          {page === 'employees' && <EmployeesPage setPage={setPage} setEditEmpId={setEditEmpId} />}
+          {page === 'employees' && (
+            <EmployeesPage
+              employees={databaseEmployees}
+              departments={departments}
+              positions={positions}
+              loading={employeeLoading}
+              error={employeeError}
+            />
+          )}
           {page === 'employee-form' && <EmployeeForm empId={editEmpId} setPage={setPage} showToast={showToast} />}
           {page === 'payslip-status' && <PayslipStatus periods={periods} />}
           {page === 'reports' && <ReportsPage periods={periods} />}
@@ -1903,4 +1970,3 @@ export default function App() {
     </div>
   )
 }
-

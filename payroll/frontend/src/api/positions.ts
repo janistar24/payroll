@@ -1,6 +1,9 @@
 export interface Position {
   id: number
+  code: string
   name: string
+  level: string | null
+  is_active: boolean
 }
 
 interface PositionsResponse {

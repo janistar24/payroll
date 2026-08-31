@@ -1,6 +1,23 @@
 export interface Employee {
   id: number
-  name: string
+  employee_code: string
+  national_id: string
+  prefix: string | null
+  first_name: string
+  last_name: string
+  department_id: number | null
+  position_id: number | null
+  employee_type: 'CIVIL_SERVANT' | 'MUNICIPAL_EMPLOYEE' | 'PERMANENT_WORKER' | 'TEMPORARY_EMPLOYEE'
+  status: 'ACTIVE' | 'ON_LEAVE' | 'RESIGNED' | 'RETIRED' | 'TERMINATED'
+  start_date: string | null
+  end_date: string | null
+  email: string | null
+  phone: string | null
+  bank_name: string | null
+  bank_account_no: string | null
+  base_salary: string
+  created_at: string
+  updated_at: string
 }
 
 interface EmployeesResponse {

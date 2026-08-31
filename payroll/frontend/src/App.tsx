@@ -428,46 +428,6 @@ function LineChart({ datasets, labels }: { datasets: { label: string; values: nu
   )
 }
 
-// ─── Donut Chart ──────────────────────────────────────────────────────────────
-
-function DonutChart({ segments }: { segments: { label: string; count: number; color: string }[] }) {
-  const total = segments.reduce((a, s) => a + s.count, 0) || 1
-  const r = 48, cx = 56, cy = 56, circ = 2 * Math.PI * r
-  let offset = 0
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 24 }}>
-      <svg width={112} height={112} viewBox="0 0 112 112" style={{ flexShrink: 0 }}>
-        <circle cx={cx} cy={cy} r={r} fill="none" stroke="#F0F0F6" strokeWidth={14} />
-        {segments.map((seg, i) => {
-          const pct = seg.count / total
-          const len = pct * circ - 2
-          const el = pct > 0 ? (
-            <circle key={i} cx={cx} cy={cy} r={r} fill="none" stroke={seg.color} strokeWidth={14}
-              strokeDasharray={`${Math.max(len, 0)} ${circ}`} strokeDashoffset={-offset}
-              strokeLinecap="butt"
-              style={{ transform: 'rotate(-90deg)', transformOrigin: '56px 56px' }}
-            />
-          ) : null
-          offset += pct * circ
-          return el
-        })}
-        <text x={cx} y={cy - 3} textAnchor="middle" style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 20, fill: '#1A1A1A' }}>{total}</text>
-        <text x={cx} y={cy + 13} textAnchor="middle" style={{ fontSize: 9.5, fill: 'var(--text-muted)' }}>ฝ่ายทั้งหมด</text>
-      </svg>
-      <div className="flex flex-col gap-2">
-        {segments.map(s => (
-          <div key={s.label} className="flex items-center gap-2">
-            <div style={{ width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0 }} />
-            <span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{s.label}</span>
-            <span style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 13, color: '#1A1A1A', marginLeft: 4 }}>{s.count}</span>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>({Math.round(s.count / total * 100)}%)</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
 // ─── Login Page ───────────────────────────────────────────────────────────────
 
 function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Role, department: string | null) => void }) {
@@ -561,7 +521,6 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
   const prevTotals = prevPeriod ? periodTotals(prevPeriod) : null
 
   const pendingDepts = currentPeriod?.depts.filter(d => d.status === 'pending') ?? []
-  const approvedDepts = currentPeriod?.depts.filter(d => d.status === 'approved') ?? []
 
   const monthLabels = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.']
   const lineData = [
@@ -569,13 +528,6 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
     { label: 'รายการหักรวม', values: [92000,  94000,  91000,  95000,  97000,  93000,  currentTotals.deduct, 0].slice(0, 7), color: '#FFB4A2' },
     { label: 'ยอดรับสุทธิรวม', values: [728000, 741000, 737000, 747000, 754000, 745000, currentTotals.net, 0].slice(0, 7), color: '#22C55E' },
   ]
-
-  const statusCounts = {
-    draft: currentPeriod?.depts.filter(d => d.status === 'draft').length ?? 0,
-    pending: pendingDepts.length,
-    approved: approvedDepts.length,
-    rejected: currentPeriod?.depts.filter(d => d.status === 'rejected').length ?? 0,
-  }
 
   const now = new Date()
   const hour = now.getHours()
@@ -665,28 +617,15 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
         </div>
       </div>
 
-      {/* Charts row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 320px', gap: 16 }}>
-        {/* Line chart */}
-        <div className="card" style={{ padding: 24 }}>
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: '#1A1A1A' }}>แนวโน้มค่าใช้จ่ายรายเดือน</div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>ข้อมูลย้อนหลัง 7 เดือน (บาท)</div>
-            </div>
+      {/* Monthly trend */}
+      <div className="card" style={{ padding: 24, width: '100%' }}>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: '#1A1A1A' }}>แนวโน้มค่าใช้จ่ายรายเดือน</div>
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>ข้อมูลย้อนหลัง 7 เดือน (บาท)</div>
           </div>
-          <LineChart datasets={lineData} labels={monthLabels} />
         </div>
-        {/* Donut */}
-        <div className="card" style={{ padding: 24 }}>
-          <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: '#1A1A1A', marginBottom: 16 }}>สถานะการอนุมัติ ({periodLabel(currentPeriod ?? periods[0])})</div>
-          <DonutChart segments={[
-            { label: 'แบบร่าง',    count: statusCounts.draft,    color: '#94A3B8' },
-            { label: 'รออนุมัติ',  count: statusCounts.pending,  color: '#F59E0B' },
-            { label: 'อนุมัติแล้ว',count: statusCounts.approved, color: '#22C55E' },
-            { label: 'ไม่อนุมัติ', count: statusCounts.rejected, color: '#EF4444' },
-          ]} />
-        </div>
+        <LineChart datasets={lineData} labels={monthLabels} />
       </div>
 
       {/* Recent list */}

@@ -1422,12 +1422,13 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
 
 // ─── Employees ────────────────────────────────────────────────────────────────
 
-function EmployeesPage({ employees, departments, positions, loading, error, setPage, setEditEmpId }: {
+function EmployeesPage({ employees, departments, positions, loading, error, role, setPage, setEditEmpId }: {
   employees: DatabaseEmployee[]
   departments: Department[]
   positions: Position[]
   loading: boolean
   error: string
+  role: Role
   setPage: (page: Page) => void
   setEditEmpId: (id: number | null) => void
 }) {
@@ -1470,10 +1471,12 @@ function EmployeesPage({ employees, departments, positions, loading, error, setP
       <div className="card" style={{ padding: '14px 18px', marginBottom: 14 }}>
         <div className="flex items-center gap-3">
           <input className="inp" style={{ maxWidth: 240 }} placeholder="ค้นหาชื่อหรือรหัสพนักงาน..." value={search} onChange={e => setSearch(e.target.value)} />
-          <select className="inp" style={{ maxWidth: 220 }} value={filterDept} onChange={e => setFilterDept(e.target.value)}>
-            <option value="all">ทุกฝ่าย</option>
-            {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-          </select>
+          {role !== 'hr' && (
+            <select className="inp" style={{ maxWidth: 220 }} value={filterDept} onChange={e => setFilterDept(e.target.value)}>
+              <option value="all">ทุกฝ่าย</option>
+              {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          )}
         </div>
       </div>
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -2113,6 +2116,7 @@ export default function App() {
               positions={positions}
               loading={employeeLoading}
               error={employeeError}
+              role={role}
               setPage={setPage}
               setEditEmpId={setEditEmpId}
             />

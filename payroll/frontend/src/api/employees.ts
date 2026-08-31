@@ -44,3 +44,36 @@ export async function getEmployees(): Promise<Employee[]> {
 
   return result.data
 }
+
+export type EmployeeSaveInput = Omit<Employee, 'id' | 'created_at' | 'updated_at'>
+
+async function parseApiError(response: Response): Promise<string> {
+  try {
+    const result = await response.json()
+    if (typeof result.detail === 'string') return result.detail
+    if (result.detail?.message) return result.detail.message
+  } catch {
+    // Use the status fallback below when the response is not JSON.
+  }
+  return `บันทึกข้อมูลพนักงานไม่สำเร็จ: ${response.status}`
+}
+
+export async function createEmployee(data: EmployeeSaveInput): Promise<number> {
+  const response = await fetch(`${API_URL}/employees`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!response.ok) throw new Error(await parseApiError(response))
+  const result = await response.json()
+  return result.data.id
+}
+
+export async function updateEmployee(employeeId: number, data: EmployeeSaveInput): Promise<void> {
+  const response = await fetch(`${API_URL}/employees/${employeeId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  if (!response.ok) throw new Error(await parseApiError(response))
+}

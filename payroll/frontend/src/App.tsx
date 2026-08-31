@@ -4,7 +4,13 @@ import {
   getDepartments,
   type Department
 } from './api/departments'
-import { getEmployees, type Employee as DatabaseEmployee } from './api/employees'
+import {
+  createEmployee,
+  getEmployees,
+  updateEmployee,
+  type Employee as DatabaseEmployee,
+  type EmployeeSaveInput,
+} from './api/employees'
 import { getPositions, type Position } from './api/positions'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1346,12 +1352,14 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
 
 // ─── Employees ────────────────────────────────────────────────────────────────
 
-function EmployeesPage({ employees, departments, positions, loading, error }: {
+function EmployeesPage({ employees, departments, positions, loading, error, setPage, setEditEmpId }: {
   employees: DatabaseEmployee[]
   departments: Department[]
   positions: Position[]
   loading: boolean
   error: string
+  setPage: (page: Page) => void
+  setEditEmpId: (id: number | null) => void
 }) {
   const [search, setSearch] = useState('')
   const [filterDept, setFilterDept] = useState('all')
@@ -1387,7 +1395,7 @@ function EmployeesPage({ employees, departments, positions, loading, error }: {
       <PageHeader
         title="พนักงาน"
         subtitle={`พนักงานที่ใช้งานอยู่ ${activeCount} คน จากทั้งหมด ${employees.length} คน`}
-        actions={<button className="btn btn-primary" disabled title="จะเปิดใช้งานเมื่อเพิ่ม CRUD ในชุดถัดไป">+ เพิ่มพนักงาน</button>}
+        actions={<button className="btn btn-primary" onClick={() => { setEditEmpId(null); setPage('employee-form') }}>+ เพิ่มพนักงาน</button>}
       />
       <div className="card" style={{ padding: '14px 18px', marginBottom: 14 }}>
         <div className="flex items-center gap-3">
@@ -1426,7 +1434,7 @@ function EmployeesPage({ employees, departments, positions, loading, error }: {
                 <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{e.email ?? '–'}</td>
                 <td><span className={`badge ${e.status === 'ACTIVE' ? 'badge-approved' : 'badge-rejected'}`}>● {statusLabel[e.status]}</span></td>
                 <td>
-                  <button className="btn btn-ghost btn-xs" disabled title="จะเปิดใช้งานเมื่อเพิ่ม CRUD ในชุดถัดไป">แก้ไข</button>
+                  <button className="btn btn-ghost btn-xs" onClick={() => { setEditEmpId(e.id); setPage('employee-form') }}>แก้ไข</button>
                 </td>
               </tr>
             ))}
@@ -1439,14 +1447,74 @@ function EmployeesPage({ employees, departments, positions, loading, error }: {
 
 // ─── Employee Form ────────────────────────────────────────────────────────────
 
-function EmployeeForm({ empId, setPage, showToast }: { empId: string | null; setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void }) {
-  const emp = empId ? EMPLOYEES.find(e => e.id === empId) : null
-  const [firstName, setFirstName] = useState(emp?.firstName ?? '')
-  const [lastName, setLastName] = useState(emp?.lastName ?? '')
+function EmployeeForm({ empId, employees, departments, positions, setPage, showToast, onSaved }: {
+  empId: number | null
+  employees: DatabaseEmployee[]
+  departments: Department[]
+  positions: Position[]
+  setPage: (p: Page) => void
+  showToast: (msg: string, t?: 'success' | 'error') => void
+  onSaved: () => Promise<void>
+}) {
+  const emp = empId ? employees.find(employee => employee.id === empId) : null
+  const [employeeCode, setEmployeeCode] = useState(emp?.employee_code ?? '')
+  const [nationalId, setNationalId] = useState(emp?.national_id ?? '')
+  const [prefix, setPrefix] = useState(emp?.prefix ?? '')
+  const [firstName, setFirstName] = useState(emp?.first_name ?? '')
+  const [lastName, setLastName] = useState(emp?.last_name ?? '')
   const [email, setEmail] = useState(emp?.email ?? '')
-  const [dept, setDept] = useState(emp?.department ?? DEPARTMENTS[0])
-  const [position, setPosition] = useState(emp?.position ?? '')
-  const [baseSalary, setBaseSalary] = useState(String(emp?.baseSalary ?? ''))
+  const [phone, setPhone] = useState(emp?.phone ?? '')
+  const [departmentId, setDepartmentId] = useState(String(emp?.department_id ?? departments.find(d => d.is_active)?.id ?? ''))
+  const [positionId, setPositionId] = useState(String(emp?.position_id ?? ''))
+  const [employeeType, setEmployeeType] = useState<DatabaseEmployee['employee_type']>(emp?.employee_type ?? 'CIVIL_SERVANT')
+  const [status, setStatus] = useState<DatabaseEmployee['status']>(emp?.status ?? 'ACTIVE')
+  const [startDate, setStartDate] = useState(emp?.start_date ?? '')
+  const [endDate, setEndDate] = useState(emp?.end_date ?? '')
+  const [bankName, setBankName] = useState(emp?.bank_name ?? '')
+  const [bankAccountNo, setBankAccountNo] = useState(emp?.bank_account_no ?? '')
+  const [baseSalary, setBaseSalary] = useState(emp?.base_salary ?? '')
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState('')
+
+  const handleSave = async () => {
+    if (!employeeCode.trim() || nationalId.length !== 13 || !firstName.trim() || !lastName.trim() || !baseSalary) {
+      setSaveError('กรุณากรอกช่องที่จำเป็นให้ครบ และเลขประจำตัวประชาชนต้องมี 13 หลัก')
+      return
+    }
+
+    const payload: EmployeeSaveInput = {
+      employee_code: employeeCode.trim(),
+      national_id: nationalId,
+      prefix: prefix.trim() || null,
+      first_name: firstName.trim(),
+      last_name: lastName.trim(),
+      department_id: departmentId ? Number(departmentId) : null,
+      position_id: positionId ? Number(positionId) : null,
+      employee_type: employeeType,
+      status,
+      start_date: startDate || null,
+      end_date: endDate || null,
+      email: email.trim() || null,
+      phone: phone.trim() || null,
+      bank_name: bankName.trim() || null,
+      bank_account_no: bankAccountNo.trim() || null,
+      base_salary: baseSalary,
+    }
+
+    try {
+      setSaving(true)
+      setSaveError('')
+      if (empId) await updateEmployee(empId, payload)
+      else await createEmployee(payload)
+      await onSaved()
+      showToast(empId ? 'อัปเดตข้อมูลพนักงานแล้ว' : 'เพิ่มพนักงานใหม่แล้ว', 'success')
+      setPage('employees')
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : 'บันทึกข้อมูลพนักงานไม่สำเร็จ')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
     <div className="anim" style={{ maxWidth: 720 }}>
@@ -1457,30 +1525,58 @@ function EmployeeForm({ empId, setPage, showToast }: { empId: string | null; set
       <div className="card" style={{ padding: 28 }}>
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.04em' }}>ข้อมูลส่วนตัว</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
+          <FormField label="รหัสพนักงาน" required><input className="inp" value={employeeCode} onChange={e => setEmployeeCode(e.target.value)} /></FormField>
+          <FormField label="เลขประจำตัวประชาชน" required><input className="inp" inputMode="numeric" maxLength={13} value={nationalId} onChange={e => setNationalId(e.target.value.replace(/\D/g, ''))} /></FormField>
+          <FormField label="คำนำหน้า"><input className="inp" value={prefix} onChange={e => setPrefix(e.target.value)} /></FormField>
           <FormField label="ชื่อ" required><input className="inp" value={firstName} onChange={e => setFirstName(e.target.value)} placeholder="ชื่อ" /></FormField>
           <FormField label="นามสกุล" required><input className="inp" value={lastName} onChange={e => setLastName(e.target.value)} placeholder="นามสกุล" /></FormField>
-          <FormField label="อีเมล" required><input className="inp" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="example@muni.go.th" /></FormField>
+          <FormField label="อีเมล"><input className="inp" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="example@muni.go.th" /></FormField>
+          <FormField label="โทรศัพท์"><input className="inp" value={phone} onChange={e => setPhone(e.target.value)} /></FormField>
         </div>
         <div className="divider" />
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.04em' }}>ข้อมูลการทำงาน</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
           <FormField label="ฝ่าย" required>
-            <select className="inp" value={dept} onChange={e => setDept(e.target.value)}>
-              {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+            <select className="inp" value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
+              <option value="">ไม่ระบุ</option>
+              {departments.filter(d => d.is_active).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
           </FormField>
-          <FormField label="ตำแหน่ง" required><input className="inp" value={position} onChange={e => setPosition(e.target.value)} placeholder="ตำแหน่งงาน" /></FormField>
+          <FormField label="ตำแหน่ง">
+            <select className="inp" value={positionId} onChange={e => setPositionId(e.target.value)}>
+              <option value="">ไม่ระบุ</option>
+              {positions.filter(p => p.is_active).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </FormField>
+          <FormField label="ประเภทพนักงาน" required>
+            <select className="inp" value={employeeType} onChange={e => setEmployeeType(e.target.value as DatabaseEmployee['employee_type'])}>
+              <option value="CIVIL_SERVANT">ข้าราชการ</option>
+              <option value="MUNICIPAL_EMPLOYEE">พนักงานเทศบาล</option>
+              <option value="PERMANENT_WORKER">ลูกจ้างประจำ</option>
+              <option value="TEMPORARY_EMPLOYEE">พนักงานจ้าง</option>
+            </select>
+          </FormField>
+          <FormField label="สถานะ" required>
+            <select className="inp" value={status} onChange={e => setStatus(e.target.value as DatabaseEmployee['status'])}>
+              <option value="ACTIVE">ปกติ</option><option value="ON_LEAVE">ลา</option><option value="RESIGNED">ลาออก</option><option value="RETIRED">เกษียณ</option><option value="TERMINATED">สิ้นสุดการจ้าง</option>
+            </select>
+          </FormField>
+          <FormField label="วันที่เริ่มงาน"><input className="inp" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} /></FormField>
+          <FormField label="วันที่สิ้นสุด"><input className="inp" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} /></FormField>
         </div>
         <div className="divider" />
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.04em' }}>ข้อมูลเงินเดือน</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <FormField label="ฐานเงินเดือน (บาท)" required>
-            <input className="inp" type="number" value={baseSalary} onChange={e => setBaseSalary(e.target.value)} placeholder="0.00" />
+            <input className="inp" type="number" min="0" step="0.01" value={baseSalary} onChange={e => setBaseSalary(e.target.value)} placeholder="0.00" />
           </FormField>
+          <FormField label="ธนาคาร"><input className="inp" value={bankName} onChange={e => setBankName(e.target.value)} /></FormField>
+          <FormField label="เลขบัญชีธนาคาร"><input className="inp" value={bankAccountNo} onChange={e => setBankAccountNo(e.target.value)} /></FormField>
         </div>
+        {saveError && <div style={{ marginTop: 16, padding: 12, borderRadius: 10, background: '#FEF3F2', color: '#B42318', fontSize: 13 }}>{saveError}</div>}
         <div className="flex gap-3 justify-end mt-8">
           <button className="btn btn-secondary" onClick={() => setPage('employees')}>ยกเลิก</button>
-          <button className="btn btn-primary" onClick={() => { showToast(empId ? 'อัปเดตข้อมูลพนักงานแล้ว' : 'เพิ่มพนักงานใหม่แล้ว', 'success'); setPage('employees') }}>บันทึก</button>
+          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
         </div>
       </div>
     </div>
@@ -1844,14 +1940,11 @@ export default function App() {
   const [users] = useState<UserAccount[]>(SEED_USERS)
   const [activePeriodId, setActivePeriodId] = useState<string>(SEED_PERIODS[0].id)
   const [activeDeptId, setActiveDeptId] = useState<string>(SEED_PERIODS[0].depts[0].id)
-  const [editEmpId, setEditEmpId] = useState<string | null>(null)
+  const [editEmpId, setEditEmpId] = useState<number | null>(null)
   const [toast, setToast] = useState<{ msg: string; type?: 'success' | 'error'; key: number } | null>(null)
   const toastKey = useRef(0)
 
-  useEffect(() => {
-    let cancelled = false
-
-    async function loadEmployeeData() {
+  const loadEmployeeData = useCallback(async () => {
       try {
         setEmployeeLoading(true)
         setEmployeeError('')
@@ -1860,23 +1953,19 @@ export default function App() {
           getDepartments(),
           getPositions(),
         ])
-        if (!cancelled) {
-          setDatabaseEmployees(employeeData)
-          setDepartments(departmentData)
-          setPositions(positionData)
-        }
+        setDatabaseEmployees(employeeData)
+        setDepartments(departmentData)
+        setPositions(positionData)
       } catch (loadError) {
-        if (!cancelled) {
-          setEmployeeError(loadError instanceof Error ? loadError.message : 'เกิดข้อผิดพลาดในการโหลดข้อมูล')
-        }
+        setEmployeeError(loadError instanceof Error ? loadError.message : 'เกิดข้อผิดพลาดในการโหลดข้อมูล')
       } finally {
-        if (!cancelled) setEmployeeLoading(false)
+        setEmployeeLoading(false)
       }
-    }
-
-    loadEmployeeData()
-    return () => { cancelled = true }
   }, [])
+
+  useEffect(() => {
+    loadEmployeeData()
+  }, [loadEmployeeData])
 
   const showToast = useCallback((msg: string, type?: 'success' | 'error') => {
     setToast({ msg, type, key: ++toastKey.current })
@@ -1942,9 +2031,14 @@ export default function App() {
               positions={positions}
               loading={employeeLoading}
               error={employeeError}
+              setPage={setPage}
+              setEditEmpId={setEditEmpId}
             />
           )}
-          {page === 'employee-form' && <EmployeeForm empId={editEmpId} setPage={setPage} showToast={showToast} />}
+          {page === 'employee-form' && (
+            <EmployeeForm empId={editEmpId} employees={databaseEmployees} departments={departments} positions={positions}
+              setPage={setPage} showToast={showToast} onSaved={loadEmployeeData} />
+          )}
           {page === 'payslip-status' && <PayslipStatus periods={periods} />}
           {page === 'reports' && <ReportsPage periods={periods} />}
           {page === 'admin-users' && <AdminUsers users={users} />}

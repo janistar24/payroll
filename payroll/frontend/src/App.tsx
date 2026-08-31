@@ -208,9 +208,9 @@ const deptTotals = (dept: DeptPayroll) => {
 }
 
 const periodTotals = (p: PayrollPeriod) => {
-  let gross = 0, deduct = 0, net = 0, emps = 0
-  p.depts.forEach(d => { const t = deptTotals(d); gross += t.totalGross; deduct += t.totalDeduct; net += t.totalNet; emps += t.count })
-  return { gross, deduct, net, emps }
+  let base = 0, gross = 0, deduct = 0, net = 0, emps = 0
+  p.depts.forEach(d => { const t = deptTotals(d); base += t.totalBase; gross += t.totalGross; deduct += t.totalDeduct; net += t.totalNet; emps += t.count })
+  return { base, gross, deduct, net, emps }
 }
 
 const statusLabel: Record<DeptStatus, string> = {
@@ -557,7 +557,7 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
 }) {
   const currentPeriod = periods[0]
   const prevPeriod = periods[1]
-  const currentTotals = currentPeriod ? periodTotals(currentPeriod) : { gross: 0, deduct: 0, net: 0, emps: 0 }
+  const currentTotals = currentPeriod ? periodTotals(currentPeriod) : { base: 0, gross: 0, deduct: 0, net: 0, emps: 0 }
   const prevTotals = prevPeriod ? periodTotals(prevPeriod) : null
 
   const pendingDepts = currentPeriod?.depts.filter(d => d.status === 'pending') ?? []
@@ -635,11 +635,34 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
         </div>
       )}
 
-      {/* KPI Row */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
-        <KpiCard label="จำนวนพนักงานทั้งหมด" value={thbInt(currentTotals.emps)} unit="คน" icon="◉" sub={role === 'hr' ? userDepartment ?? undefined : `${DEPARTMENTS.length} ฝ่าย`} accent="var(--purple-600)" />
-        <KpiCard label="ยอดรายการรับรวม" value={thbInt(Math.round(currentTotals.gross))} unit="บาท" icon="▲" sub={prevTotals ? `เดือนก่อน ${thbInt(Math.round(prevTotals.gross))} บาท` : undefined} accent="#22C55E" />
-        <KpiCard label="ยอดรับสุทธิรวม" value={thbInt(Math.round(currentTotals.net))} unit="บาท" icon="◈" sub={prevTotals ? `เดือนก่อน ${thbInt(Math.round(prevTotals.net))} บาท` : undefined} accent="#3B82F6" />
+      {/* Unified payroll summary */}
+      <div className="dashboard-payroll-summary">
+        <div className="dashboard-payroll-summary-head">
+          <div>
+            <div className="dashboard-payroll-summary-title">สรุปรอบเงินเดือน {currentPeriod ? periodLabel(currentPeriod) : ''}</div>
+            <div className="dashboard-payroll-summary-subtitle">ภาพรวมรายการเงินเดือนของ{role === 'hr' && userDepartment ? userDepartment : 'ทุกฝ่าย'}</div>
+          </div>
+          <div className="dashboard-payroll-people">👥 พนักงาน {thbInt(currentTotals.emps)} คน</div>
+        </div>
+        <div className="dashboard-payroll-summary-body">
+          <div className="dashboard-payroll-net">
+            <div className="dashboard-payroll-label">ยอดรับสุทธิรวม</div>
+            <div className="dashboard-payroll-net-value">{thb(Math.round(currentTotals.net))}</div>
+            <div className="dashboard-payroll-unit">บาท</div>
+            {prevTotals && <div className="dashboard-payroll-previous">เดือนก่อน {thb(Math.round(prevTotals.net))} บาท</div>}
+          </div>
+          <div className="dashboard-payroll-breakdown">
+            <div className="dashboard-payroll-row">
+              <span>ฐานเงินเดือนรวม</span><strong>{thb(Math.round(currentTotals.base))} บาท</strong>
+            </div>
+            <div className="dashboard-payroll-row">
+              <span>รายการรับรวม</span><strong>{thb(Math.round(currentTotals.gross))} บาท</strong>
+            </div>
+            <div className="dashboard-payroll-row dashboard-payroll-deduct">
+              <span>รายการหักรวม</span><strong>{thb(Math.round(currentTotals.deduct))} บาท</strong>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Charts row */}

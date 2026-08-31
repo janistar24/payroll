@@ -247,6 +247,62 @@ html, body {
   box-shadow: var(--shadow-sm);
 }
 
+/* ── Dashboard payroll summary ───────────────────────────── */
+.dashboard-payroll-summary {
+  overflow: hidden;
+  background: #FFFFFF;
+  border: 1px solid rgba(0,0,0,0.07);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+.dashboard-payroll-summary-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 16px 20px; border-bottom: 1px solid rgba(0,0,0,0.07);
+}
+.dashboard-payroll-summary-title {
+  font-family: var(--font-display); font-size: 15px; font-weight: 700;
+}
+.dashboard-payroll-summary-subtitle {
+  margin-top: 2px; color: var(--text-muted); font-size: 12px;
+}
+.dashboard-payroll-people {
+  flex: 0 0 auto; padding: 6px 12px; border-radius: 999px;
+  background: var(--purple-100); color: var(--purple-600); font-size: 12.5px; font-weight: 600;
+}
+.dashboard-payroll-summary-body {
+  display: grid; grid-template-columns: minmax(230px, 1.05fr) minmax(300px, 1.95fr);
+}
+.dashboard-payroll-net {
+  display: flex; flex-direction: column; justify-content: center;
+  min-height: 150px; padding: 22px 24px;
+  background: linear-gradient(135deg, var(--purple-100), var(--blue-100));
+  border-right: 1px solid rgba(0,0,0,0.07);
+}
+.dashboard-payroll-label, .dashboard-payroll-unit { color: var(--text-secondary); font-size: 12.5px; }
+.dashboard-payroll-net-value {
+  margin-top: 5px; color: var(--purple-600); font-family: var(--font-display);
+  font-size: clamp(25px, 3vw, 34px); font-weight: 700; line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-payroll-previous { margin-top: 8px; color: var(--text-muted); font-size: 11.5px; }
+.dashboard-payroll-breakdown { display: grid; align-content: center; padding: 10px 22px; }
+.dashboard-payroll-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 20px;
+  padding: 11px 0; border-bottom: 1px solid rgba(0,0,0,0.06); color: var(--text-secondary);
+}
+.dashboard-payroll-row:last-child { border-bottom: 0; }
+.dashboard-payroll-row strong { color: var(--text-primary); font-variant-numeric: tabular-nums; }
+.dashboard-payroll-row.dashboard-payroll-deduct strong { color: #B91C1C; }
+
+@media (max-width: 720px) {
+  .dashboard-payroll-summary-body { grid-template-columns: 1fr; }
+  .dashboard-payroll-net { min-height: 0; border-right: 0; border-bottom: 1px solid rgba(0,0,0,0.07); }
+}
+@media (max-width: 480px) {
+  .dashboard-payroll-summary-head { align-items: flex-start; flex-direction: column; }
+  .dashboard-payroll-row { align-items: flex-start; flex-direction: column; gap: 3px; }
+}
+
 /* ── Modal ─────────────────────────────────────────────────── */
 .modal-overlay {
   position: fixed; inset: 0; z-index: 200;

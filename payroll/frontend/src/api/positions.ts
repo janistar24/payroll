@@ -1,0 +1,29 @@
+export interface Position {
+  id: number
+  name: string
+}
+
+interface PositionsResponse {
+  success: boolean
+  count: number
+  data: Position[]
+}
+
+const API_URL =
+  import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
+
+export async function getPositions(): Promise<Position[]> {
+  const response = await fetch(`${API_URL}/positions`)
+
+  if (!response.ok) {
+    throw new Error(`โหลดข้อมูลตำแหน่งงานไม่สำเร็จ: ${response.status}`)
+  }
+
+  const result = (await response.json()) as PositionsResponse
+
+  if (!result.success) {
+    throw new Error('API ไม่สามารถส่งข้อมูลตำแหน่งงานได้')
+  }
+
+  return result.data
+}

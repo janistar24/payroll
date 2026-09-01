@@ -982,13 +982,13 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
   }
 
   const totals = useMemo(() => {
-    let base = 0, extra = 0, pos = 0, gross = 0, deduct = 0, net = 0
+    let base = 0, gross = 0, deduct = 0, net = 0
     emps.forEach(e => {
       const r = rows[e.id]
-      base += e.baseSalary; extra += r.extra; pos += r.posAllowance
+      base += e.baseSalary
       gross += rowGross(e, r); deduct += rowDeduct(r); net += rowNet(e, r)
     })
-    return { base, extra, pos, gross, deduct, net }
+    return { base, gross, deduct, net }
   }, [rows, emps])
 
   const handleFocus = useCallback((id: string) => setFocusRow(id), [])
@@ -1106,8 +1106,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
             <tr>
               <td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งหมด ({emps.length} คน)</td>
               <td className="num">{thb(totals.base)}</td>
-              <td className="num">{thb(totals.extra)}</td>
-              <td className="num">{thb(totals.pos)}</td>
+              <td className="num" style={{ color: 'var(--text-muted)' }}>–</td>
+              <td className="num" style={{ color: 'var(--text-muted)' }}>–</td>
               <td className="num" style={{ color: '#15803D' }}>{thb(totals.gross)}</td>
               <td colSpan={6} />
               <td className="num" style={{ color: '#B91C1C' }}>{thb(totals.deduct)}</td>

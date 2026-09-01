@@ -294,21 +294,21 @@ function Modal({ title, children, onClose, size }: { title: string; children: Re
 function Sidebar({ role, name, department, page, setPage }: { role: Role; name: string; department: string | null; page: Page; setPage: (p: Page) => void }) {
   type NavEntry = { id: Page; label: string; icon: string }
   const hrNav: NavEntry[] = [
-    { id: 'dashboard', label: 'หน้าหลัก', icon: '⊞' },
-    { id: 'periods',   label: 'รอบเงินเดือน', icon: '◫' },
-    { id: 'employees', label: 'พนักงาน', icon: '◉' },
-    { id: 'reports',   label: 'รายงาน', icon: '◧' },
+    { id: 'dashboard', label: 'หน้าหลัก', icon: '🏠' },
+    { id: 'periods',   label: 'รอบเงินเดือน', icon: '📅' },
+    { id: 'employees', label: 'พนักงาน', icon: '👥' },
+    { id: 'reports',   label: 'รายงาน', icon: '📊' },
   ]
   const dirNav: NavEntry[] = [
-    { id: 'dashboard',           label: 'หน้าหลัก', icon: '⊞' },
-    { id: 'director-approvals',  label: 'อนุมัติเงินเดือน', icon: '◈' },
-    { id: 'periods',             label: 'ประวัติรอบเงินเดือน', icon: '◫' },
+    { id: 'dashboard',           label: 'หน้าหลัก', icon: '🏠' },
+    { id: 'director-approvals',  label: 'อนุมัติเงินเดือน', icon: '✅' },
+    { id: 'periods',             label: 'ประวัติรอบเงินเดือน', icon: '🗓️' },
   ]
   const adminNav: NavEntry[] = [
-    { id: 'dashboard',     label: 'Dashboard ระบบ', icon: '⊞' },
-    { id: 'admin-users',   label: 'จัดการผู้ใช้งาน', icon: '◉' },
-    { id: 'admin-settings',label: 'ตั้งค่าระบบ', icon: '◧' },
-    { id: 'reports',       label: 'ประวัติการใช้งาน', icon: '◫' },
+    { id: 'dashboard',     label: 'Dashboard ระบบ', icon: '🖥️' },
+    { id: 'admin-users',   label: 'จัดการผู้ใช้งาน', icon: '👤' },
+    { id: 'admin-settings',label: 'ตั้งค่าระบบ', icon: '⚙️' },
+    { id: 'reports',       label: 'ประวัติการใช้งาน', icon: '🧾' },
   ]
   const navItems = role === 'hr' ? hrNav : role === 'director' ? dirNav : adminNav
 
@@ -570,7 +570,7 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
 
   const quickMenuItems = role === 'hr' ? [
     { step: '①', icon: '👥', label: 'ตรวจรายชื่อพนักงาน', sub: `ตรวจข้อมูลพนักงานใน${userDepartment ?? 'ฝ่ายของคุณ'}`, action: () => setPage('employees') },
-    { step: '②', icon: '🧾', label: 'จัดทำข้อมูลเงินเดือน', sub: 'กรอกรายการรับและรายการหักของรอบปัจจุบัน', action: openCurrentDepartment },
+    { step: '②', icon: '🧾', label: 'จัดทำข้อมูลเงินเดือน', sub: 'เลือกเดือนก่อนกรอกรายการรับและรายการหัก', action: () => setPage('periods') },
     { step: '③', icon: '✅', label: 'ตรวจและส่งอนุมัติ', sub: 'ตรวจยอดรวมของฝ่ายก่อนส่งให้ผู้อำนวยการ', action: openCurrentDepartment },
     { step: '④', icon: '📨', label: 'ติดตามสลิปเงินเดือน', sub: 'ตรวจสถานะ PDF และการส่งอีเมลหลังอนุมัติ', action: () => setPage('payslip-status') },
   ] : []
@@ -593,7 +593,6 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
             )}
           </div>
           <div className="flex gap-2">
-            {role === 'hr' && <button className="btn btn-primary" onClick={openCurrentDepartment}>จัดทำเงินเดือนฝ่าย</button>}
             {role === 'director' && pendingDepts.length > 0 && <button className="btn btn-primary" onClick={() => setPage('director-approvals')}>◈ ดูรายการรออนุมัติ ({pendingDepts.length})</button>}
           </div>
         </div>
@@ -784,10 +783,16 @@ function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, setActiv
                     <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 18, color: '#1A1A1A' }}>{thbInt(Math.round(t.net))} บาท</div>
                   </div>
                   <div className="flex gap-2 flex-wrap justify-end" style={{ maxWidth: 220 }}>
-                    {draftCount > 0    && <span className="badge badge-draft">{draftCount} แบบร่าง</span>}
-                    {pendingCount > 0  && <span className="badge badge-pending">{pendingCount} รออนุมัติ</span>}
-                    {approvedCount > 0 && <span className="badge badge-approved">{approvedCount} อนุมัติแล้ว</span>}
-                    {rejectedCount > 0 && <span className="badge badge-rejected">{rejectedCount} ไม่อนุมัติ</span>}
+                    {role === 'hr' ? (
+                      p.depts[0] ? <StatusBadge s={p.depts[0].status} /> : null
+                    ) : (
+                      <>
+                        {draftCount > 0    && <span className="badge badge-draft">{draftCount} แบบร่าง</span>}
+                        {pendingCount > 0  && <span className="badge badge-pending">{pendingCount} รออนุมัติ</span>}
+                        {approvedCount > 0 && <span className="badge badge-approved">{approvedCount} อนุมัติแล้ว</span>}
+                        {rejectedCount > 0 && <span className="badge badge-rejected">{rejectedCount} ไม่อนุมัติ</span>}
+                      </>
+                    )}
                   </div>
                   <span style={{ color: '#CBD5E1', fontSize: 18 }}>›</span>
                 </div>

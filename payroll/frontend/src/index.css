@@ -379,6 +379,27 @@ html, body {
 }
 /* Keep the totals row uncluttered; only its original group dividers remain. */
 
+/* Keep employee identity visible while entering wide payroll rows. */
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(1),
+.payroll-detail-table tbody tr > *:nth-child(1) {
+  position: sticky; left: 0; width: 44px; min-width: 44px; z-index: 4;
+}
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(2),
+.payroll-detail-table tbody tr > *:nth-child(2) {
+  position: sticky; left: 44px; width: 88px; min-width: 88px; z-index: 4;
+}
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(3),
+.payroll-detail-table tbody tr > *:nth-child(3) {
+  position: sticky; left: 132px; width: 190px; min-width: 190px; z-index: 4;
+  box-shadow: 5px 0 8px rgba(0,0,0,0.06);
+}
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(-n+3) {
+  z-index: 6; background: #F1F5F9;
+}
+.payroll-detail-table tbody tr > *:nth-child(-n+3) { background: #FFFFFF; }
+.payroll-detail-table tbody tr:hover > *:nth-child(-n+3) { background: #FAF9FF; }
+.payroll-detail-table tbody tr.editing > *:nth-child(-n+3) { background: #F7F4FF; }
+
 /* ── Scrollbar ─────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }

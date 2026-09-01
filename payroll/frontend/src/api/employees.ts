@@ -19,6 +19,7 @@ export interface Employee {
     | 'TEACHER_PENSIONER'
     | 'PERMANENT_WORKER_MONTHLY_PENSION'
     | 'OTHER'
+  employee_type_other: string | null
   status: 'ACTIVE' | 'ON_LEAVE' | 'RESIGNED' | 'RETIRED' | 'TERMINATED'
   start_date: string | null
   end_date: string | null

@@ -89,6 +89,7 @@ class Employees:
                     department_id,
                     position_id,
                     employee_type,
+                    employee_type_other,
                     status,
                     start_date,
                     end_date,
@@ -99,7 +100,7 @@ class Employees:
                     base_salary
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 RETURNING id
                 """,
@@ -112,6 +113,7 @@ class Employees:
                     employee.department_id,
                     employee.position_id,
                     employee.employee_type,
+                    employee.employee_type_other.strip() if employee.employee_type_other else None,
                     employee.status,
                     employee.start_date,
                     employee.end_date,
@@ -142,6 +144,7 @@ class Employees:
                     department_id = %s,
                     position_id = %s,
                     employee_type = %s,
+                    employee_type_other = %s,
                     status = %s,
                     start_date = %s,
                     end_date = %s,
@@ -163,6 +166,7 @@ class Employees:
                     employee.department_id,
                     employee.position_id,
                     employee.employee_type,
+                    employee.employee_type_other.strip() if employee.employee_type_other else None,
                     employee.status,
                     employee.start_date,
                     employee.end_date,

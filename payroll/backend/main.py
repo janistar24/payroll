@@ -4,7 +4,7 @@ from decimal import Decimal
 import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from DBHelper import DBHelper
 from departments import Departments
@@ -156,6 +156,7 @@ class EmployeeSave(BaseModel):
     department_id: int | None = None
     position_id: int | None = None
     employee_type: str
+    employee_type_other: str | None = Field(default=None, max_length=150)
     status: str = "ACTIVE"
     start_date: date | None = None
     end_date: date | None = None
@@ -185,6 +186,14 @@ class EmployeeSave(BaseModel):
         if value not in EMPLOYEE_STATUSES:
             raise ValueError("สถานะพนักงานไม่ถูกต้อง")
         return value
+
+    @model_validator(mode="after")
+    def validate_employee_type_other(self):
+        if self.employee_type == "OTHER" and not (self.employee_type_other or "").strip():
+            raise ValueError("กรุณาระบุประเภทพนักงานอื่นๆ")
+        if self.employee_type != "OTHER":
+            self.employee_type_other = None
+        return self
 
 
 class EmployeeStatusUpdate(BaseModel):

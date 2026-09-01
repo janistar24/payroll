@@ -104,7 +104,7 @@ const EMPLOYEE_TYPE_OPTIONS: { value: DatabaseEmployee['employee_type']; label: 
   { value: 'REGULAR_PENSIONER', label: 'ข้าราชการบำนาญปกติ' },
   { value: 'TEACHER_PENSIONER', label: 'ข้าราชการบำนาญครู' },
   { value: 'PERMANENT_WORKER_MONTHLY_PENSION', label: 'ลูกจ้างประจำรับบำเหน็จรายเดือน' },
-  { value: 'OTHER', label: 'อื่น ๆ' },
+  { value: 'OTHER', label: 'อื่นๆ (โปรดระบุ)' },
 ]
 
 // ─── Seed Data ────────────────────────────────────────────────────────────────
@@ -206,6 +206,13 @@ const thbInt = (n: number) => n.toLocaleString('th-TH')
 const MONTH_TH = ['', 'มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม']
 
 const periodLabel = (p: PayrollPeriod) => `${MONTH_TH[p.month]} ${p.year + 543}`
+
+const escapeMarkup = (value: unknown) => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#039;')
 
 const rowGross = (e: Employee, r: PayrollRow) => e.baseSalary + r.extra + r.posAllowance
 const rowDeduct = (r: PayrollRow) => r.debtKTB + r.tax + r.social + r.funeral + r.ktb + r.gsb
@@ -1016,6 +1023,67 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
     setCell(id, field, val)
   }, [setCell])
 
+  const exportExcel = () => {
+    const numberCell = (value: number) => `<Cell ss:StyleID="Number"><Data ss:Type="Number">${value}</Data></Cell>`
+    const textCell = (value: unknown, style = 'Text') => `<Cell ss:StyleID="${style}"><Data ss:Type="String">${escapeMarkup(value)}</Data></Cell>`
+    const dataRows = emps.map((employee, index) => {
+      const row = rows[employee.id]
+      const gross = rowGross(employee, row)
+      const deduct = rowDeduct(row)
+      const net = rowNet(employee, row)
+      return `<Row>${textCell(index + 1, 'Center')}${textCell(employee.id, 'Center')}${textCell(`${employee.title}${employee.firstName} ${employee.lastName}`)}${textCell(employee.position)}${numberCell(employee.baseSalary)}${numberCell(row.extra)}${numberCell(row.posAllowance)}${numberCell(gross)}${numberCell(row.debtKTB)}${numberCell(row.tax)}${numberCell(row.social)}${numberCell(row.funeral)}${numberCell(row.ktb)}${numberCell(row.gsb)}${numberCell(deduct)}${numberCell(net)}</Row>`
+    }).join('')
+    const workbook = `<?xml version="1.0" encoding="UTF-8"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+<Styles>
+  <Style ss:ID="Default" ss:Name="Normal"><Font ss:FontName="Tahoma" ss:Size="10"/><Alignment ss:Vertical="Center"/></Style>
+  <Style ss:ID="Title"><Font ss:FontName="Tahoma" ss:Size="16" ss:Bold="1"/><Alignment ss:Horizontal="Center"/></Style>
+  <Style ss:ID="Subtitle"><Font ss:FontName="Tahoma" ss:Size="12" ss:Bold="1"/><Alignment ss:Horizontal="Center"/></Style>
+  <Style ss:ID="Header"><Font ss:FontName="Tahoma" ss:Bold="1"/><Alignment ss:Horizontal="Center" ss:Vertical="Center" ss:WrapText="1"/><Interior ss:Color="#E8E8E8" ss:Pattern="Solid"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+  <Style ss:ID="Text"><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+  <Style ss:ID="Center"><Alignment ss:Horizontal="Center"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+  <Style ss:ID="Number"><NumberFormat ss:Format="#,##0.00"/><Alignment ss:Horizontal="Right"/><Borders><Border ss:Position="Bottom" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Left" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Right" ss:LineStyle="Continuous" ss:Weight="1"/><Border ss:Position="Top" ss:LineStyle="Continuous" ss:Weight="1"/></Borders></Style>
+  <Style ss:ID="Total" ss:Parent="Number"><Font ss:Bold="1"/><Interior ss:Color="#F0F0F0" ss:Pattern="Solid"/></Style>
+</Styles>
+<Worksheet ss:Name="เงินเดือน ${escapeMarkup(MONTH_TH[period.month])}"><Table>
+  <Row><Cell ss:MergeAcross="15" ss:StyleID="Title"><Data ss:Type="String">เทศบาลเมืองตาคลี</Data></Cell></Row>
+  <Row><Cell ss:MergeAcross="15" ss:StyleID="Subtitle"><Data ss:Type="String">บัญชีรายละเอียดการจ่ายเงินเดือน ประจำเดือน${escapeMarkup(periodLabel(period))}</Data></Cell></Row>
+  <Row><Cell ss:MergeAcross="15" ss:StyleID="Subtitle"><Data ss:Type="String">${escapeMarkup(dept.department)}</Data></Cell></Row>
+  <Row></Row>
+  <Row><Cell ss:MergeAcross="4" ss:StyleID="Header"><Data ss:Type="String">ข้อมูลพนักงาน</Data></Cell><Cell ss:MergeAcross="2" ss:StyleID="Header"><Data ss:Type="String">รายการรับ</Data></Cell><Cell ss:MergeAcross="6" ss:StyleID="Header"><Data ss:Type="String">รายการหัก</Data></Cell><Cell ss:StyleID="Header"><Data ss:Type="String">ยอดรับสุทธิ</Data></Cell></Row>
+  <Row>${['ลำดับ','รหัส','ชื่อ-นามสกุล','ตำแหน่ง','ฐานเงินเดือน','เงินเพิ่ม','เงินประจำตำแหน่ง','รวมรายการรับ','ชำระหนี้ KTB','ภาษีหัก ณ ที่จ่าย','ประกันสังคม','ฌาปนกิจ','ธนาคารกรุงไทย','ธนาคารออมสิน','รวมรายการหัก','ยอดรับสุทธิ'].map(value => textCell(value, 'Header')).join('')}</Row>
+  ${dataRows}
+  <Row><Cell ss:MergeAcross="3" ss:StyleID="Header"><Data ss:Type="String">รวมทั้งหมด (${emps.length} คน)</Data></Cell><Cell ss:StyleID="Total"><Data ss:Type="Number">${totals.base}</Data></Cell><Cell/><Cell/><Cell ss:StyleID="Total"><Data ss:Type="Number">${totals.gross}</Data></Cell><Cell ss:MergeAcross="5"/><Cell ss:StyleID="Total"><Data ss:Type="Number">${totals.deduct}</Data></Cell><Cell ss:StyleID="Total"><Data ss:Type="Number">${totals.net}</Data></Cell></Row>
+</Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><Selected/><FreezePanes/><FrozenNoSplit/><SplitHorizontal>6</SplitHorizontal><TopRowBottomPane>6</TopRowBottomPane><ActivePane>2</ActivePane><PageSetup><Layout x:Orientation="Landscape" xmlns:x="urn:schemas-microsoft-com:office:excel"/></PageSetup></WorksheetOptions></Worksheet>
+</Workbook>`
+    const blob = new Blob([workbook], { type: 'application/vnd.ms-excel;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `payroll-${period.year}-${String(period.month).padStart(2, '0')}-${dept.department}.xls`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const printPayrollTable = () => {
+    const printRows = emps.map((employee, index) => {
+      const row = rows[employee.id]
+      const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
+      return `<tr><td class="center">${index + 1}</td><td class="center">${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+    }).join('')
+    const printWindow = window.open('', '_blank', 'width=1200,height=800')
+    if (!printWindow) {
+      showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error')
+      return
+    }
+    printWindow.opener = null
+    printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>บัญชีรายละเอียดการจ่ายเงินเดือน</title><style>
+      @page{size:A4 landscape;margin:12mm 10mm}*{box-sizing:border-box}body{margin:0;color:#000;background:#fff;font-family:Thonburi,Tahoma,sans-serif;font-size:8pt}h1,h2,p{margin:0}h1{text-align:center;font-size:14pt;line-height:1.3}h2{text-align:center;font-size:12pt;line-height:1.3}.department{text-align:center;font-size:9pt;margin-top:2px}.meta{display:grid;grid-template-columns:repeat(3,1fr);margin:7mm 0 2mm}.meta div:nth-child(2){text-align:center}.meta div:last-child{text-align:right}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:.45pt solid #000;padding:4px 3px;vertical-align:middle;overflow-wrap:anywhere}thead th{background:#ececec;text-align:center;font-weight:600;line-height:1.25}td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}td.center{text-align:center}tfoot td{background:#f3f3f3;font-weight:600;border-top:1pt solid #000;border-bottom:1pt solid #000}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:16mm;margin-top:12mm;text-align:center;line-height:1.8}col.c1{width:2.2%}col.c2{width:5%}col.c3{width:10.5%}col.c4{width:11.5%}col.c5{width:6.7%}col.c6{width:5.2%}col.c7{width:7%}col.c8{width:6.8%}col.c9{width:6.1%}col.c10{width:6.1%}col.c11{width:5.6%}col.c12{width:5.1%}col.c13{width:6.3%}col.c14{width:6.3%}col.c15{width:6.8%}col.c16{width:7.1%}
+    </style></head><body><h1>เทศบาลเมืองตาคลี</h1><h2>บัญชีรายละเอียดการจ่ายเงินเดือน ประจำเดือน${escapeMarkup(periodLabel(period))}</h2><p class="department">${escapeMarkup(dept.department)}</p><div class="meta"><div><b>วันที่จ่าย:</b> ${escapeMarkup(new Date(period.payDate).toLocaleDateString('th-TH', { dateStyle: 'long' }))}</div><div><b>จำนวนพนักงาน:</b> ${emps.length} คน</div><div><b>สถานะ:</b> ${escapeMarkup(statusLabel[dept.status])}</div></div><table><colgroup>${Array.from({ length: 16 }, (_, index) => `<col class="c${index + 1}">`).join('')}</colgroup><thead><tr><th colspan="5">ข้อมูลพนักงาน</th><th colspan="3">รายการรับ</th><th colspan="7">รายการหัก</th><th>ยอดรับสุทธิ</th></tr><tr>${['ลำดับ','รหัส','ชื่อ-นามสกุล','ตำแหน่ง','ฐานเงินเดือน','เงินเพิ่ม','เงินประจำตำแหน่ง','รวมรายการรับ','ชำระหนี้ KTB','ภาษีหัก ณ ที่จ่าย','ประกันสังคม','ฌาปนกิจ','ธนาคารกรุงไทย','ธนาคารออมสิน','รวมรายการหัก','ยอดรับสุทธิ'].map(value => `<th>${value}</th>`).join('')}</tr></thead><tbody>${printRows}</tbody><tfoot><tr><td colspan="4">รวมทั้งหมด (${emps.length} คน)</td><td class="num">${thb(totals.base)}</td><td></td><td></td><td class="num">${thb(totals.gross)}</td><td colspan="6"></td><td class="num">${thb(totals.deduct)}</td><td class="num">${thb(totals.net)}</td></tr></tfoot></table><div class="signatures"><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้จัดทำ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้ตรวจสอบ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้อนุมัติ</div></div><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close())})<\/script></body></html>`)
+    printWindow.document.close()
+  }
+
   return (
     <div className="anim">
       <PageHeader
@@ -1047,6 +1115,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
             <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{visibleEmployees.length} รายการ</span>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
+            <button className="btn btn-secondary" onClick={printPayrollTable}>🖨️ พิมพ์ตาราง</button>
+            <button className="btn btn-secondary" onClick={exportExcel}>📥 Export Excel</button>
             <button className="btn btn-secondary" onClick={() => setShowAddEmployeeModal(true)} disabled={isReadonly} title={isReadonly ? 'รอบนี้ถูกส่งอนุมัติหรืออนุมัติแล้ว จึงไม่สามารถเพิ่มพนักงานได้' : undefined}>➕ เพิ่มพนักงานเข้าตาราง</button>
             <button className="btn btn-secondary" onClick={() => setEditing(true)} disabled={isReadonly} title={isReadonly ? 'รอบนี้ถูกล็อก ไม่สามารถแก้ไขข้อมูลได้' : undefined}>✏️ แก้ไขข้อมูล</button>
             <button className="btn btn-primary" onClick={save} disabled={isReadonly || !dirty} title={isReadonly ? 'รอบนี้ถูกล็อก ไม่สามารถบันทึกข้อมูลได้' : undefined}>💾 บันทึก</button>
@@ -1582,6 +1652,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
   const [departmentId, setDepartmentId] = useState(String(emp?.department_id ?? departments.find(d => d.is_active)?.id ?? ''))
   const [positionName, setPositionName] = useState(positions.find(position => position.id === emp?.position_id)?.name ?? '')
   const [employeeType, setEmployeeType] = useState<DatabaseEmployee['employee_type']>(emp?.employee_type ?? 'CIVIL_SERVANT')
+  const [employeeTypeOther, setEmployeeTypeOther] = useState(emp?.employee_type_other ?? '')
   const [status, setStatus] = useState<DatabaseEmployee['status']>(emp?.status ?? 'ACTIVE')
   const [startDate, setStartDate] = useState(emp?.start_date ?? '')
   const [endDate, setEndDate] = useState(emp?.end_date ?? '')
@@ -1598,7 +1669,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
   }, [emp?.position_id, positionName, positions])
 
   const handleSave = async () => {
-    if (!employeeCode.trim() || nationalId.length !== 13 || !firstName.trim() || !lastName.trim() || !baseSalary || (prefixChoice === 'OTHER' && !customPrefix.trim())) {
+    if (!employeeCode.trim() || nationalId.length !== 13 || !firstName.trim() || !lastName.trim() || !baseSalary || (prefixChoice === 'OTHER' && !customPrefix.trim()) || (employeeType === 'OTHER' && !employeeTypeOther.trim())) {
       setSaveError('กรุณากรอกช่องที่จำเป็นให้ครบ และเลขประจำตัวประชาชนต้องมี 13 หลัก')
       return
     }
@@ -1621,6 +1692,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
         department_id: departmentId ? Number(departmentId) : null,
         position_id: resolvedPosition?.id ?? null,
         employee_type: employeeType,
+        employee_type_other: employeeType === 'OTHER' ? employeeTypeOther.trim() : null,
         status,
         start_date: startDate || null,
         end_date: endDate || null,
@@ -1691,6 +1763,11 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
               {EMPLOYEE_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </FormField>
+          {employeeType === 'OTHER' && (
+            <FormField label="ประเภทพนักงานอื่นๆ" required>
+              <input className="inp" value={employeeTypeOther} onChange={e => setEmployeeTypeOther(e.target.value)} maxLength={150} placeholder="โปรดระบุประเภทพนักงาน" />
+            </FormField>
+          )}
           <FormField label="สถานะ" required>
             <select className="inp" value={status} onChange={e => setStatus(e.target.value as DatabaseEmployee['status'])}>
               <option value="ACTIVE">ปกติ</option><option value="ON_LEAVE">ลา</option><option value="RESIGNED">ลาออก</option><option value="RETIRED">เกษียณ</option><option value="TERMINATED">สิ้นสุดการจ้าง</option>
@@ -2184,7 +2261,7 @@ export default function App() {
             />
           )}
           {page === 'employee-form' && (
-            <EmployeeForm empId={editEmpId} employees={visibleEmployees} departments={visibleDepartments} positions={positions}
+            <EmployeeForm empId={editEmpId} employees={visibleEmployees} departments={departments} positions={positions}
               setPage={setPage} showToast={showToast} onSaved={loadEmployeeData} />
           )}
           {page === 'payslip-status' && <PayslipStatus periods={visiblePeriods} />}

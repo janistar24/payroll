@@ -1106,8 +1106,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
             <tr>
               <td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งหมด ({emps.length} คน)</td>
               <td className="num">{thb(totals.base)}</td>
-              <td className="num" style={{ color: 'var(--text-muted)' }}>–</td>
-              <td className="num" style={{ color: 'var(--text-muted)' }}>–</td>
+              <td />
+              <td />
               <td className="num" style={{ color: '#15803D' }}>{thb(totals.gross)}</td>
               <td colSpan={6} />
               <td className="num" style={{ color: '#B91C1C' }}>{thb(totals.deduct)}</td>

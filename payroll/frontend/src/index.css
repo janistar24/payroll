@@ -361,7 +361,7 @@ html, body {
 .th-group-net    { background: #EDE8FF; color: #5B21B6; border-color: #C4B5FD; }
 .payroll-detail-table .th-group-income,
 .payroll-detail-table .th-group-deduct,
-.payroll-detail-table .th-group-net { border-left: 1px solid #1A1A1A; }
+.payroll-detail-table .th-group-net { border-left: 1px solid rgba(0,0,0,0.05); }
 
 .payroll-period-meta {
   display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
@@ -370,12 +370,12 @@ html, body {
 }
 .payroll-detail-table thead tr:nth-child(2) > *:not(:last-child),
 .payroll-detail-table tbody tr > *:not(:last-child) {
-  border-right: 1px solid #1A1A1A;
+  border-right: 1px solid rgba(0,0,0,0.05);
 }
 .payroll-detail-table tfoot tr > *:nth-child(3),
 .payroll-detail-table tfoot tr > *:nth-child(6),
 .payroll-detail-table tfoot tr > *:nth-child(8) {
-  border-left: 1px solid #1A1A1A;
+  border-left: 1px solid rgba(0,0,0,0.05);
 }
 /* Keep the totals row uncluttered; only its original group dividers remain. */
 

@@ -7,7 +7,18 @@ export interface Employee {
   last_name: string
   department_id: number | null
   position_id: number | null
-  employee_type: 'CIVIL_SERVANT' | 'MUNICIPAL_EMPLOYEE' | 'PERMANENT_WORKER' | 'TEMPORARY_EMPLOYEE'
+  employee_type:
+    | 'CIVIL_SERVANT'
+    | 'MUNICIPAL_EMPLOYEE'
+    | 'PERMANENT_WORKER'
+    | 'TEMPORARY_EMPLOYEE'
+    | 'GENERAL_EMPLOYEE'
+    | 'CONTRACT_EMPLOYEE'
+    | 'POLITICAL_OFFICIAL'
+    | 'REGULAR_PENSIONER'
+    | 'TEACHER_PENSIONER'
+    | 'PERMANENT_WORKER_MONTHLY_PENSION'
+    | 'OTHER'
   status: 'ACTIVE' | 'ON_LEAVE' | 'RESIGNED' | 'RETIRED' | 'TERMINATED'
   start_date: string | null
   end_date: string | null

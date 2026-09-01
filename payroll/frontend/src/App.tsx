@@ -11,7 +11,7 @@ import {
   type Employee as DatabaseEmployee,
   type EmployeeSaveInput,
 } from './api/employees'
-import { getPositions, type Position } from './api/positions'
+import { createPosition, getPositions, type Position } from './api/positions'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Role = 'hr' | 'director' | 'admin'
@@ -89,6 +89,24 @@ interface PayrollPeriod {
 
 interface UserAccount { id: string; username: string; name: string; role: Role; active: boolean }
 
+const EMPLOYEE_PREFIXES = [
+  'นาย', 'นาง', 'นางสาว',
+  'พล.อ.', 'พล.ท.', 'พล.ต.', 'พ.อ.', 'พ.ท.', 'พ.ต.', 'ร.อ.', 'ร.ท.', 'ร.ต.', 'จ.ส.อ.', 'จ.ส.ท.', 'จ.ส.ต.', 'ส.อ.', 'ส.ท.', 'ส.ต.',
+  'พล.ต.อ.', 'พล.ต.ท.', 'พล.ต.ต.', 'พ.ต.อ.', 'พ.ต.ท.', 'พ.ต.ต.', 'ร.ต.อ.', 'ร.ต.โท', 'ร.ต.ต.', 'ด.ต.', 'หมู่ใหญ่', 'ส.ต.อ.', 'ส.ต.ท.', 'ส.ต.ต.',
+  'ผศ.', 'รศ.', 'ศ.', 'ดร.',
+] as const
+
+const EMPLOYEE_TYPE_OPTIONS: { value: DatabaseEmployee['employee_type']; label: string }[] = [
+  { value: 'CIVIL_SERVANT', label: 'ข้าราชการ' },
+  { value: 'GENERAL_EMPLOYEE', label: 'พนักงานจ้างทั่วไป' },
+  { value: 'CONTRACT_EMPLOYEE', label: 'พนักงานจ้างเหมา' },
+  { value: 'POLITICAL_OFFICIAL', label: 'ข้าราชการการเมือง' },
+  { value: 'REGULAR_PENSIONER', label: 'ข้าราชการบำนาญปกติ' },
+  { value: 'TEACHER_PENSIONER', label: 'ข้าราชการบำนาญครู' },
+  { value: 'PERMANENT_WORKER_MONTHLY_PENSION', label: 'ลูกจ้างประจำรับบำเหน็จรายเดือน' },
+  { value: 'OTHER', label: 'อื่น ๆ' },
+]
+
 // ─── Seed Data ────────────────────────────────────────────────────────────────
 
 const DEPARTMENTS = [
@@ -96,8 +114,10 @@ const DEPARTMENTS = [
   'กองคลัง',
   'กองช่าง',
   'กองสาธารณสุขและสิ่งแวดล้อม',
-  'กองการศึกษา',
   'กองยุทธศาสตร์และงบประมาณ',
+  'กองการศึกษา',
+  'กองการประปา',
+  'กองสวัสดิการสังคม',
 ]
 
 const EMPLOYEES: Employee[] = [
@@ -1546,15 +1566,21 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
   onSaved: () => Promise<void>
 }) {
   const emp = empId ? employees.find(employee => employee.id === empId) : null
+  const initialPrefix = emp?.prefix ?? ''
   const [employeeCode, setEmployeeCode] = useState(emp?.employee_code ?? '')
   const [nationalId, setNationalId] = useState(emp?.national_id ?? '')
-  const [prefix, setPrefix] = useState(emp?.prefix ?? '')
+  const [prefixChoice, setPrefixChoice] = useState(
+    EMPLOYEE_PREFIXES.includes(initialPrefix as typeof EMPLOYEE_PREFIXES[number]) ? initialPrefix : initialPrefix ? 'OTHER' : ''
+  )
+  const [customPrefix, setCustomPrefix] = useState(
+    EMPLOYEE_PREFIXES.includes(initialPrefix as typeof EMPLOYEE_PREFIXES[number]) ? '' : initialPrefix
+  )
   const [firstName, setFirstName] = useState(emp?.first_name ?? '')
   const [lastName, setLastName] = useState(emp?.last_name ?? '')
   const [email, setEmail] = useState(emp?.email ?? '')
   const [phone, setPhone] = useState(emp?.phone ?? '')
   const [departmentId, setDepartmentId] = useState(String(emp?.department_id ?? departments.find(d => d.is_active)?.id ?? ''))
-  const [positionId, setPositionId] = useState(String(emp?.position_id ?? ''))
+  const [positionName, setPositionName] = useState(positions.find(position => position.id === emp?.position_id)?.name ?? '')
   const [employeeType, setEmployeeType] = useState<DatabaseEmployee['employee_type']>(emp?.employee_type ?? 'CIVIL_SERVANT')
   const [status, setStatus] = useState<DatabaseEmployee['status']>(emp?.status ?? 'ACTIVE')
   const [startDate, setStartDate] = useState(emp?.start_date ?? '')
@@ -1565,34 +1591,45 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
 
+  useEffect(() => {
+    if (!positionName && emp?.position_id) {
+      setPositionName(positions.find(position => position.id === emp.position_id)?.name ?? '')
+    }
+  }, [emp?.position_id, positionName, positions])
+
   const handleSave = async () => {
-    if (!employeeCode.trim() || nationalId.length !== 13 || !firstName.trim() || !lastName.trim() || !baseSalary) {
+    if (!employeeCode.trim() || nationalId.length !== 13 || !firstName.trim() || !lastName.trim() || !baseSalary || (prefixChoice === 'OTHER' && !customPrefix.trim())) {
       setSaveError('กรุณากรอกช่องที่จำเป็นให้ครบ และเลขประจำตัวประชาชนต้องมี 13 หลัก')
       return
-    }
-
-    const payload: EmployeeSaveInput = {
-      employee_code: employeeCode.trim(),
-      national_id: nationalId,
-      prefix: prefix.trim() || null,
-      first_name: firstName.trim(),
-      last_name: lastName.trim(),
-      department_id: departmentId ? Number(departmentId) : null,
-      position_id: positionId ? Number(positionId) : null,
-      employee_type: employeeType,
-      status,
-      start_date: startDate || null,
-      end_date: endDate || null,
-      email: email.trim() || null,
-      phone: phone.trim() || null,
-      bank_name: bankName.trim() || null,
-      bank_account_no: bankAccountNo.trim() || null,
-      base_salary: baseSalary,
     }
 
     try {
       setSaving(true)
       setSaveError('')
+      const normalizedPositionName = positionName.trim()
+      const existingPosition = positions.find(position => position.name.trim().toLocaleLowerCase('th-TH') === normalizedPositionName.toLocaleLowerCase('th-TH'))
+      const resolvedPosition = normalizedPositionName && !existingPosition
+        ? await createPosition(normalizedPositionName)
+        : existingPosition
+      const resolvedPrefix = prefixChoice === 'OTHER' ? customPrefix.trim() : prefixChoice
+      const payload: EmployeeSaveInput = {
+        employee_code: employeeCode.trim(),
+        national_id: nationalId,
+        prefix: resolvedPrefix || null,
+        first_name: firstName.trim(),
+        last_name: lastName.trim(),
+        department_id: departmentId ? Number(departmentId) : null,
+        position_id: resolvedPosition?.id ?? null,
+        employee_type: employeeType,
+        status,
+        start_date: startDate || null,
+        end_date: endDate || null,
+        email: email.trim() || null,
+        phone: phone.trim() || null,
+        bank_name: bankName.trim() || null,
+        bank_account_no: bankAccountNo.trim() || null,
+        base_salary: baseSalary,
+      }
       if (empId) await updateEmployee(empId, payload)
       else await createEmployee(payload)
       await onSaved()
@@ -1616,7 +1653,16 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
           <FormField label="รหัสพนักงาน" required><input className="inp" value={employeeCode} onChange={e => setEmployeeCode(e.target.value)} /></FormField>
           <FormField label="เลขประจำตัวประชาชน" required><input className="inp" inputMode="numeric" maxLength={13} value={nationalId} onChange={e => setNationalId(e.target.value.replace(/\D/g, ''))} /></FormField>
-          <FormField label="คำนำหน้า"><input className="inp" value={prefix} onChange={e => setPrefix(e.target.value)} /></FormField>
+          <FormField label="คำนำหน้า">
+            <select className="inp" value={prefixChoice} onChange={e => setPrefixChoice(e.target.value)}>
+              <option value="">ไม่ระบุ</option>
+              {EMPLOYEE_PREFIXES.map(option => <option key={option} value={option}>{option}</option>)}
+              <option value="OTHER">อื่นๆ (โปรดระบุ)</option>
+            </select>
+          </FormField>
+          {prefixChoice === 'OTHER' && (
+            <FormField label="คำนำหน้าอื่นๆ"><input className="inp" value={customPrefix} onChange={e => setCustomPrefix(e.target.value)} maxLength={20} placeholder="โปรดระบุคำนำหน้า" /></FormField>
+          )}
           <FormField label="ชื่อ" required><input className="inp" value={firstName} onChange={e => setFirstName(e.target.value)} placeholder="ชื่อ" /></FormField>
           <FormField label="นามสกุล" required><input className="inp" value={lastName} onChange={e => setLastName(e.target.value)} placeholder="นามสกุล" /></FormField>
           <FormField label="อีเมล"><input className="inp" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="example@muni.go.th" /></FormField>
@@ -1628,21 +1674,21 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
           <FormField label="ฝ่าย" required>
             <select className="inp" value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
               <option value="">ไม่ระบุ</option>
-              {departments.filter(d => d.is_active).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              {departments
+                .filter(d => d.is_active && DEPARTMENTS.includes(d.name))
+                .filter((department, index, options) => options.findIndex(option => option.name === department.name) === index)
+                .map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
           </FormField>
           <FormField label="ตำแหน่ง">
-            <select className="inp" value={positionId} onChange={e => setPositionId(e.target.value)}>
-              <option value="">ไม่ระบุ</option>
-              {positions.filter(p => p.is_active).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
+            <input className="inp" list="employee-position-options" value={positionName} onChange={e => setPositionName(e.target.value)} placeholder="เลือกหรือพิมพ์ตำแหน่งใหม่" />
+            <datalist id="employee-position-options">
+              {positions.filter(p => p.is_active).map(p => <option key={p.id} value={p.name} />)}
+            </datalist>
           </FormField>
           <FormField label="ประเภทพนักงาน" required>
             <select className="inp" value={employeeType} onChange={e => setEmployeeType(e.target.value as DatabaseEmployee['employee_type'])}>
-              <option value="CIVIL_SERVANT">ข้าราชการ</option>
-              <option value="MUNICIPAL_EMPLOYEE">พนักงานเทศบาล</option>
-              <option value="PERMANENT_WORKER">ลูกจ้างประจำ</option>
-              <option value="TEMPORARY_EMPLOYEE">พนักงานจ้าง</option>
+              {EMPLOYEE_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
             </select>
           </FormField>
           <FormField label="สถานะ" required>

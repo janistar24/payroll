@@ -129,7 +129,14 @@ EMPLOYEE_TYPES = {
     "CIVIL_SERVANT",
     "MUNICIPAL_EMPLOYEE",
     "PERMANENT_WORKER",
-    "TEMPORARY_EMPLOYEE"
+    "TEMPORARY_EMPLOYEE",
+    "GENERAL_EMPLOYEE",
+    "CONTRACT_EMPLOYEE",
+    "POLITICAL_OFFICIAL",
+    "REGULAR_PENSIONER",
+    "TEACHER_PENSIONER",
+    "PERMANENT_WORKER_MONTHLY_PENSION",
+    "OTHER"
 }
 EMPLOYEE_STATUSES = {
     "ACTIVE",
@@ -256,6 +263,25 @@ def get_positions():
             status_code=500,
             detail={
                 "message": "ไม่สามารถดึงข้อมูลตำแหน่งงานได้",
+                "error": str(error)
+            }
+        )
+
+
+class PositionCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
+@app.post("/api/positions", status_code=201)
+def create_position(request: PositionCreate):
+    try:
+        position = positions_service.create(request.name)
+        return {"success": True, "data": position}
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "ไม่สามารถเพิ่มตำแหน่งงานได้",
                 "error": str(error)
             }
         )

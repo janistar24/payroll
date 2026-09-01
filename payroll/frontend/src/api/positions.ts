@@ -30,3 +30,19 @@ export async function getPositions(): Promise<Position[]> {
 
   return result.data
 }
+
+export async function createPosition(name: string): Promise<Position> {
+  const response = await fetch(`${API_URL}/positions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  })
+
+  if (!response.ok) {
+    const result = await response.json().catch(() => null)
+    throw new Error(result?.detail?.message ?? `เพิ่มตำแหน่งงานไม่สำเร็จ: ${response.status}`)
+  }
+
+  const result = await response.json()
+  return result.data as Position
+}

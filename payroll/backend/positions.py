@@ -51,3 +51,37 @@ class Positions:
             },
             position
         )
+
+    def create(self, name):
+        normalized_name = name.strip()
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                """
+                SELECT id, code, name, level, is_active
+                FROM public.positions
+                WHERE LOWER(name) = LOWER(%s)
+                LIMIT 1
+                """,
+                (normalized_name,)
+            )
+            existing = cursor.fetchone()
+            if existing:
+                columns = tuple(desc.name for desc in cursor.description)
+                return dict(zip(columns, existing))
+
+            cursor.execute(
+                """
+                INSERT INTO public.positions (code, name, level, is_active)
+                VALUES (
+                    'POS-' || UPPER(SUBSTRING(MD5(%s || CLOCK_TIMESTAMP()::TEXT), 1, 12)),
+                    %s,
+                    NULL,
+                    TRUE
+                )
+                RETURNING id, code, name, level, is_active
+                """,
+                (normalized_name, normalized_name)
+            )
+            created = cursor.fetchone()
+            columns = tuple(desc.name for desc in cursor.description)
+            return dict(zip(columns, created))

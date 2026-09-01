@@ -653,7 +653,15 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
                   .map(status => ({ status, count: period.depts.filter(department => department.status === status).length }))
                   .filter(item => item.count > 0)
                 return (
-                  <tr key={period.id} style={{ cursor: 'pointer' }} onClick={() => { setActivePeriodId(period.id); setPage('period-detail') }}>
+                  <tr key={period.id} style={{ cursor: 'pointer' }} onClick={() => {
+                    setActivePeriodId(period.id)
+                    if (role === 'hr' && period.depts[0]) {
+                      setActiveDeptId(period.depts[0].id)
+                      setPage('dept-table')
+                    } else {
+                      setPage('period-detail')
+                    }
+                  }}>
                     <td style={{ fontWeight: 600 }}>{periodLabel(period)}</td>
                     <td style={{ color: 'var(--text-secondary)' }}>{new Date(period.payDate).toLocaleDateString('th-TH')}</td>
                     <td>{totals.emps} คน</td>
@@ -725,7 +733,15 @@ function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, setActiv
           const draftCount = p.depts.filter(d => d.status === 'draft').length
           return (
             <div key={p.id} className="card" style={{ padding: '20px 24px', cursor: 'pointer', transition: 'box-shadow 0.15s' }}
-              onClick={() => { setActivePeriodId(p.id); setPage('period-detail') }}
+              onClick={() => {
+                setActivePeriodId(p.id)
+                if (role === 'hr' && p.depts[0]) {
+                  setActiveDeptId(p.depts[0].id)
+                  setPage('dept-table')
+                } else {
+                  setPage('period-detail')
+                }
+              }}
               onMouseEnter={e => (e.currentTarget.style.boxShadow = 'var(--shadow-md)')}
               onMouseLeave={e => (e.currentTarget.style.boxShadow = 'var(--shadow-sm)')}>
               <div className="flex items-center justify-between gap-4">
@@ -962,7 +978,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
     setDirty(false)
     setShowSubmitModal(false)
     showToast('ส่งข้อมูลให้ผู้อำนวยการอนุมัติแล้ว', 'success')
-    setPage('period-detail')
+    setPage('dept-table')
   }
 
   const totals = useMemo(() => {
@@ -986,7 +1002,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
         title={dept.department}
         breadcrumb={<Crumb items={[
           { label: 'รอบเงินเดือน', onClick: () => setPage('periods') },
-          { label: periodLabel(period), onClick: () => setPage('period-detail') },
+          { label: periodLabel(period), onClick: () => setPage('periods') },
           { label: dept.department },
         ]} />}
         actions={!isReadonly ? (
@@ -2097,10 +2113,10 @@ export default function App() {
           {page === 'periods' && (
             <PeriodsPage periods={visiblePeriods} setPeriods={setPeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} />
           )}
-          {page === 'period-detail' && activePeriod && (
+          {page === 'period-detail' && activePeriod && role !== 'hr' && (
             <PeriodDetail period={activePeriod} setPage={setPage} setActiveDeptId={setActiveDeptId} role={role} />
           )}
-          {page === 'dept-table' && activePeriod && activeDept && (
+          {(page === 'dept-table' || (page === 'period-detail' && role === 'hr')) && activePeriod && activeDept && (
             <DeptPayrollTable period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} />
           )}
           {page === 'director-approvals' && (

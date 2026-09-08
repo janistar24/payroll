@@ -6,13 +6,24 @@ class Employees:
     def __init__(self):
         self.db = DBHelper()
 
-    def dump(self):
+    def dump(self, department_id=None):
         data, columns = self.db.fetch(
             """
-            SELECT *
-            FROM public.employees
-            ORDER BY id
-            """
+            SELECT
+                employee.*,
+                department.code AS department_code,
+                department.name AS department_name,
+                position.code AS position_code,
+                position.name AS position_name,
+                position.level AS position_level
+            FROM public.employees employee
+            LEFT JOIN public.departments department ON department.id = employee.department_id
+            LEFT JOIN public.positions position ON position.id = employee.position_id
+            WHERE employee.status <> 'TERMINATED'
+              AND (%s::integer IS NULL OR employee.department_id = %s)
+            ORDER BY employee.employee_code
+            """,
+            (department_id, department_id)
         )
 
         employees = []

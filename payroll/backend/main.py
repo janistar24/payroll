@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 
 import psycopg
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -14,6 +14,7 @@ from payroll_periods import Payroll_periods
 from payroll_items import PayrollItems
 from payroll_department_batches import PayrollDepartmentBatches
 from pay_item_types import PayItemTypes
+from auth import auth_service, get_current_user
 
 app = FastAPI(
     title="Payroll API",
@@ -105,9 +106,9 @@ def get_departments():
         )
     
 @app.get("/api/employees")
-def get_employees():
+def get_employees(user=Depends(get_current_user)):
     try:
-        employees = employees_service.dump()
+        employees = employees_service.dump(_department_scope(user))
 
         return {
             "success": True,
@@ -115,6 +116,8 @@ def get_employees():
             "data": employees
         }
 
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(
             status_code=500,
@@ -207,6 +210,55 @@ class EmployeeStatusUpdate(BaseModel):
         return value
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=255)
+
+
+def _require_payroll_role(user):
+    if user["role"] not in {"hr", "director", "admin", "finance", "dept_head"}:
+        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์เข้าถึงข้อมูลเงินเดือน")
+
+
+def _department_scope(user):
+    _require_payroll_role(user)
+    if user["role"] == "hr":
+        if user["department_id"] is None:
+            raise HTTPException(status_code=403, detail="บัญชี HR ยังไม่ได้ผูกกับฝ่าย")
+        return user["department_id"]
+    return None
+
+
+def _require_global_payroll_role(user):
+    if user["role"] not in {"director", "admin", "finance"}:
+        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์ดูข้อมูลเงินเดือนทุกฝ่าย")
+
+
+def _require_employee_creation_role(user):
+    if user["role"] not in {"director", "admin"}:
+        raise HTTPException(status_code=403, detail="เฉพาะ Director และ Admin เท่านั้นที่เพิ่มพนักงานได้")
+
+
+@app.post("/api/auth/login")
+def login(request: LoginRequest):
+    user = auth_service.authenticate(request.username.strip(), request.password)
+    if user is None:
+        raise HTTPException(status_code=401, detail="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
+    return {
+        "success": True,
+        "data": {
+            "access_token": auth_service.create_token(user),
+            "token_type": "bearer",
+            "user": user
+        }
+    }
+
+
+@app.get("/api/auth/me")
+def auth_me(user=Depends(get_current_user)):
+    return {"success": True, "data": user}
+
+
 def _employee_database_error(error):
     if isinstance(error, psycopg.errors.UniqueViolation):
         raise HTTPException(
@@ -222,16 +274,20 @@ def _employee_database_error(error):
 
 
 @app.get("/api/employees/{employee_id}")
-def get_employee(employee_id: int):
+def get_employee(employee_id: int, user=Depends(get_current_user)):
+    department_id = _department_scope(user)
     error, employee = employees_service.read(employee_id)
     if error["Is Error"]:
         raise HTTPException(status_code=404, detail=error["Error Message"])
+    if department_id is not None and employee["department_id"] != department_id:
+        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์เข้าถึงพนักงานฝ่ายอื่น")
     return {"success": True, "data": employee}
 
 
 @app.post("/api/employees", status_code=201)
-def create_employee(request: EmployeeSave):
+def create_employee(request: EmployeeSave, user=Depends(get_current_user)):
     try:
+        _require_employee_creation_role(user)
         employee_id = employees_service.create(request)
         return {"success": True, "data": {"id": employee_id}}
     except Exception as error:
@@ -239,8 +295,9 @@ def create_employee(request: EmployeeSave):
 
 
 @app.put("/api/employees/{employee_id}")
-def update_employee(employee_id: int, request: EmployeeSave):
+def update_employee(employee_id: int, request: EmployeeSave, user=Depends(get_current_user)):
     try:
+        _require_payroll_role(user)
         if not employees_service.update(employee_id, request):
             raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
         return {"success": True}
@@ -251,7 +308,13 @@ def update_employee(employee_id: int, request: EmployeeSave):
 
 
 @app.patch("/api/employees/{employee_id}/status")
-def update_employee_status(employee_id: int, request: EmployeeStatusUpdate):
+def update_employee_status(employee_id: int, request: EmployeeStatusUpdate, user=Depends(get_current_user)):
+    department_id = _department_scope(user)
+    error, employee = employees_service.read(employee_id)
+    if error["Is Error"]:
+        raise HTTPException(status_code=404, detail=error["Error Message"])
+    if department_id is not None and employee["department_id"] != department_id:
+        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์แก้ไขพนักงานฝ่ายอื่น")
     if not employees_service.update_status(employee_id, request.status):
         raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
     return {"success": True}
@@ -296,9 +359,9 @@ def create_position(request: PositionCreate):
         )
 
 @app.get("/api/payroll_periods")
-def get_payroll_periods():
+def get_payroll_periods(user=Depends(get_current_user)):
     try:
-        payroll_periods = payroll_periods_service.dump()
+        payroll_periods = payroll_periods_service.dump(_department_scope(user))
 
         return {
             "success": True,
@@ -306,6 +369,8 @@ def get_payroll_periods():
             "data": payroll_periods
         }
 
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(
             status_code=500,
@@ -316,8 +381,9 @@ def get_payroll_periods():
         )
 
 @app.get("/api/payroll_items")
-def get_payroll_items():
+def get_payroll_items(user=Depends(get_current_user)):
     try:
+        _require_global_payroll_role(user)
         payroll_items = payroll_items_service.dump()
 
         return {
@@ -326,6 +392,8 @@ def get_payroll_items():
             "data": payroll_items
         }
 
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(
             status_code=500,
@@ -336,8 +404,9 @@ def get_payroll_items():
         )
 
 @app.get("/api/payroll_department_batches")
-def get_payroll_department_batches():
+def get_payroll_department_batches(user=Depends(get_current_user)):
     try:
+        _require_global_payroll_role(user)
         batches = payroll_department_batches_service.dump()
 
         return {
@@ -346,6 +415,8 @@ def get_payroll_department_batches():
             "data": batches
         }
 
+    except HTTPException:
+        raise
     except Exception as error:
         raise HTTPException(
             status_code=500,

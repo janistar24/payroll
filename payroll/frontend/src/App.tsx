@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { Fragment, useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import takhliLogo from './imports/takhli_logo_color.jpeg'
 import {
   getDepartments,
@@ -6,12 +6,14 @@ import {
 } from './api/departments'
 import {
   createEmployee,
+  deactivateEmployee,
   getEmployees,
   updateEmployee,
   type Employee as DatabaseEmployee,
   type EmployeeSaveInput,
 } from './api/employees'
 import { createPosition, getPositions, type Position } from './api/positions'
+import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Role = 'hr' | 'director' | 'admin'
@@ -221,17 +223,23 @@ const rowNet = (e: Employee, r: PayrollRow) => rowGross(e, r) - rowDeduct(r)
 const deptEmps = (dept: DeptPayroll) => EMPLOYEES.filter(e => e.department === dept.department)
 const deptTotals = (dept: DeptPayroll) => {
   const emps = deptEmps(dept)
-  let totalBase = 0, totalExtra = 0, totalPos = 0, totalGross = 0, totalDeduct = 0, totalNet = 0
+  let totalBase = 0, totalExtra = 0, totalPos = 0, totalGross = 0, totalDebtKTB = 0, totalTax = 0, totalSocial = 0, totalFuneral = 0, totalKTB = 0, totalGSB = 0, totalDeduct = 0, totalNet = 0
   emps.forEach(e => {
     const r = dept.rows[e.id] ?? makeDefaultRow(e)
     totalBase  += e.baseSalary
     totalExtra += r.extra
     totalPos   += r.posAllowance
     totalGross += rowGross(e, r)
+    totalDebtKTB += r.debtKTB
+    totalTax += r.tax
+    totalSocial += r.social
+    totalFuneral += r.funeral
+    totalKTB += r.ktb
+    totalGSB += r.gsb
     totalDeduct += rowDeduct(r)
     totalNet   += rowNet(e, r)
   })
-  return { totalBase, totalExtra, totalPos, totalGross, totalDeduct, totalNet, count: emps.length }
+  return { totalBase, totalExtra, totalPos, totalGross, totalDebtKTB, totalTax, totalSocial, totalFuneral, totalKTB, totalGSB, totalDeduct, totalNet, count: emps.length }
 }
 
 const periodTotals = (p: PayrollPeriod) => {
@@ -297,15 +305,19 @@ function Sidebar({ role, name, department, page, setPage }: { role: Role; name: 
     { id: 'dashboard', label: 'หน้าหลัก', icon: '🏠' },
     { id: 'periods',   label: 'รอบเงินเดือน', icon: '📅' },
     { id: 'employees', label: 'พนักงาน', icon: '👥' },
-    { id: 'reports',   label: 'รายงาน', icon: '📊' },
+    { id: 'payslip-status', label: 'สถานะการส่งอีเมล', icon: '📨' },
   ]
   const dirNav: NavEntry[] = [
-    { id: 'dashboard',           label: 'หน้าหลัก', icon: '🏠' },
-    { id: 'director-approvals',  label: 'อนุมัติเงินเดือน', icon: '✅' },
-    { id: 'periods',             label: 'ประวัติรอบเงินเดือน', icon: '🗓️' },
+    { id: 'dashboard', label: 'หน้าหลัก', icon: '🏠' },
+    { id: 'periods',   label: 'รอบเงินเดือน', icon: '📅' },
+    { id: 'employees', label: 'พนักงาน', icon: '👥' },
+    { id: 'payslip-status', label: 'สถานะการส่งอีเมล', icon: '📨' },
   ]
   const adminNav: NavEntry[] = [
-    { id: 'dashboard',     label: 'Dashboard ระบบ', icon: '🖥️' },
+    { id: 'dashboard',     label: 'หน้าหลัก', icon: '🏠' },
+    { id: 'periods',       label: 'รอบเงินเดือน', icon: '📅' },
+    { id: 'employees',     label: 'พนักงาน', icon: '👥' },
+    { id: 'payslip-status',label: 'สถานะการส่งอีเมล', icon: '📨' },
     { id: 'admin-users',   label: 'จัดการผู้ใช้งาน', icon: '👤' },
     { id: 'admin-settings',label: 'ตั้งค่าระบบ', icon: '⚙️' },
     { id: 'reports',       label: 'ประวัติการใช้งาน', icon: '🧾' },
@@ -387,15 +399,20 @@ function Crumb({ items }: { items: { label: string; onClick?: () => void }[] }) 
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
 
-function KpiCard({ label, value, unit, icon, sub, accent }: { label: string; value: string; unit?: string; icon: string; sub?: string; accent?: string }) {
+function KpiCard({ label, value, unit, icon, sub, accent, tone }: { label: string; value: string; unit?: string; icon: string; sub?: string; accent?: string; tone?: 'purple' | 'green' | 'orange' | 'blue' }) {
   const color = accent || 'var(--purple-600)'
+  const toneStyle = tone === 'purple' ? { background: 'linear-gradient(135deg, #F2ECFF 0%, #E5F1FF 100%)', valueColor: '#7C4DCC' }
+    : tone === 'green' ? { background: 'linear-gradient(135deg, #ECFDF3 0%, #F3FCF7 100%)', valueColor: '#15803D' }
+    : tone === 'orange' ? { background: 'linear-gradient(135deg, #FFF5EA 0%, #FFF9F4 100%)', valueColor: '#C65B10' }
+    : tone === 'blue' ? { background: 'linear-gradient(135deg, #F2ECFF 0%, #E5F1FF 100%)', valueColor: '#7C4DCC' }
+    : null
   return (
-    <div className="kpi-card">
+    <div className="kpi-card" style={toneStyle ? { background: toneStyle.background, borderColor: 'rgba(124, 77, 204, 0.10)' } : undefined}>
       <div className="flex items-center justify-between mb-3">
         <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</span>
         <div style={{ width: 34, height: 34, borderRadius: 10, background: `${color}18`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 16 }}>{icon}</div>
       </div>
-      <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 26, color: '#1A1A1A', letterSpacing: '-0.02em', lineHeight: 1 }}>
+      <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: 26, color: toneStyle?.valueColor ?? '#1A1A1A', letterSpacing: '-0.02em', lineHeight: 1 }}>
         {value}{unit && <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginLeft: 4 }}>{unit}</span>}
       </div>
       {sub && <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 6 }}>{sub}</div>}
@@ -455,6 +472,48 @@ function LineChart({ datasets, labels }: { datasets: { label: string; values: nu
   )
 }
 
+function CategoryDonut({ title, total, items, tone }: {
+  title: string; total: number; items: { label: string; value: number; color: string }[]; tone: 'income' | 'deduct'
+}) {
+  const radius = 34
+  const circumference = 2 * Math.PI * radius
+  const [activeItem, setActiveItem] = useState<{ label: string; value: number; color: string } | null>(null)
+  let progress = 0
+  const visibleItems = items.filter(item => item.value > 0)
+
+  return (
+    <section className={`dashboard-category-donut dashboard-category-donut-${tone}`}>
+      <div className="dashboard-category-donut-heading">
+        <div style={{ fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700 }}>{title}</div>
+        <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>รอบปัจจุบัน</div>
+      </div>
+      <div className="dashboard-category-donut-body">
+        <div className="dashboard-category-donut-chart" aria-label={title}>
+          <svg viewBox="0 0 88 88" role="img">
+            <title>{title}</title>
+            <circle cx="44" cy="44" r={radius} fill="none" stroke="rgba(0,0,0,0.06)" strokeWidth="11" />
+            {visibleItems.map(item => {
+              const length = total > 0 ? (item.value / total) * circumference : 0
+              const offset = -progress
+              progress += length
+              return <circle key={item.label} cx="44" cy="44" r={radius} fill="none" stroke={item.color} strokeWidth="11" strokeDasharray={`${length} ${circumference - length}`} strokeDashoffset={offset} transform="rotate(-90 44 44)" style={{ cursor: 'pointer', transition: 'opacity 0.16s ease' }} opacity={activeItem && activeItem.label !== item.label ? 0.34 : 1} onMouseEnter={() => setActiveItem(item)} onMouseLeave={() => setActiveItem(null)} onFocus={() => setActiveItem(item)} onBlur={() => setActiveItem(null)} tabIndex={0} />
+            })}
+          </svg>
+          <div className="dashboard-category-donut-total"><strong>{thb(Math.round(activeItem?.value ?? total))}</strong><span>{activeItem ? activeItem.label : 'รวมทั้งหมด'}</span></div>
+        </div>
+        <div className="dashboard-category-donut-list">
+          {visibleItems.map(item => (
+            <div key={item.label} className="dashboard-category-donut-row" onMouseEnter={() => setActiveItem(item)} onMouseLeave={() => setActiveItem(null)}>
+              <span><i style={{ background: item.color }} />{item.label}</span>
+              <strong>{thb(Math.round(item.value))} บาท</strong>
+            </div>
+          ))}
+        </div>
+      </div>
+    </section>
+  )
+}
+
 // ─── Login Page ───────────────────────────────────────────────────────────────
 
 function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Role, department: string | null) => void }) {
@@ -464,20 +523,22 @@ function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Ro
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
     if (!username || !password) { setError('กรุณากรอก Username และ Password'); return }
     setLoading(true)
-    setTimeout(() => {
-      const user = LOGIN_MAP[username]
-      if (user && password === '1234') {
-        onLogin(username, user.name, user.role, user.department)
-      } else {
-        setError('Username หรือ Password ไม่ถูกต้อง')
-        setLoading(false)
+    try {
+      const user: AuthUser = await loginWithDatabase(username.trim(), password)
+      if (user.role !== 'hr' && user.role !== 'director' && user.role !== 'admin') {
+        clearAccessToken()
+        throw new Error('บัญชีนี้ยังไม่มีสิทธิ์ใช้งานในหน้าเว็บ Payroll')
       }
-    }, 600)
+      onLogin(user.username, user.full_name || user.username, user.role, user.department_name)
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : 'เข้าสู่ระบบไม่สำเร็จ')
+      setLoading(false)
+    }
   }
 
   return (
@@ -528,8 +589,8 @@ function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Ro
           ลืมรหัสผ่าน? กรุณาติดต่อผู้ดูแลระบบ
         </div>
         <div style={{ background: 'var(--purple-100)', borderRadius: 10, padding: '10px 14px', marginTop: 16, fontSize: 11.5, color: 'var(--purple-600)', lineHeight: 1.8 }}>
-          <strong>Demo accounts (password: 1234)</strong><br />
-          hr01 · director01 · admin01
+          <strong>เข้าสู่ระบบด้วยบัญชีจริงในฐานข้อมูล</strong><br />
+          ติดต่อผู้ดูแลระบบหากยังไม่มีบัญชี
         </div>
       </div>
     </div>
@@ -538,12 +599,57 @@ function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Ro
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
-function Dashboard({ role, userName, userDepartment, periods, setPage, setActivePeriodId, setActiveDeptId }: {
+function DashboardAnalogClock() {
+  const [now, setNow] = useState(() => new Date())
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Bangkok', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(now)
+  const part = (type: Intl.DateTimeFormatPartTypes) => Number(parts.find(item => item.type === type)?.value ?? 0)
+  const hour = part('hour')
+  const minute = part('minute')
+  const second = part('second') + now.getMilliseconds() / 1000
+  const thaiDate = new Intl.DateTimeFormat('th-TH-u-ca-buddhist', {
+    timeZone: 'Asia/Bangkok', day: 'numeric', month: 'short', year: 'numeric',
+  }).format(now)
+
+  return (
+    <div className="dashboard-analog-clock" aria-label={`วันที่ ${thaiDate}`}>
+      <div className="dashboard-clock-face" aria-hidden="true">
+        {Array.from({ length: 12 }, (_, index) => (
+          <i
+            key={index}
+            className={`dashboard-clock-tick ${index % 3 === 0 ? 'dashboard-clock-tick-major' : ''}`}
+            style={{ transform: `translateX(-50%) rotate(${index * 30}deg)` }}
+          />
+        ))}
+        <i className="dashboard-clock-hand dashboard-clock-hour" style={{ transform: `rotate(${(hour % 12) * 30 + minute * 0.5}deg)` }} />
+        <i className="dashboard-clock-hand dashboard-clock-minute" style={{ transform: `rotate(${minute * 6 + second * 0.1}deg)` }} />
+        <i className="dashboard-clock-hand dashboard-clock-second" style={{ transform: `rotate(${second * 6}deg)` }} />
+        <i className="dashboard-clock-pin" />
+      </div>
+      <div className="dashboard-clock-date">{thaiDate}</div>
+    </div>
+  )
+}
+
+function Dashboard({ role, userName, userDepartment, periods, employees, departments, setPage, setActivePeriodId, setActiveDeptId }: {
   role: Role; userName: string; userDepartment: string | null; periods: PayrollPeriod[];
+  employees: DatabaseEmployee[]; departments: Department[];
   setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; setActiveDeptId: (id: string) => void;
 }) {
   const currentPeriod = periods[0]
   const prevPeriod = periods[1]
+  const [expandedDashboardPeriodId, setExpandedDashboardPeriodId] = useState<string | null>(null)
+  const [isDashboardPrinting, setIsDashboardPrinting] = useState(false)
+  const [isRecentPeriodsHighlighted, setIsRecentPeriodsHighlighted] = useState(false)
+  const recentPeriodsRef = useRef<HTMLDivElement>(null)
+  const recentPeriodsHighlightTimer = useRef<number | null>(null)
   const currentTotals = currentPeriod ? periodTotals(currentPeriod) : { base: 0, gross: 0, deduct: 0, net: 0, emps: 0 }
   const prevTotals = prevPeriod ? periodTotals(prevPeriod) : null
 
@@ -554,6 +660,32 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
     { label: 'รายการรับรวม', values: [820000, 835000, 828000, 842000, 851000, 838000, currentTotals.gross, 0].slice(0, 7), color: '#9C6FE4' },
     { label: 'รายการหักรวม', values: [92000,  94000,  91000,  95000,  97000,  93000,  currentTotals.deduct, 0].slice(0, 7), color: '#FFB4A2' },
     { label: 'ยอดรับสุทธิรวม', values: [728000, 741000, 737000, 747000, 754000, 745000, currentTotals.net, 0].slice(0, 7), color: '#22C55E' },
+  ]
+  const dashboardRows = currentPeriod?.depts.flatMap(dept => Object.values(dept.rows)) ?? []
+  const currentPayrollEmployeeCodes = new Set(dashboardRows.map(row => row.empId))
+  const currentPayrollEmployees = employees.filter(employee =>
+    employee.status === 'ACTIVE' && currentPayrollEmployeeCodes.has(employee.employee_code)
+  )
+  const missingEmailCount = currentPayrollEmployees.filter(employee => !employee.email?.trim()).length
+  const missingPayrollCount = employees.filter(employee =>
+    employee.status === 'ACTIVE' && !currentPayrollEmployeeCodes.has(employee.employee_code)
+  ).length
+  const failedEmailCount = currentPeriod?.depts.reduce((count, dept) =>
+    count + Object.entries(dept.emailStatuses ?? {}).filter(([employeeCode, status]) =>
+      currentPayrollEmployeeCodes.has(employeeCode) && status === 'failed'
+    ).length
+  , 0) ?? 0
+  const incomeCategories = [
+    { label: 'ฐานเงินเดือน', value: currentTotals.base, color: '#7C4DCC' },
+    { label: 'เงินเพิ่ม', value: dashboardRows.reduce((sum, row) => sum + row.extra, 0), color: '#A78BFA' },
+    { label: 'เงินประจำตำแหน่ง', value: dashboardRows.reduce((sum, row) => sum + row.posAllowance, 0), color: '#D8CCFF' },
+  ]
+  const deductionCategories = [
+    { label: 'ชำระหนี้ KTB', value: dashboardRows.reduce((sum, row) => sum + row.debtKTB, 0), color: '#E66B62' },
+    { label: 'ภาษีหัก ณ ที่จ่าย', value: dashboardRows.reduce((sum, row) => sum + row.tax, 0), color: '#F0A49D' },
+    { label: 'ประกันสังคม', value: dashboardRows.reduce((sum, row) => sum + row.social, 0), color: '#F6C8C3' },
+    { label: 'ฌาปนกิจ', value: dashboardRows.reduce((sum, row) => sum + row.funeral, 0), color: '#F9DEDA' },
+    { label: 'ธนาคาร', value: dashboardRows.reduce((sum, row) => sum + row.ktb + row.gsb, 0), color: '#EBC1B9' },
   ]
 
   const now = new Date()
@@ -568,11 +700,44 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
     setPage('dept-table')
   }
 
+  const printDashboard = () => {
+    if (role === 'hr') {
+      window.print()
+      return
+    }
+    setIsDashboardPrinting(true)
+    window.setTimeout(() => window.print(), 120)
+  }
+
+  const focusApprovalStatus = () => {
+    recentPeriodsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    setIsRecentPeriodsHighlighted(true)
+    if (recentPeriodsHighlightTimer.current !== null) window.clearTimeout(recentPeriodsHighlightTimer.current)
+    recentPeriodsHighlightTimer.current = window.setTimeout(() => {
+      setIsRecentPeriodsHighlighted(false)
+      recentPeriodsHighlightTimer.current = null
+    }, 2600)
+  }
+
+  useEffect(() => {
+    const resetPrintState = () => setIsDashboardPrinting(false)
+    window.addEventListener('afterprint', resetPrintState)
+    return () => {
+      window.removeEventListener('afterprint', resetPrintState)
+      if (recentPeriodsHighlightTimer.current !== null) window.clearTimeout(recentPeriodsHighlightTimer.current)
+    }
+  }, [])
+
   const quickMenuItems = role === 'hr' ? [
-    { step: '①', icon: '👥', label: 'ตรวจรายชื่อพนักงาน', sub: `ตรวจข้อมูลพนักงานใน${userDepartment ?? 'ฝ่ายของคุณ'}`, action: () => setPage('employees') },
-    { step: '②', icon: '🧾', label: 'จัดทำข้อมูลเงินเดือน', sub: 'เลือกเดือนก่อนกรอกรายการรับและรายการหัก', action: () => setPage('periods') },
-    { step: '③', icon: '✅', label: 'ตรวจและส่งอนุมัติ', sub: 'ตรวจยอดรวมของฝ่ายก่อนส่งให้ผู้อำนวยการ', action: openCurrentDepartment },
-    { step: '④', icon: '📨', label: 'ติดตามสลิปเงินเดือน', sub: 'ตรวจสถานะ PDF และการส่งอีเมลหลังอนุมัติ', action: () => setPage('payslip-status') },
+    { step: '①', icon: '👥', label: 'ตรวจรายชื่อพนักงาน', action: () => setPage('employees') },
+    { step: '②', icon: '🧾', label: 'จัดทำข้อมูลเงินเดือน', action: () => setPage('periods') },
+    { step: '③', icon: '✅', label: 'ตรวจและส่งอนุมัติ', action: openCurrentDepartment },
+    { step: '④', icon: '📨', label: 'ติดตามสลิปเงินเดือน', action: () => setPage('payslip-status') },
+  ] : role === 'director' || role === 'admin' ? [
+    { step: '①', icon: '📋', label: 'ตรวจสอบรอบเงินเดือน', action: () => setPage('periods') },
+    { step: '②', icon: '✅', label: 'ตรวจสอบสถานะอนุมัติ', action: role === 'director' ? focusApprovalStatus : () => setPage('dashboard') },
+    { step: '③', icon: '👥', label: 'ดูข้อมูลพนักงาน', action: () => setPage('employees') },
+    { step: '④', icon: '🗂️', label: 'ดูประวัติรอบเงินเดือน', action: () => setPage('periods') },
   ] : []
 
   return (
@@ -588,30 +753,30 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
             {currentPeriod && (
               <div style={{ fontSize: 13.5, color: 'var(--text-secondary)', marginTop: 6 }}>
                 รอบเงินเดือน <strong style={{ color: '#1A1A1A' }}>{periodLabel(currentPeriod)}</strong> · วันที่จ่าย {new Date(currentPeriod.payDate).toLocaleDateString('th-TH')}
-                {pendingDepts.length > 0 && <span style={{ marginLeft: 12, color: 'var(--status-pending-text)', fontWeight: 600 }}>◔ ข้อมูลฝ่ายรออนุมัติ</span>}
+                {role === 'hr' && pendingDepts.length > 0 && <span style={{ marginLeft: 12, color: 'var(--status-pending-text)', fontWeight: 600 }}>◔ ข้อมูลฝ่ายรออนุมัติ</span>}
               </div>
             )}
           </div>
-          <div className="flex gap-2">
-            {role === 'director' && pendingDepts.length > 0 && <button className="btn btn-primary" onClick={() => setPage('director-approvals')}>◈ ดูรายการรออนุมัติ ({pendingDepts.length})</button>}
+          <div className="flex items-start gap-3">
+            <button className="btn btn-secondary dashboard-print-button" onClick={printDashboard}>🖨️ พิมพ์รายงาน</button>
+            <DashboardAnalogClock />
           </div>
         </div>
       </div>
 
-      {role === 'hr' && (
-        <div>
-          <div style={{ fontFamily: 'var(--font-display)', fontSize: 15, fontWeight: 700, marginBottom: 10 }}>ขั้นตอนการทำงานเงินเดือน</div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
-            {quickMenuItems.map(item => (
-              <button key={item.step} onClick={item.action} style={{ minHeight: 132, padding: '18px 20px', border: '1px solid rgba(112,78,190,0.72)', borderRadius: 16, cursor: 'pointer', textAlign: 'left', background: 'linear-gradient(135deg, #7654c2 0%, #8262ca 100%)', boxShadow: '0 5px 16px rgba(104,72,180,0.18)', color: '#fff', fontFamily: 'var(--font-sans)' }}>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 20, marginBottom: 10 }}><span>{item.step}</span><span>{item.icon}</span></div>
-                <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>{item.label}</div>
-                <div style={{ fontSize: 11.5, lineHeight: 1.5, color: 'rgba(255,255,255,0.76)' }}>{item.sub}</div>
-              </button>
-            ))}
-          </div>
+      <div className="dashboard-quick-menu">
+        <div style={{ fontFamily: 'var(--font-display)', fontSize: 15, fontWeight: 700, marginBottom: 10 }}>
+          {role === 'hr' ? 'ขั้นตอนการทำงานเงินเดือน' : 'เมนูด่วน'}
         </div>
-      )}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
+          {quickMenuItems.map(item => (
+            <button key={item.step} className="quick-menu-card" onClick={item.action}>
+              <div className="quick-menu-card-icon"><span>{item.step}</span><span>{item.icon}</span></div>
+              <div style={{ fontSize: 14, fontWeight: 700, lineHeight: 1.35 }}>{item.label}</div>
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Unified payroll summary */}
       <div className="dashboard-payroll-summary">
@@ -643,25 +808,51 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
         </div>
       </div>
 
-      {/* Monthly trend */}
-      <div className="card" style={{ padding: 24, width: '100%' }}>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: '#1A1A1A' }}>แนวโน้มค่าใช้จ่ายรายเดือน</div>
-            <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>ข้อมูลย้อนหลัง 7 เดือน (บาท)</div>
+      {role === 'admin' && (
+        <section className="dashboard-admin-alert-strip" aria-label="รายการที่ควรตรวจสอบ">
+          <div className="dashboard-admin-alert-item is-failed">
+            <span>สถานะการส่งสลิป</span>
+            <strong>📨 {failedEmailCount} ราย <em>ส่งไม่สำเร็จ</em></strong>
           </div>
+          <div className="dashboard-admin-alert-item is-warning">
+            <span>ข้อมูลติดต่อ</span>
+            <strong>⚠️ {missingEmailCount} ราย <em>ไม่มีอีเมล</em></strong>
+          </div>
+          <div className="dashboard-admin-alert-item is-payroll">
+            <span>ความครบถ้วนของรอบ</span>
+            <strong>👥 {missingPayrollCount} ราย <em>ยังไม่เข้ารอบ</em></strong>
+          </div>
+          <div className="dashboard-admin-alert-action">
+            <button className="btn btn-ghost btn-sm" onClick={() => setPage('payslip-status')}>ดูรายละเอียด →</button>
+          </div>
+        </section>
+      )}
+
+      {/* HR-only monthly report */}
+      {role === 'hr' && <div className="card dashboard-monthly-report" style={{ padding: 24, width: '100%' }}>
+        <div className="dashboard-monthly-report-chart">
+          <div className="flex items-center justify-between mb-4">
+            <div>
+              <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15, color: '#1A1A1A' }}>แนวโน้มค่าใช้จ่ายรายเดือน</div>
+              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>ข้อมูลย้อนหลัง 7 เดือน (บาท)</div>
+            </div>
+          </div>
+          <LineChart datasets={lineData} labels={monthLabels} />
         </div>
-        <LineChart datasets={lineData} labels={monthLabels} />
-      </div>
+        <aside className="dashboard-monthly-report-donuts">
+          <CategoryDonut title="รายการรับสะสมตามประเภท" total={currentTotals.gross} items={incomeCategories} tone="income" />
+          <CategoryDonut title="รายการหักสะสมตามประเภท" total={currentTotals.deduct} items={deductionCategories} tone="deduct" />
+        </aside>
+      </div>}
 
       {/* Recent list */}
-      <div className="card" style={{ padding: 24 }}>
+      <div ref={recentPeriodsRef} className={`card dashboard-recent-periods ${(role === 'director' || role === 'admin') ? 'dashboard-recent-periods-detailed' : ''} ${isRecentPeriodsHighlighted ? 'is-highlighted' : ''}`} style={{ padding: 24 }}>
         <div className="flex items-center justify-between mb-4">
           <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>รายการรอบเงินเดือนล่าสุด</div>
           <button className="btn btn-ghost btn-sm" style={{ color: 'var(--purple-600)' }} onClick={() => setPage('periods')}>ดูทั้งหมด →</button>
         </div>
         <div style={{ overflowX: 'auto' }}>
-          <table className="tbl" style={{ minWidth: 760 }}>
+          <table className="tbl" style={{ minWidth: 820 }}>
             <thead>
               <tr>
                 <th>รอบเงินเดือน</th>
@@ -670,35 +861,85 @@ function Dashboard({ role, userName, userDepartment, periods, setPage, setActive
                 <th style={{ textAlign: 'right' }}>รายการรับรวม (บาท)</th>
                 <th style={{ textAlign: 'right' }}>ยอดรับสุทธิรวม (บาท)</th>
                 <th>สถานะ</th>
+                {(role === 'director' || role === 'admin') && <th style={{ width: 54, textAlign: 'center' }} aria-label="ดูสถานะแยกฝ่าย" />}
               </tr>
             </thead>
             <tbody>
               {periods.slice(0, 6).map(period => {
                 const totals = periodTotals(period)
-                const statuses = (['draft', 'pending', 'approved', 'rejected'] as DeptStatus[])
-                  .map(status => ({ status, count: period.depts.filter(department => department.status === status).length }))
-                  .filter(item => item.count > 0)
+                const isExpanded = expandedDashboardPeriodId === period.id
+                const completedCount = period.depts.filter(department => ['approved', 'closed'].includes(department.status)).length
+                const remainingCount = period.depts.length - completedCount
+                const periodStatus = remainingCount > 0
+                  ? { type: 'pending', label: `รอดำเนินการ ${remainingCount}/${period.depts.length} ฝ่าย` }
+                  : { type: 'approved', label: `เสร็จสิ้น ${completedCount}/${period.depts.length} ฝ่าย` }
                 return (
-                  <tr key={period.id} style={{ cursor: 'pointer' }} onClick={() => {
-                    setActivePeriodId(period.id)
-                    if (role === 'hr' && period.depts[0]) {
-                      setActiveDeptId(period.depts[0].id)
-                      setPage('dept-table')
-                    } else {
-                      setPage('period-detail')
-                    }
-                  }}>
-                    <td style={{ fontWeight: 600 }}>{periodLabel(period)}</td>
-                    <td style={{ color: 'var(--text-secondary)' }}>{new Date(period.payDate).toLocaleDateString('th-TH')}</td>
-                    <td>{totals.emps} คน</td>
-                    <td className="num">{thb(totals.gross)}</td>
-                    <td className="num" style={{ fontWeight: 600, color: 'var(--purple-600)' }}>{thb(totals.net)}</td>
-                    <td>
-                      <div className="flex gap-2 flex-wrap">
-                        {statuses.map(item => <span key={item.status} className={`badge badge-${item.status}`}>{item.count > 1 ? `${item.count} ` : ''}{statusLabel[item.status]}</span>)}
-                      </div>
-                    </td>
-                  </tr>
+                  <Fragment key={period.id}>
+                    <tr key={period.id} style={{ cursor: 'pointer' }} onClick={() => {
+                      setActivePeriodId(period.id)
+                      if (role === 'hr' && period.depts[0]) {
+                        setActiveDeptId(period.depts[0].id)
+                        setPage('dept-table')
+                      } else {
+                        setPage('period-detail')
+                      }
+                    }}>
+                      <td style={{ fontWeight: 600 }}>{periodLabel(period)}</td>
+                      <td style={{ color: 'var(--text-secondary)' }}>{new Date(period.payDate).toLocaleDateString('th-TH')}</td>
+                      <td>{totals.emps} คน</td>
+                      <td className="num">{thb(totals.gross)}</td>
+                      <td className="num" style={{ fontWeight: 600, color: 'var(--purple-600)' }}>{thb(totals.net)}</td>
+                      <td>
+                        <span className={`badge badge-${periodStatus.type}`} title="ดูรายละเอียดสถานะแยกฝ่ายจากปุ่มลูกศรด้านขวา">{periodStatus.label}</span>
+                      </td>
+                      {(role === 'director' || role === 'admin') && (
+                        <td style={{ textAlign: 'center' }}>
+                          <button
+                            className="btn btn-ghost btn-sm"
+                            title={isExpanded ? 'ซ่อนสถานะการอนุมัติแยกฝ่าย' : 'แสดงสถานะการอนุมัติแยกฝ่าย'}
+                            aria-expanded={isExpanded}
+                            onClick={event => {
+                              event.stopPropagation()
+                              setExpandedDashboardPeriodId(previous => previous === period.id ? null : period.id)
+                            }}
+                            style={{ color: 'var(--purple-600)', minWidth: 32, padding: '3px 7px', lineHeight: 1, fontSize: 17 }}
+                          >{isExpanded ? '⌃' : '⌄'}</button>
+                        </td>
+                      )}
+                    </tr>
+                    {(isExpanded || isDashboardPrinting) && (role === 'director' || role === 'admin') && (
+                      <tr key={`${period.id}-approval-drawer`} className="dashboard-approval-drawer">
+                        <td colSpan={7} style={{ padding: '14px 16px 18px', background: '#FAF9FF' }}>
+                          <div className="flex items-center justify-between gap-3" style={{ marginBottom: 10 }}>
+                            <div>
+                              <div style={{ fontFamily: 'var(--font-display)', fontSize: 14, fontWeight: 700 }}>สถานะการอนุมัติแยกฝ่าย</div>
+                              <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 2 }}>รายละเอียดของรอบ {periodLabel(period)}</div>
+                            </div>
+                            <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{period.depts.length} ฝ่าย</span>
+                          </div>
+                          <div style={{ background: '#FFFFFF', border: '1px solid var(--border)', borderRadius: 10, overflowX: 'auto' }}>
+                            <table className="tbl" style={{ minWidth: 800 }}>
+                              <thead><tr><th>ฝ่าย</th><th style={{ textAlign: 'center' }}>จำนวนพนักงาน</th><th style={{ textAlign: 'right' }}>รายการรับ</th><th style={{ textAlign: 'right' }}>รายการหัก</th><th style={{ textAlign: 'right' }}>ยอดสุทธิ</th><th style={{ textAlign: 'center' }}>สถานะอนุมัติ</th><th style={{ textAlign: 'center' }}>ดู</th></tr></thead>
+                              <tbody>
+                                {period.depts.map(dept => {
+                                  const departmentTotals = deptTotals(dept)
+                                  return <tr key={dept.id}>
+                                    <td style={{ fontWeight: 600 }}>{dept.department}</td>
+                                    <td style={{ textAlign: 'center' }}>{departmentTotals.count} คน</td>
+                                    <td className="num" style={{ color: '#15803D' }}>{thb(departmentTotals.totalGross)}</td>
+                                    <td className="num" style={{ color: '#B91C1C' }}>{thb(departmentTotals.totalDeduct)}</td>
+                                    <td className="num" style={{ color: 'var(--purple-600)', fontWeight: 700 }}>{thb(departmentTotals.totalNet)}</td>
+                                    <td style={{ textAlign: 'center' }}><StatusBadge s={dept.status} /></td>
+                                    <td style={{ textAlign: 'center' }}><button className="btn btn-secondary btn-xs" onClick={() => { setActivePeriodId(period.id); setActiveDeptId(dept.id); setPage('director-detail') }}>ดู</button></td>
+                                  </tr>
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               })}
             </tbody>
@@ -753,10 +994,11 @@ function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, setActiv
       <div className="flex flex-col gap-4">
         {periods.map(p => {
           const t = periodTotals(p)
-          const approvedCount = p.depts.filter(d => d.status === 'approved').length
-          const pendingCount = p.depts.filter(d => d.status === 'pending').length
-          const rejectedCount = p.depts.filter(d => d.status === 'rejected').length
-          const draftCount = p.depts.filter(d => d.status === 'draft').length
+          const completedCount = p.depts.filter(d => ['approved', 'closed'].includes(d.status)).length
+          const remainingCount = p.depts.length - completedCount
+          const periodStatus = remainingCount > 0
+            ? { type: 'pending', label: `รอดำเนินการ ${remainingCount}/${p.depts.length} ฝ่าย` }
+            : { type: 'approved', label: `เสร็จสิ้น ${completedCount}/${p.depts.length} ฝ่าย` }
           return (
             <div key={p.id} className="card" style={{ padding: '20px 24px', cursor: 'pointer', transition: 'box-shadow 0.15s' }}
               onClick={() => {
@@ -786,12 +1028,7 @@ function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, setActiv
                     {role === 'hr' ? (
                       p.depts[0] ? <StatusBadge s={p.depts[0].status} /> : null
                     ) : (
-                      <>
-                        {draftCount > 0    && <span className="badge badge-draft">{draftCount} แบบร่าง</span>}
-                        {pendingCount > 0  && <span className="badge badge-pending">{pendingCount} รออนุมัติ</span>}
-                        {approvedCount > 0 && <span className="badge badge-approved">{approvedCount} อนุมัติแล้ว</span>}
-                        {rejectedCount > 0 && <span className="badge badge-rejected">{rejectedCount} ไม่อนุมัติ</span>}
-                      </>
+                      <span className={`badge badge-${periodStatus.type}`}>{periodStatus.label}</span>
                     )}
                   </div>
                   <span style={{ color: '#CBD5E1', fontSize: 18 }}>›</span>
@@ -851,10 +1088,10 @@ function PeriodDetail({ period, setPage, setActiveDeptId, role }: {
       />
       {/* Summary */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 20 }}>
-        <KpiCard label="จำนวนพนักงาน" value={thbInt(t.emps)} unit="คน" icon="◉" accent="var(--purple-600)" />
-        <KpiCard label="ยอดรายการรับรวม" value={thbInt(Math.round(t.gross))} unit="บาท" icon="▲" accent="#22C55E" />
-        <KpiCard label="ยอดรายการหักรวม" value={thbInt(Math.round(t.deduct))} unit="บาท" icon="▼" accent="#F59E0B" />
-        <KpiCard label="ยอดรับสุทธิรวม" value={thbInt(Math.round(t.net))} unit="บาท" icon="◈" accent="#3B82F6" />
+        <KpiCard label="จำนวนพนักงาน" value={thbInt(t.emps)} unit="คน" icon="👥" accent="var(--purple-600)" tone="purple" />
+        <KpiCard label="ยอดรายการรับรวม" value={thbInt(Math.round(t.gross))} unit="บาท" icon="💰" accent="#22C55E" tone="green" />
+        <KpiCard label="ยอดรายการหักรวม" value={thbInt(Math.round(t.deduct))} unit="บาท" icon="🧾" accent="#F59E0B" tone="orange" />
+        <KpiCard label="ยอดรับสุทธิรวม" value={thbInt(Math.round(t.net))} unit="บาท" icon="💵" accent="#3B82F6" tone="blue" />
       </div>
       {/* Dept list */}
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -894,7 +1131,7 @@ function PeriodDetail({ period, setPage, setActiveDeptId, role }: {
                         </button>
                       )}
                       {(d.status === 'pending' || d.status === 'approved' || d.status === 'closed') && (
-                        <button className="btn btn-secondary btn-xs" onClick={() => { setActiveDeptId(d.id); setPage(role === 'director' ? 'director-detail' : 'dept-table') }}>ดู</button>
+                        <button className="btn btn-secondary btn-xs" onClick={() => { setActiveDeptId(d.id); setPage(role !== 'hr' ? 'director-detail' : 'dept-table') }}>ดู</button>
                       )}
                     </div>
                   </td>
@@ -1014,13 +1251,15 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
   }
 
   const totals = useMemo(() => {
-    let base = 0, gross = 0, deduct = 0, net = 0
+    let base = 0, extra = 0, pos = 0, gross = 0, debtKTB = 0, tax = 0, social = 0, funeral = 0, ktb = 0, gsb = 0, deduct = 0, net = 0
     emps.forEach(e => {
       const r = rows[e.id]
       base += e.baseSalary
-      gross += rowGross(e, r); deduct += rowDeduct(r); net += rowNet(e, r)
+      extra += r.extra; pos += r.posAllowance; gross += rowGross(e, r)
+      debtKTB += r.debtKTB; tax += r.tax; social += r.social; funeral += r.funeral; ktb += r.ktb; gsb += r.gsb
+      deduct += rowDeduct(r); net += rowNet(e, r)
     })
-    return { base, gross, deduct, net }
+    return { base, extra, pos, gross, debtKTB, tax, social, funeral, ktb, gsb, deduct, net }
   }, [rows, emps])
 
   const handleFocus = useCallback((id: string) => setFocusRow(id), [])
@@ -1199,12 +1438,17 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งหมด ({emps.length} คน)</td>
+              <td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>
               <td className="num">{thb(totals.base)}</td>
-              <td />
-              <td />
+              <td className="num">{thb(totals.extra)}</td>
+              <td className="num">{thb(totals.pos)}</td>
               <td className="num" style={{ color: '#15803D' }}>{thb(totals.gross)}</td>
-              <td colSpan={6} />
+              <td className="num">{thb(totals.debtKTB)}</td>
+              <td className="num">{thb(totals.tax)}</td>
+              <td className="num">{thb(totals.social)}</td>
+              <td className="num">{thb(totals.funeral)}</td>
+              <td className="num">{thb(totals.ktb)}</td>
+              <td className="num">{thb(totals.gsb)}</td>
               <td className="num" style={{ color: '#B91C1C' }}>{thb(totals.deduct)}</td>
               <td className="num" style={{ color: 'var(--purple-600)' }}>{thb(totals.net)}</td>
             </tr>
@@ -1365,8 +1609,43 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
   const [showApproveModal, setShowApproveModal] = useState(false)
   const [showRejectModal, setShowRejectModal] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
+  const [search, setSearch] = useState('')
 
   const t = useMemo(() => deptTotals(dept), [dept])
+  const visibleEmployees = useMemo(() => {
+    const keyword = search.trim().toLowerCase()
+    if (!keyword) return emps
+    return emps.filter(employee => employee.id.toLowerCase().includes(keyword) || `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(keyword))
+  }, [emps, search])
+
+  const exportExcel = () => {
+    const escapeCell = (value: unknown) => String(value ?? '').replace(/[\t\r\n]/g, ' ')
+    const columns = ['ลำดับ', 'รหัส', 'ชื่อ-นามสกุล', 'ตำแหน่ง', 'ฐานเงินเดือน', 'เงินเพิ่ม', 'เงินประจำตำแหน่ง', 'รวมรายการรับ', 'ชำระหนี้ KTB', 'ภาษีหัก ณ ที่จ่าย', 'ประกันสังคม', 'ฌาปนกิจ', 'ธนาคารกรุงไทย', 'ธนาคารออมสิน', 'รวมรายการหัก', 'ยอดรับสุทธิ']
+    const rows = visibleEmployees.map((employee, index) => {
+      const row = dept.rows[employee.id] ?? makeDefaultRow(employee)
+      return [index + 1, employee.id, `${employee.title}${employee.firstName} ${employee.lastName}`, employee.position, employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
+    })
+    const content = `\ufeff${[columns, ...rows].map(row => row.map(escapeCell).join('\t')).join('\n')}`
+    const url = URL.createObjectURL(new Blob([content], { type: 'application/vnd.ms-excel;charset=utf-8' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `payroll-${period.year}-${String(period.month).padStart(2, '0')}-${dept.department}.xls`
+    anchor.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const printPayrollTable = () => {
+    const printWindow = window.open('', '_blank', 'width=1200,height=800')
+    if (!printWindow) { showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error'); return }
+    const escapeMarkup = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    const body = visibleEmployees.map((employee, index) => {
+      const row = dept.rows[employee.id] ?? makeDefaultRow(employee)
+      const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
+      return `<tr><td>${index + 1}</td><td>${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+    }).join('')
+    printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>บัญชีรายละเอียดการจ่ายเงินเดือน</title><style>@page{size:A4 landscape;margin:10mm}body{font-family:Tahoma,sans-serif;color:#000;font-size:8pt}h1,h2,p{text-align:center;margin:0}h1{font-size:14pt}h2{font-size:11pt}.meta{margin:5mm 0}table{width:100%;border-collapse:collapse}th,td{border:.5pt solid #000;padding:3px}th{background:#eee;text-align:center}.num{text-align:right}tfoot td{font-weight:bold;background:#eee}</style></head><body><h1>เทศบาลเมืองตาคลี</h1><h2>บัญชีรายละเอียดการจ่ายเงินเดือน ประจำเดือน${escapeMarkup(periodLabel(period))}</h2><p>${escapeMarkup(dept.department)}</p><p class="meta">วันที่จ่าย ${escapeMarkup(new Date(period.payDate).toLocaleDateString('th-TH'))} · จำนวนพนักงาน ${visibleEmployees.length} คน</p><table><thead><tr><th>#</th><th>รหัส</th><th>ชื่อ-นามสกุล</th><th>ตำแหน่ง</th><th>ฐานเงินเดือน</th><th>เงินเพิ่ม</th><th>เงินประจำตำแหน่ง</th><th>รวมรายการรับ</th><th>ชำระหนี้ KTB</th><th>ภาษี</th><th>ประกันสังคม</th><th>ฌาปนกิจ</th><th>ธ.กรุงไทย</th><th>ธ.ออมสิน</th><th>รวมรายการหัก</th><th>ยอดสุทธิ</th></tr></thead><tbody>${body}</tbody></table><script>window.addEventListener('load',()=>window.print())<\/script></body></html>`)
+    printWindow.document.close()
+  }
 
   const handleApprove = () => {
     setPeriods(prev => prev.map(p => p.id === period.id ? {
@@ -1378,7 +1657,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
     } : p))
     setShowApproveModal(false)
     showToast('อนุมัติเรียบร้อย — กำลังสร้าง PDF และส่งอีเมล', 'success')
-    setPage('director-approvals')
+    setPage('dashboard')
   }
 
   const handleReject = () => {
@@ -1391,7 +1670,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
     } : p))
     setShowRejectModal(false)
     showToast('ส่งกลับไปให้ HR แก้ไขแล้ว', 'error')
-    setPage('director-approvals')
+    setPage('dashboard')
   }
 
   return (
@@ -1399,7 +1678,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
       <PageHeader
         title={dept.department}
         subtitle={`${periodLabel(period)} · ส่งโดย ${dept.submittedBy ?? '–'} · ${dept.submittedAt ? new Date(dept.submittedAt).toLocaleDateString('th-TH') : ''}`}
-        breadcrumb={<Crumb items={[{ label: 'อนุมัติเงินเดือน', onClick: () => setPage('director-approvals') }, { label: dept.department }]} />}
+        breadcrumb={<Crumb items={[{ label: 'หน้าหลัก', onClick: () => setPage('dashboard') }, { label: dept.department }]} />}
         actions={dept.status === 'pending' ? (
           <>
             <button className="btn btn-danger" onClick={() => setShowRejectModal(true)}>✕ ไม่อนุมัติ</button>
@@ -1408,17 +1687,29 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
         ) : <StatusBadge s={dept.status} />}
       />
 
-      {/* Summary */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14, marginBottom: 20 }}>
-        <KpiCard label="จำนวนพนักงาน" value={String(t.count)} unit="คน" icon="◉" accent="var(--purple-600)" />
-        <KpiCard label="รายการรับรวม" value={thbInt(Math.round(t.totalGross))} unit="บาท" icon="▲" accent="#22C55E" />
-        <KpiCard label="รายการหักรวม" value={thbInt(Math.round(t.totalDeduct))} unit="บาท" icon="▼" accent="#F59E0B" />
-        <KpiCard label="ยอดรับสุทธิรวม" value={thbInt(Math.round(t.totalNet))} unit="บาท" icon="◈" accent="#3B82F6" />
+      <div className="card" style={{ padding: '12px 14px', marginBottom: 16 }}>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap" style={{ flex: 1 }}>
+            <input className="inp" style={{ maxWidth: 300 }} value={search} onChange={event => setSearch(event.target.value)} placeholder="🔍 ค้นหาชื่อหรือรหัสพนักงาน" />
+            <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{visibleEmployees.length} รายการ</span>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <button className="btn btn-secondary" onClick={printPayrollTable}>🖨️ พิมพ์ตาราง</button>
+            <button className="btn btn-secondary" onClick={exportExcel}>📥 Export Excel</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="payroll-period-meta">
+        <span>📅 วันที่จ่าย {new Date(period.payDate).toLocaleDateString('th-TH')}</span>
+        <span>👥 {emps.length} คน</span>
+        <span>🕘 แก้ไขล่าสุด {new Date(dept.updatedAt).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })}</span>
+        <StatusBadge s={dept.status} />
       </div>
 
       {/* Read-only table */}
       <div className="card" style={{ padding: 0, overflow: 'auto', maxHeight: 'calc(100vh - 320px)' }}>
-        <table className="tbl" style={{ minWidth: 1200 }}>
+        <table className="tbl payroll-detail-table" style={{ minWidth: 1200 }}>
           <thead>
             <tr>
               <th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
@@ -1446,7 +1737,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
             </tr>
           </thead>
           <tbody>
-            {emps.map((e, idx) => {
+            {visibleEmployees.map((e, idx) => {
               const r = dept.rows[e.id] ?? makeDefaultRow(e)
               const g = rowGross(e, r), d = rowDeduct(r), n = rowNet(e, r)
               return (
@@ -1473,12 +1764,17 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งหมด ({emps.length} คน)</td>
+              <td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>
               <td className="num">{thb(t.totalBase)}</td>
               <td className="num">{thb(t.totalExtra)}</td>
               <td className="num">{thb(t.totalPos)}</td>
               <td className="num" style={{ color: '#15803D' }}>{thb(t.totalGross)}</td>
-              <td colSpan={6} />
+              <td className="num">{thb(t.totalDebtKTB)}</td>
+              <td className="num">{thb(t.totalTax)}</td>
+              <td className="num">{thb(t.totalSocial)}</td>
+              <td className="num">{thb(t.totalFuneral)}</td>
+              <td className="num">{thb(t.totalKTB)}</td>
+              <td className="num">{thb(t.totalGSB)}</td>
               <td className="num" style={{ color: '#B91C1C' }}>{thb(t.totalDeduct)}</td>
               <td className="num" style={{ color: 'var(--purple-600)' }}>{thb(t.totalNet)}</td>
             </tr>
@@ -1533,7 +1829,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
 
 // ─── Employees ────────────────────────────────────────────────────────────────
 
-function EmployeesPage({ employees, departments, positions, loading, error, role, setPage, setEditEmpId }: {
+function EmployeesPage({ employees, departments, positions, loading, error, role, setPage, setEditEmpId, onChanged, showToast }: {
   employees: DatabaseEmployee[]
   departments: Department[]
   positions: Position[]
@@ -1542,9 +1838,15 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
   role: Role
   setPage: (page: Page) => void
   setEditEmpId: (id: number | null) => void
+  onChanged: () => Promise<void>
+  showToast: (message: string, type?: 'success' | 'error') => void
 }) {
   const [search, setSearch] = useState('')
   const [filterDept, setFilterDept] = useState('all')
+  const [detailEmployee, setDetailEmployee] = useState<DatabaseEmployee | null>(null)
+  const [employeeToDeactivate, setEmployeeToDeactivate] = useState<DatabaseEmployee | null>(null)
+  const [deactivating, setDeactivating] = useState(false)
+  const [deactivateError, setDeactivateError] = useState('')
 
   const departmentById = useMemo(
     () => new Map(departments.map(department => [department.id, department.name])),
@@ -1572,12 +1874,33 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
     TERMINATED: 'สิ้นสุดการจ้าง',
   }
 
+  const employeeTypeLabel = (employee: DatabaseEmployee) =>
+    employee.employee_type === 'OTHER'
+      ? employee.employee_type_other || 'อื่นๆ'
+      : EMPLOYEE_TYPE_OPTIONS.find(option => option.value === employee.employee_type)?.label || employee.employee_type
+
+  const handleDeactivate = async () => {
+    if (!employeeToDeactivate) return
+    try {
+      setDeactivating(true)
+      setDeactivateError('')
+      await deactivateEmployee(employeeToDeactivate.id)
+      await onChanged()
+      showToast(`ลบ ${employeeToDeactivate.first_name} ${employeeToDeactivate.last_name} ออกจากรายการพนักงานแล้ว`, 'success')
+      setEmployeeToDeactivate(null)
+    } catch (deactivateFailure) {
+      setDeactivateError(deactivateFailure instanceof Error ? deactivateFailure.message : 'ไม่สามารถลบข้อมูลพนักงานได้')
+    } finally {
+      setDeactivating(false)
+    }
+  }
+
   return (
     <div className="anim">
       <PageHeader
         title="พนักงาน"
         subtitle={`พนักงานที่ใช้งานอยู่ ${activeCount} คน จากทั้งหมด ${employees.length} คน`}
-        actions={<button className="btn btn-primary" onClick={() => { setEditEmpId(null); setPage('employee-form') }}>+ เพิ่มพนักงาน</button>}
+        actions={['director', 'admin'].includes(role) ? <button className="btn btn-primary" onClick={() => { setEditEmpId(null); setPage('employee-form') }}>+ เพิ่มพนักงาน</button> : undefined}
       />
       <div className="card" style={{ padding: '14px 18px', marginBottom: 14 }}>
         <div className="flex items-center gap-3">
@@ -1618,13 +1941,68 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
                 <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{e.email ?? '–'}</td>
                 <td><span className={`badge ${e.status === 'ACTIVE' ? 'badge-approved' : 'badge-rejected'}`}>● {statusLabel[e.status]}</span></td>
                 <td>
-                  <button className="btn btn-ghost btn-xs" onClick={() => { setEditEmpId(e.id); setPage('employee-form') }}>แก้ไข</button>
+                  <div className="flex gap-2 flex-wrap">
+                    <button className="btn btn-ghost btn-xs" onClick={() => setDetailEmployee(e)}>ดูรายละเอียด</button>
+                    <button className="btn btn-ghost btn-xs" onClick={() => { setEditEmpId(e.id); setPage('employee-form') }}>แก้ไข</button>
+                    <button className="btn btn-danger btn-xs" onClick={() => { setDeactivateError(''); setEmployeeToDeactivate(e) }}>ลบ</button>
+                  </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      {detailEmployee && (
+        <Modal title="รายละเอียดพนักงาน" onClose={() => setDetailEmployee(null)}>
+          <div className="flex flex-col gap-4">
+            <div style={{ padding: 14, borderRadius: 10, background: 'var(--purple-100)' }}>
+              <div style={{ fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 700 }}>{detailEmployee.prefix}{detailEmployee.first_name} {detailEmployee.last_name}</div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>{detailEmployee.employee_code} · {detailEmployee.status === 'ACTIVE' ? 'ปกติ' : statusLabel[detailEmployee.status]}</div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 18px' }}>
+              {[
+                ['ฝ่าย', detailEmployee.department_id ? departmentById.get(detailEmployee.department_id) ?? '–' : '–'],
+                ['ตำแหน่ง', detailEmployee.position_id ? positionById.get(detailEmployee.position_id) ?? '–' : '–'],
+                ['ประเภทพนักงาน', employeeTypeLabel(detailEmployee)],
+                ['ฐานเงินเดือน', `${thb(Number(detailEmployee.base_salary))} บาท`],
+                ['อีเมล', detailEmployee.email ?? '–'],
+                ['โทรศัพท์', detailEmployee.phone ?? '–'],
+                ['ธนาคาร', detailEmployee.bank_name ?? '–'],
+                ['เลขบัญชี', detailEmployee.bank_account_no ?? '–'],
+              ].map(([label, value]) => (
+                <div key={label as string} style={{ borderBottom: '1px solid var(--border)', paddingBottom: 8 }}>
+                  <div style={{ color: 'var(--text-muted)', fontSize: 11.5 }}>{label}</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, marginTop: 3 }}>{value}</div>
+                </div>
+              ))}
+            </div>
+            <div className="flex justify-end gap-3">
+              <button className="btn btn-secondary" onClick={() => setDetailEmployee(null)}>ปิด</button>
+              <button className="btn btn-primary" onClick={() => { setDetailEmployee(null); setEditEmpId(detailEmployee.id); setPage('employee-form') }}>แก้ไขข้อมูล</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {employeeToDeactivate && (
+        <Modal title="ยืนยันการลบข้อมูลพนักงาน" onClose={() => !deactivating && setEmployeeToDeactivate(null)}>
+          <div className="flex flex-col gap-4">
+            <div style={{ padding: 14, borderRadius: 10, border: '1px solid #FECACA', background: '#FEF2F2', color: '#991B1B', fontSize: 13, lineHeight: 1.6 }}>
+              ลบ <strong>{employeeToDeactivate.prefix}{employeeToDeactivate.first_name} {employeeToDeactivate.last_name}</strong> ({employeeToDeactivate.employee_code}) ออกจากรายการพนักงานหรือไม่?
+            </div>
+            <div style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.6 }}>
+              ระบบจะปิดใช้งานพนักงานในฐานข้อมูลและซ่อนจากรายการนี้ โดยไม่ลบข้อมูลหรือประวัติเงินเดือนเดิม
+            </div>
+            {deactivateError && <div style={{ color: '#B42318', fontSize: 13 }}>{deactivateError}</div>}
+            <div className="flex justify-end gap-3">
+              <button className="btn btn-secondary" disabled={deactivating} onClick={() => setEmployeeToDeactivate(null)}>ยกเลิก</button>
+              <button className="btn btn-danger" disabled={deactivating} onClick={handleDeactivate}>{deactivating ? 'กำลังลบ...' : 'ลบข้อมูลพนักงาน'}</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
     </div>
   )
 }
@@ -2182,8 +2560,8 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    loadEmployeeData()
-  }, [loadEmployeeData])
+    if (loggedIn) loadEmployeeData()
+  }, [loggedIn, loadEmployeeData])
 
   const showToast = useCallback((msg: string, type?: 'success' | 'error') => {
     setToast({ msg, type, key: ++toastKey.current })
@@ -2193,7 +2571,7 @@ export default function App() {
     setUserName(name); setRole(r); setUserDepartment(department); setLoggedIn(true); setPage('dashboard')
   }
 
-  const handleLogout = () => { setLoggedIn(false); setPage('login' as Page) }
+  const handleLogout = () => { clearAccessToken(); setLoggedIn(false); setPage('login' as Page) }
 
   if (!loggedIn) return <LoginPage onLogin={handleLogin} />
 
@@ -2213,7 +2591,7 @@ export default function App() {
 
   const pageTitle: Partial<Record<Page, string>> = {
     dashboard: 'หน้าหลัก', periods: 'รอบเงินเดือน', employees: 'พนักงาน',
-    reports: 'รายงาน', 'director-approvals': 'อนุมัติเงินเดือน',
+    reports: 'รายงาน', 'payslip-status': 'สถานะการส่งอีเมล', 'director-approvals': 'อนุมัติเงินเดือน',
     'admin-users': 'จัดการผู้ใช้งาน', 'admin-settings': 'ตั้งค่าระบบ',
   }
 
@@ -2235,7 +2613,8 @@ export default function App() {
         {/* Content */}
         <main style={{ flex: 1, padding: '28px 32px', overflowY: 'auto' }}>
           {page === 'dashboard' && (
-            <Dashboard role={role} userName={userName} userDepartment={userDepartment} periods={visiblePeriods} setPage={setPage}
+            <Dashboard role={role} userName={userName} userDepartment={userDepartment} periods={visiblePeriods}
+              employees={visibleEmployees} departments={visibleDepartments} setPage={setPage}
               setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
           )}
           {page === 'periods' && (
@@ -2263,6 +2642,8 @@ export default function App() {
               role={role}
               setPage={setPage}
               setEditEmpId={setEditEmpId}
+              onChanged={loadEmployeeData}
+              showToast={showToast}
             />
           )}
           {page === 'employee-form' && (

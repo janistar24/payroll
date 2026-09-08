@@ -42,7 +42,7 @@ const API_URL =
   import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
 
 export async function getEmployees(): Promise<Employee[]> {
-  const response = await fetch(`${API_URL}/employees`)
+  const response = await fetch(`${API_URL}/employees`, { headers: authorizationHeaders() })
 
   if (!response.ok) {
     throw new Error(`โหลดข้อมูลพนักงานไม่สำเร็จ: ${response.status}`)
@@ -73,7 +73,7 @@ async function parseApiError(response: Response): Promise<string> {
 export async function createEmployee(data: EmployeeSaveInput): Promise<number> {
   const response = await fetch(`${API_URL}/employees`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authorizationHeaders() },
     body: JSON.stringify(data),
   })
   if (!response.ok) throw new Error(await parseApiError(response))
@@ -84,8 +84,20 @@ export async function createEmployee(data: EmployeeSaveInput): Promise<number> {
 export async function updateEmployee(employeeId: number, data: EmployeeSaveInput): Promise<void> {
   const response = await fetch(`${API_URL}/employees/${employeeId}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authorizationHeaders() },
     body: JSON.stringify(data),
   })
   if (!response.ok) throw new Error(await parseApiError(response))
 }
+
+/** Soft-delete: retain payroll history but remove the employee from active lists. */
+export async function deactivateEmployee(employeeId: number): Promise<void> {
+  const response = await fetch(`${API_URL}/employees/${employeeId}/status`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authorizationHeaders() },
+    body: JSON.stringify({ status: 'TERMINATED' }),
+  })
+  if (!response.ok) throw new Error(await parseApiError(response))
+}
+
+import { authorizationHeaders } from './auth'

@@ -14,6 +14,7 @@ from payroll_periods import Payroll_periods
 from payroll_items import PayrollItems
 from payroll_department_batches import PayrollDepartmentBatches
 from pay_item_types import PayItemTypes
+from payroll_workflow import PayrollWorkflow
 from auth import auth_service, get_current_user
 
 app = FastAPI(
@@ -29,6 +30,7 @@ payroll_periods_service = Payroll_periods()
 payroll_items_service = PayrollItems()
 payroll_department_batches_service = PayrollDepartmentBatches()
 pay_item_types_service = PayItemTypes()
+payroll_workflow_service = PayrollWorkflow()
 
 app.add_middleware(
     CORSMiddleware,
@@ -215,6 +217,45 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=255)
 
 
+class PayrollPeriodCreate(BaseModel):
+    month: int = Field(ge=1, le=12)
+    year: int = Field(ge=2000, le=3000)
+    pay_date: date
+    note: str | None = Field(default=None, max_length=500)
+
+
+class PayrollRowSave(BaseModel):
+    employee_id: int
+    lines: dict[str, Decimal] = Field(default_factory=dict)
+
+    @field_validator("lines")
+    @classmethod
+    def validate_lines(cls, value):
+        allowed = {"EXTRA_PAY", "POS_ALLOW", "KTB_LOAN", "TAX", "SSF", "FUNERAL_FUND", "SAVINGS_BANK_LOAN"}
+        if not set(value).issubset(allowed):
+            raise ValueError("พบประเภทรายการเงินเดือนที่ไม่รองรับ")
+        if any(amount < 0 for amount in value.values()):
+            raise ValueError("จำนวนเงินต้องไม่ติดลบ")
+        return value
+
+
+class PayrollBatchSave(BaseModel):
+    rows: list[PayrollRowSave]
+
+
+class PayrollBatchAction(BaseModel):
+    action: str
+    reject_reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_rejection_reason(self):
+        if self.action not in {"submit", "approve", "reject"}:
+            raise ValueError("คำสั่งเปลี่ยนสถานะไม่ถูกต้อง")
+        if self.action == "reject" and not (self.reject_reason or "").strip():
+            raise ValueError("กรุณาระบุเหตุผลที่ส่งกลับแก้ไข")
+        return self
+
+
 def _require_payroll_role(user):
     if user["role"] not in {"hr", "director", "admin", "finance", "dept_head"}:
         raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์เข้าถึงข้อมูลเงินเดือน")
@@ -237,6 +278,23 @@ def _require_global_payroll_role(user):
 def _require_employee_creation_role(user):
     if user["role"] not in {"director", "admin"}:
         raise HTTPException(status_code=403, detail="เฉพาะ Director และ Admin เท่านั้นที่เพิ่มพนักงานได้")
+
+
+def _ensure_batch_access(batch_id, user, allow_approval=False):
+    data, columns = db.fetch(
+        "SELECT id, department_id FROM public.payroll_department_batches WHERE id = %s",
+        (batch_id,)
+    )
+    if not data:
+        raise HTTPException(status_code=404, detail="ไม่พบรายการฝ่ายของรอบเงินเดือน")
+    batch = dict(zip(columns, data[0]))
+    if allow_approval:
+        _require_global_payroll_role(user)
+    else:
+        scope = _department_scope(user)
+        if scope is not None and batch["department_id"] != scope:
+            raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์จัดการข้อมูลของฝ่ายอื่น")
+    return batch
 
 
 @app.post("/api/auth/login")
@@ -379,6 +437,55 @@ def get_payroll_periods(user=Depends(get_current_user)):
                 "error": str(error)
             }
         )
+
+
+@app.post("/api/payroll_periods", status_code=201)
+def create_payroll_period(request: PayrollPeriodCreate, user=Depends(get_current_user)):
+    try:
+        _require_payroll_role(user)
+        period_id = payroll_workflow_service.create_period(
+            request.year, request.month, request.pay_date,
+            request.note.strip() if request.note else None, user["id"]
+        )
+        return {"success": True, "data": {"id": period_id}}
+    except psycopg.errors.UniqueViolation:
+        raise HTTPException(status_code=409, detail="มีรอบเงินเดือนของเดือนและปีนี้แล้ว")
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail={"message": "สร้างรอบเงินเดือนไม่สำเร็จ", "error": str(error)})
+
+
+@app.put("/api/payroll_department_batches/{batch_id}/items")
+def save_payroll_batch_items(batch_id: int, request: PayrollBatchSave, user=Depends(get_current_user)):
+    try:
+        batch = _ensure_batch_access(batch_id, user)
+        payroll_workflow_service.save_batch_items(
+            batch_id, batch["department_id"], [row.model_dump() for row in request.rows]
+        )
+        return {"success": True}
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail={"message": "บันทึกตารางเงินเดือนไม่สำเร็จ", "error": str(error)})
+
+
+@app.post("/api/payroll_department_batches/{batch_id}/action")
+def change_payroll_batch_status(batch_id: int, request: PayrollBatchAction, user=Depends(get_current_user)):
+    try:
+        batch = _ensure_batch_access(batch_id, user, allow_approval=request.action in {"approve", "reject"})
+        payroll_workflow_service.change_batch_status(
+            batch_id, request.action, user["id"], request.reject_reason.strip() if request.reject_reason else None
+        )
+        return {"success": True, "data": {"department_id": batch["department_id"]}}
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail={"message": "เปลี่ยนสถานะรายการไม่สำเร็จ", "error": str(error)})
 
 @app.get("/api/payroll_items")
 def get_payroll_items(user=Depends(get_current_user)):

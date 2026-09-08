@@ -8,14 +8,14 @@ class Payroll_periods:
     def dump(self, department_id=None):
         period_data, period_columns = self.db.fetch(
             """
-            SELECT pp.id, pp.year, pp.month, pp.status,
+            SELECT pp.id, pp.year, pp.month, pp.pay_date, pp.note, pp.status,
                    pp.created_by_id, creator.full_name AS created_by_name,
                    pp.created_at, pp.approved_by_id,
-                   approver.full_name AS approved_by_name, pp.approved_at
+                   approver.full_name AS approved_by_name, pp.approved_at, pp.updated_at
             FROM public.payroll_periods pp
             LEFT JOIN public.users creator ON creator.id = pp.created_by_id
             LEFT JOIN public.users approver ON approver.id = pp.approved_by_id
-            WHERE %s IS NULL OR EXISTS (
+            WHERE %s::integer IS NULL OR EXISTS (
                 SELECT 1 FROM public.payroll_department_batches filter_batch
                 WHERE filter_batch.payroll_period_id = pp.id
                   AND filter_batch.department_id = %s
@@ -38,7 +38,7 @@ class Payroll_periods:
             JOIN public.departments department ON department.id = batch.department_id
             LEFT JOIN public.users submitter ON submitter.id = batch.submitted_by_id
             LEFT JOIN public.users approver ON approver.id = batch.approved_by_id
-            WHERE %s IS NULL OR batch.department_id = %s
+            WHERE %s::integer IS NULL OR batch.department_id = %s
             ORDER BY batch.payroll_period_id, batch.department_id
             """,
             (department_id, department_id)
@@ -53,13 +53,15 @@ class Payroll_periods:
                    item.base_salary, item.total_earnings, item.total_deductions,
                    item.net_pay, item.created_at, line.pay_item_type_id,
                    item_type.code AS pay_item_code, item_type.name AS pay_item_name,
-                   item_type.category AS pay_item_category, line.amount
+                   item_type.category AS pay_item_category, line.amount,
+                   delivery.status AS email_status
             FROM public.payroll_items item
             JOIN public.employees employee ON employee.id = item.employee_id
             LEFT JOIN public.positions position ON position.id = employee.position_id
             LEFT JOIN public.payroll_item_lines line ON line.payroll_item_id = item.id
             LEFT JOIN public.pay_item_types item_type ON item_type.id = line.pay_item_type_id
-            WHERE %s IS NULL OR item.department_id = %s
+            LEFT JOIN public.payslip_email_deliveries delivery ON delivery.payroll_item_id = item.id
+            WHERE %s::integer IS NULL OR item.department_id = %s
             ORDER BY item.payroll_period_id, item.department_batch_id,
                      employee.employee_code, line.id
             """,

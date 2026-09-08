@@ -502,6 +502,7 @@ html, body {
 .dashboard-admin-alert-item.is-warning strong { color: #B7791F; }
 .dashboard-admin-alert-item.is-payroll strong { color: var(--purple-600); }
 .dashboard-admin-alert-action { align-items: flex-start; min-width: 142px; }
+.dashboard-admin-alert-print { display: none; }
 .dashboard-recent-periods {
   transition: background-color 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease;
 }
@@ -535,7 +536,29 @@ html, body {
     box-shadow: none !important;
     break-inside: avoid;
   }
-  .dashboard-admin-alert-strip { display: grid !important; }
+  .anim > .dashboard-admin-alert-strip { display: none !important; }
+  .dashboard-admin-alert-print {
+    display: grid !important;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+    border: 1px solid #BDBDBD;
+    border-radius: 10px;
+    background: #FFF;
+    color: #000;
+  }
+  .dashboard-admin-alert-print > div {
+    display: flex !important;
+    min-height: 64px;
+    flex-direction: column;
+    justify-content: center;
+    padding: 10px 16px;
+    color: #000 !important;
+    border-left: 1px solid #D1D1D1;
+  }
+  .dashboard-admin-alert-print > div:first-child { border-left: 0; }
+  .dashboard-admin-alert-print span { color: #555 !important; font-size: 11px; }
+  .dashboard-admin-alert-print strong { display: block; margin-top: 4px; color: #000 !important; font-size: 14px; }
   .dashboard-monthly-report {
     display: block !important;
     padding: 14px !important;

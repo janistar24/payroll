@@ -14,6 +14,7 @@ import {
 } from './api/employees'
 import { createPosition, getPositions, type Position } from './api/positions'
 import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
+import { createPayrollPeriod, getPayrollPeriods, payrollBatchAction, savePayrollBatchItems, type PayrollPeriodRecord } from './api/payroll'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Role = 'hr' | 'director' | 'admin'
@@ -64,6 +65,7 @@ interface PayrollRow {
 
 interface DeptPayroll {
   id: string
+  databaseId?: number
   periodId: string
   department: string
   status: DeptStatus
@@ -76,10 +78,12 @@ interface DeptPayroll {
   rejectionReason?: string
   updatedAt: string
   emailStatuses?: Record<string, EmailStatus>
+  employees?: Employee[]
 }
 
 interface PayrollPeriod {
   id: string
+  databaseId?: number
   month: number
   year: number
   payDate: string
@@ -164,7 +168,7 @@ const buildDept = (id: string, pid: string, dept: string, status: DeptStatus, su
   })
   const emailStatuses: Record<string, EmailStatus> = {}
   emps.forEach(e => { emailStatuses[e.id] = status === 'approved' ? 'sent' : 'waiting' })
-  return { id, periodId: pid, department: dept, status, rows, submittedBy: sub, submittedAt: subAt, approvedBy, approvedAt, rejectedAt, rejectionReason, updatedAt: subAt || '2025-07-28T09:00:00Z', emailStatuses }
+  return { id, periodId: pid, department: dept, status, rows, submittedBy: sub, submittedAt: subAt, approvedBy, approvedAt, rejectedAt, rejectionReason, updatedAt: subAt || '2025-07-28T09:00:00Z', emailStatuses, employees: emps }
 }
 
 const SEED_PERIODS: PayrollPeriod[] = [
@@ -209,6 +213,57 @@ const MONTH_TH = ['', 'มกราคม','กุมภาพันธ์','ม
 
 const periodLabel = (p: PayrollPeriod) => `${MONTH_TH[p.month]} ${p.year + 543}`
 
+const batchStatus = (status: string): DeptStatus => ({
+  DRAFT: 'draft', SUBMITTED: 'pending', APPROVED: 'approved', REJECTED: 'rejected', PAID: 'closed',
+}[status] ?? 'draft')
+
+const databaseEmployeeToPayrollEmployee = (employee: DatabaseEmployee, departments: Department[], positions: Position[]): Employee => ({
+  id: employee.employee_code,
+  title: employee.prefix ?? '',
+  firstName: employee.first_name,
+  lastName: employee.last_name,
+  position: positions.find(position => position.id === employee.position_id)?.name ?? '–',
+  department: departments.find(department => department.id === employee.department_id)?.name ?? '–',
+  baseSalary: Number(employee.base_salary),
+  email: employee.email ?? '',
+  status: employee.status === 'ACTIVE' ? 'active' : 'inactive',
+  startDate: employee.start_date ?? '',
+  taxId: employee.national_id,
+  socialSecId: '',
+})
+
+const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEmployee[], departments: Department[], positions: Position[]): PayrollPeriod[] => {
+  const payrollEmployees = employees.map(employee => databaseEmployeeToPayrollEmployee(employee, departments, positions))
+  return records.map(record => ({
+    id: String(record.id), databaseId: record.id, month: record.month, year: record.year,
+    payDate: record.pay_date ?? `${record.year}-${String(record.month).padStart(2, '0')}-01`, note: record.note ?? '',
+    createdAt: record.created_at, createdBy: record.created_by_name ?? '–',
+    depts: record.departments.map(batch => {
+      const rows: Record<string, PayrollRow> = {}
+      const emailStatuses: Record<string, EmailStatus> = {}
+      batch.payroll_items.forEach(item => {
+        const lines = Object.fromEntries(item.lines.map(line => [line.code, Number(line.amount)]))
+        rows[item.employee_code] = {
+          empId: item.employee_code, extra: lines.EXTRA_PAY ?? 0, posAllowance: lines.POS_ALLOW ?? 0,
+          debtKTB: lines.KTB_LOAN ?? 0, tax: lines.TAX ?? 0, social: lines.SSF ?? 0,
+          funeral: lines.FUNERAL_FUND ?? 0, ktb: 0, gsb: lines.SAVINGS_BANK_LOAN ?? 0,
+        }
+        const status = item.email_status
+        emailStatuses[item.employee_code] = status === 'SENT' ? 'sent' : status === 'FAILED' ? 'failed' : 'waiting'
+      })
+      return {
+        id: String(batch.id), databaseId: batch.id, periodId: String(record.id), department: batch.department_name,
+        status: batchStatus(batch.status), rows, submittedBy: batch.submitted_by_name ?? undefined,
+        submittedAt: batch.submitted_at ?? undefined, approvedBy: batch.approved_by_name ?? undefined,
+        approvedAt: batch.approved_at ?? undefined, rejectionReason: batch.reject_reason ?? undefined,
+        updatedAt: batch.approved_at ?? batch.submitted_at ?? batch.created_at,
+        emailStatuses,
+        employees: payrollEmployees.filter(employee => employee.department === batch.department_name && employee.status === 'active'),
+      }
+    }),
+  }))
+}
+
 const escapeMarkup = (value: unknown) => String(value ?? '')
   .replace(/&/g, '&amp;')
   .replace(/</g, '&lt;')
@@ -220,7 +275,7 @@ const rowGross = (e: Employee, r: PayrollRow) => e.baseSalary + r.extra + r.posA
 const rowDeduct = (r: PayrollRow) => r.debtKTB + r.tax + r.social + r.funeral + r.ktb + r.gsb
 const rowNet = (e: Employee, r: PayrollRow) => rowGross(e, r) - rowDeduct(r)
 
-const deptEmps = (dept: DeptPayroll) => EMPLOYEES.filter(e => e.department === dept.department)
+const deptEmps = (dept: DeptPayroll) => dept.employees ?? EMPLOYEES.filter(e => e.department === dept.department)
 const deptTotals = (dept: DeptPayroll) => {
   const emps = deptEmps(dept)
   let totalBase = 0, totalExtra = 0, totalPos = 0, totalGross = 0, totalDebtKTB = 0, totalTax = 0, totalSocial = 0, totalFuneral = 0, totalKTB = 0, totalGSB = 0, totalDeduct = 0, totalNet = 0
@@ -809,23 +864,30 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
       </div>
 
       {role === 'admin' && (
-        <section className="dashboard-admin-alert-strip" aria-label="รายการที่ควรตรวจสอบ">
-          <div className="dashboard-admin-alert-item is-failed">
-            <span>สถานะการส่งสลิป</span>
-            <strong>📨 {failedEmailCount} ราย <em>ส่งไม่สำเร็จ</em></strong>
-          </div>
-          <div className="dashboard-admin-alert-item is-warning">
-            <span>ข้อมูลติดต่อ</span>
-            <strong>⚠️ {missingEmailCount} ราย <em>ไม่มีอีเมล</em></strong>
-          </div>
-          <div className="dashboard-admin-alert-item is-payroll">
-            <span>ความครบถ้วนของรอบ</span>
-            <strong>👥 {missingPayrollCount} ราย <em>ยังไม่เข้ารอบ</em></strong>
-          </div>
-          <div className="dashboard-admin-alert-action">
-            <button className="btn btn-ghost btn-sm" onClick={() => setPage('payslip-status')}>ดูรายละเอียด →</button>
-          </div>
-        </section>
+        <>
+          <section className="dashboard-admin-alert-strip" aria-label="รายการที่ควรตรวจสอบ">
+            <div className="dashboard-admin-alert-item is-failed">
+              <span>สถานะการส่งสลิป</span>
+              <strong>📨 {failedEmailCount} ราย <em>ส่งไม่สำเร็จ</em></strong>
+            </div>
+            <div className="dashboard-admin-alert-item is-warning">
+              <span>ข้อมูลติดต่อ</span>
+              <strong>⚠️ {missingEmailCount} ราย <em>ไม่มีอีเมล</em></strong>
+            </div>
+            <div className="dashboard-admin-alert-item is-payroll">
+              <span>ความครบถ้วนของรอบ</span>
+              <strong>👥 {missingPayrollCount} ราย <em>ยังไม่เข้ารอบ</em></strong>
+            </div>
+            <div className="dashboard-admin-alert-action">
+              <button className="btn btn-ghost btn-sm" onClick={() => setPage('payslip-status')}>ดูรายละเอียด →</button>
+            </div>
+          </section>
+          <section className="dashboard-admin-alert-print" aria-label="สรุปรายการที่ควรตรวจสอบสำหรับพิมพ์">
+            <div><span>สถานะการส่งสลิป</span><strong>ส่งไม่สำเร็จ {failedEmailCount} ราย</strong></div>
+            <div><span>ข้อมูลติดต่อ</span><strong>ไม่มีอีเมล {missingEmailCount} ราย</strong></div>
+            <div><span>ความครบถ้วนของรอบ</span><strong>ยังไม่เข้ารอบ {missingPayrollCount} ราย</strong></div>
+          </section>
+        </>
       )}
 
       {/* HR-only monthly report */}
@@ -952,10 +1014,10 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
 
 // ─── Payroll Periods List ─────────────────────────────────────────────────────
 
-function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, setActiveDeptId, role, userDepartment }: {
-  periods: PayrollPeriod[]; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
+function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, role, userDepartment, reloadPayroll }: {
+  periods: PayrollPeriod[];
   setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; setActiveDeptId: (id: string) => void;
-  role: Role; userDepartment: string | null;
+  role: Role; userDepartment: string | null; reloadPayroll: () => Promise<void>;
 }) {
   const [showCreate, setShowCreate] = useState(false)
   const [createMonth, setCreateMonth] = useState(String(new Date().getMonth() + 1))
@@ -963,25 +1025,14 @@ function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, setActiv
   const [createPayDate, setCreatePayDate] = useState('')
   const [createNote, setCreateNote] = useState('')
 
-  const handleCreate = () => {
-    const periodDepartments = role === 'hr' && userDepartment ? [userDepartment] : DEPARTMENTS
+  const handleCreate = async () => {
     const gregorianYear = parseInt(createYear) - 543
-    const periodId = `PP-${gregorianYear}-${createMonth.padStart(2,'0')}`
-    const newPeriod: PayrollPeriod = {
-      id: periodId,
-      month: parseInt(createMonth), year: gregorianYear, payDate: createPayDate, note: createNote,
-      createdAt: new Date().toISOString(), createdBy: 'นางสาวสมใจ รักงาน',
-      depts: periodDepartments.map((d, i) => buildDept(`DP-NEW-${i}`, periodId, d, 'draft')),
-    }
-    setPeriods(prev => [newPeriod, ...prev])
-    setActivePeriodId(newPeriod.id)
+    const periodId = await createPayrollPeriod({ year: gregorianYear, month: parseInt(createMonth), pay_date: createPayDate, note: createNote })
+    await reloadPayroll()
+    setActivePeriodId(String(periodId))
+    setActiveDeptId('')
     setShowCreate(false)
-    if (role === 'hr' && newPeriod.depts[0]) {
-      setActiveDeptId(newPeriod.depts[0].id)
-      setPage('dept-table')
-    } else {
-      setPage('period-detail')
-    }
+    setPage(role === 'hr' ? 'dept-table' : 'period-detail')
   }
 
   return (
@@ -1064,7 +1115,7 @@ function PeriodsPage({ periods, setPeriods, setPage, setActivePeriodId, setActiv
             </div>
             <div className="flex gap-3 justify-end mt-2">
               <button className="btn btn-secondary" onClick={() => setShowCreate(false)}>ยกเลิก</button>
-              <button className="btn btn-primary" onClick={handleCreate} disabled={!createPayDate}>สร้างรอบเงินเดือน</button>
+            <button className="btn btn-primary" onClick={() => void handleCreate()} disabled={!createPayDate}>สร้างรอบเงินเดือน</button>
             </div>
           </div>
         </Modal>
@@ -1188,12 +1239,16 @@ function CellInput({ empId, field, value, isReadonly, onFocus, onCommit }: CellI
 
 // ─── Dept Payroll Table ───────────────────────────────────────────────────────
 
-function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
+function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, reloadPayroll }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
   setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void;
+  databaseEmployees: DatabaseEmployee[]; reloadPayroll: () => Promise<void>;
 }) {
-  const allDepartmentEmployees = useMemo(() => EMPLOYEES.filter(e => e.department === dept.department), [dept.department])
-  const [includedEmployeeIds, setIncludedEmployeeIds] = useState<string[]>(() => Object.keys(dept.rows))
+  const allDepartmentEmployees = useMemo(() => deptEmps(dept), [dept])
+  const [includedEmployeeIds, setIncludedEmployeeIds] = useState<string[]>(() => {
+    const savedEmployeeIds = Object.keys(dept.rows)
+    return savedEmployeeIds.length > 0 ? savedEmployeeIds : (dept.employees ?? []).map(employee => employee.id)
+  })
   const emps = useMemo(
     () => allDepartmentEmployees.filter(employee => includedEmployeeIds.includes(employee.id)),
     [allDepartmentEmployees, includedEmployeeIds]
@@ -1222,13 +1277,31 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
     setDirty(true)
   }, [])
 
-  const save = () => {
-    setPeriods(prev => prev.map(p => p.id === period.id ? {
-      ...p, depts: p.depts.map(d => d.id === dept.id ? { ...d, rows: { ...rows }, updatedAt: new Date().toISOString() } : d)
-    } : p))
-    setDirty(false)
-    setEditing(false)
-    showToast('บันทึกข้อมูลแบบร่างเรียบร้อยแล้ว', 'success')
+  const persistRows = async () => {
+    if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
+    const byCode = new Map(databaseEmployees.map(employee => [employee.employee_code, employee.id]))
+    const payload = includedEmployeeIds.map(employeeCode => {
+      const row = rows[employeeCode]
+      const employeeId = byCode.get(employeeCode)
+      if (!employeeId || !row) throw new Error(`ไม่พบข้อมูลพนักงาน ${employeeCode}`)
+      return { employee_id: employeeId, lines: {
+        EXTRA_PAY: row.extra, POS_ALLOW: row.posAllowance, KTB_LOAN: row.debtKTB,
+        TAX: row.tax, SSF: row.social, FUNERAL_FUND: row.funeral, SAVINGS_BANK_LOAN: row.gsb,
+      } }
+    })
+    await savePayrollBatchItems(dept.databaseId, payload)
+  }
+
+  const save = async () => {
+    try {
+      await persistRows()
+      await reloadPayroll()
+      setDirty(false)
+      setEditing(false)
+      showToast('บันทึกข้อมูลแบบร่างเรียบร้อยแล้ว', 'success')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'บันทึกข้อมูลไม่สำเร็จ', 'error')
+    }
   }
 
   const addEmployeeToTable = (employee: Employee) => {
@@ -1240,14 +1313,19 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast }: {
     showToast(`เพิ่ม ${employee.firstName} ${employee.lastName} เข้าตารางแล้ว`, 'success')
   }
 
-  const submitForApproval = () => {
-    setPeriods(prev => prev.map(p => p.id === period.id ? {
-      ...p, depts: p.depts.map(d => d.id === dept.id ? { ...d, rows: { ...rows }, status: 'pending', submittedBy: 'นางสาวสมใจ รักงาน', submittedAt: new Date().toISOString(), updatedAt: new Date().toISOString() } : d)
-    } : p))
-    setDirty(false)
-    setShowSubmitModal(false)
-    showToast('ส่งข้อมูลให้ผู้อำนวยการอนุมัติแล้ว', 'success')
-    setPage('dept-table')
+  const submitForApproval = async () => {
+    try {
+      if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
+      await persistRows()
+      await payrollBatchAction(dept.databaseId, 'submit')
+      await reloadPayroll()
+      setDirty(false)
+      setShowSubmitModal(false)
+      showToast('ส่งข้อมูลให้ผู้อำนวยการอนุมัติแล้ว', 'success')
+      setPage('dept-table')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'ส่งอนุมัติไม่สำเร็จ', 'error')
+    }
   }
 
   const totals = useMemo(() => {
@@ -1601,11 +1679,11 @@ function DirectorApprovals({ periods, setPage, setActivePeriodId, setActiveDeptI
 
 // ─── Director Detail ──────────────────────────────────────────────────────────
 
-function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
+function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPayroll }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
-  setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void;
+  setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void; reloadPayroll: () => Promise<void>;
 }) {
-  const emps = useMemo(() => EMPLOYEES.filter(e => e.department === dept.department), [dept.department])
+  const emps = useMemo(() => deptEmps(dept), [dept])
   const [showApproveModal, setShowApproveModal] = useState(false)
   const [showRejectModal, setShowRejectModal] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
@@ -1647,30 +1725,31 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast }: {
     printWindow.document.close()
   }
 
-  const handleApprove = () => {
-    setPeriods(prev => prev.map(p => p.id === period.id ? {
-      ...p, depts: p.depts.map(d => d.id === dept.id ? {
-        ...d, status: 'approved' as DeptStatus,
-        approvedBy: 'นายวิเชียร บริหารดี', approvedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-        emailStatuses: Object.fromEntries(emps.map(e => [e.id, 'sent' as EmailStatus])),
-      } : d)
-    } : p))
-    setShowApproveModal(false)
-    showToast('อนุมัติเรียบร้อย — กำลังสร้าง PDF และส่งอีเมล', 'success')
-    setPage('dashboard')
+  const handleApprove = async () => {
+    try {
+      if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
+      await payrollBatchAction(dept.databaseId, 'approve')
+      await reloadPayroll()
+      setShowApproveModal(false)
+      showToast('อนุมัติเรียบร้อยแล้ว และบันทึกสถานะอีเมลลงฐานข้อมูลแล้ว', 'success')
+      setPage('dashboard')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'อนุมัติไม่สำเร็จ', 'error')
+    }
   }
 
-  const handleReject = () => {
+  const handleReject = async () => {
     if (!rejectReason.trim()) return
-    setPeriods(prev => prev.map(p => p.id === period.id ? {
-      ...p, depts: p.depts.map(d => d.id === dept.id ? {
-        ...d, status: 'rejected' as DeptStatus,
-        rejectedAt: new Date().toISOString(), rejectionReason: rejectReason, updatedAt: new Date().toISOString(),
-      } : d)
-    } : p))
-    setShowRejectModal(false)
-    showToast('ส่งกลับไปให้ HR แก้ไขแล้ว', 'error')
-    setPage('dashboard')
+    try {
+      if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
+      await payrollBatchAction(dept.databaseId, 'reject', rejectReason)
+      await reloadPayroll()
+      setShowRejectModal(false)
+      showToast('ส่งกลับไปให้ HR แก้ไขแล้ว', 'error')
+      setPage('dashboard')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'ส่งกลับแก้ไขไม่สำเร็จ', 'error')
+    }
   }
 
   return (
@@ -2202,7 +2281,7 @@ function PayslipStatus({ periods }: { periods: PayrollPeriod[] }) {
       <PageHeader title="สถานะการส่งสลิปเงินเดือน" subtitle="ติดตามสถานะ PDF และอีเมลสลิปเงินเดือนรายฝ่าย" />
       {approvedDepts.length === 0 && <div className="card"><div className="empty-state"><div className="empty-icon">✉</div><div>ยังไม่มีฝ่ายที่ได้รับการอนุมัติ</div></div></div>}
       {approvedDepts.map(({ period: p, dept: d }) => {
-        const emps = EMPLOYEES.filter(e => e.department === d.department)
+        const emps = deptEmps(d)
         const sentCount = emps.filter(e => d.emailStatuses?.[e.id] === 'sent').length
         return (
           <div key={d.id} className="card" style={{ marginBottom: 16, padding: 0, overflow: 'hidden' }}>
@@ -2532,10 +2611,10 @@ export default function App() {
   const [userName, setUserName] = useState('')
   const [userDepartment, setUserDepartment] = useState<string | null>(null)
   const [page, setPage] = useState<Page>('dashboard')
-  const [periods, setPeriods] = useState<PayrollPeriod[]>(SEED_PERIODS)
+  const [periods, setPeriods] = useState<PayrollPeriod[]>([])
   const [users] = useState<UserAccount[]>(SEED_USERS)
-  const [activePeriodId, setActivePeriodId] = useState<string>(SEED_PERIODS[0].id)
-  const [activeDeptId, setActiveDeptId] = useState<string>(SEED_PERIODS[0].depts[0].id)
+  const [activePeriodId, setActivePeriodId] = useState<string>('')
+  const [activeDeptId, setActiveDeptId] = useState<string>('')
   const [editEmpId, setEditEmpId] = useState<number | null>(null)
   const [toast, setToast] = useState<{ msg: string; type?: 'success' | 'error'; key: number } | null>(null)
   const toastKey = useRef(0)
@@ -2544,14 +2623,19 @@ export default function App() {
       try {
         setEmployeeLoading(true)
         setEmployeeError('')
-        const [employeeData, departmentData, positionData] = await Promise.all([
+        const [employeeData, departmentData, positionData, payrollData] = await Promise.all([
           getEmployees(),
           getDepartments(),
           getPositions(),
+          getPayrollPeriods(),
         ])
+        const mappedPeriods = mapPayrollPeriods(payrollData, employeeData, departmentData, positionData)
         setDatabaseEmployees(employeeData)
         setDepartments(departmentData)
         setPositions(positionData)
+        setPeriods(mappedPeriods)
+        setActivePeriodId(current => current && mappedPeriods.some(period => period.id === current) ? current : mappedPeriods[0]?.id ?? '')
+        setActiveDeptId(current => current && mappedPeriods.some(period => period.depts.some(department => department.id === current)) ? current : mappedPeriods[0]?.depts[0]?.id ?? '')
       } catch (loadError) {
         setEmployeeError(loadError instanceof Error ? loadError.message : 'เกิดข้อผิดพลาดในการโหลดข้อมูล')
       } finally {
@@ -2605,7 +2689,7 @@ export default function App() {
         <header style={{ background: 'rgba(255,255,255,0.80)', backdropFilter: 'blur(16px)', borderBottom: '1px solid rgba(0,0,0,0.06)', padding: '0 28px', height: 56, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, position: 'sticky', top: 0, zIndex: 10 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: '#1A1A1A' }}>{pageTitle[page] ?? ''}</div>
           <div className="flex items-center gap-3">
-            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>รอบปัจจุบัน: <strong style={{ color: '#1A1A1A' }}>{periodLabel(visiblePeriods[0])}</strong></div>
+            <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>รอบปัจจุบัน: <strong style={{ color: '#1A1A1A' }}>{visiblePeriods[0] ? periodLabel(visiblePeriods[0]) : 'ยังไม่มีรอบเงินเดือน'}</strong></div>
             <button className="btn btn-ghost btn-sm" style={{ color: 'var(--text-secondary)', fontSize: 13 }} onClick={handleLogout}>ออกจากระบบ</button>
           </div>
         </header>
@@ -2618,19 +2702,19 @@ export default function App() {
               setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
           )}
           {page === 'periods' && (
-            <PeriodsPage periods={visiblePeriods} setPeriods={setPeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} />
+            <PeriodsPage periods={visiblePeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} reloadPayroll={loadEmployeeData} />
           )}
           {page === 'period-detail' && activePeriod && role !== 'hr' && (
             <PeriodDetail period={activePeriod} setPage={setPage} setActiveDeptId={setActiveDeptId} role={role} />
           )}
           {(page === 'dept-table' || (page === 'period-detail' && role === 'hr')) && activePeriod && activeDept && (
-            <DeptPayrollTable period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} />
+            <DeptPayrollTable period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} databaseEmployees={visibleEmployees} reloadPayroll={loadEmployeeData} />
           )}
           {page === 'director-approvals' && (
             <DirectorApprovals periods={visiblePeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
           )}
           {page === 'director-detail' && activePeriod && activeDept && (
-            <DirectorDetail period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} />
+            <DirectorDetail period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} reloadPayroll={loadEmployeeData} />
           )}
           {page === 'employees' && (
             <EmployeesPage

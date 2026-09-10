@@ -1,12 +1,20 @@
 import os
 from contextlib import contextmanager
 import psycopg
+from psycopg.conninfo import make_conninfo
+try:
+    from psycopg_pool import ConnectionPool
+except ImportError:  # Keep local development available until optional pooling is installed.
+    ConnectionPool = None
 from dotenv import load_dotenv
+from threading import Lock
 
 load_dotenv()
 
 
 class DBHelper:
+    _pool = None
+    _pool_lock = Lock()
 
     def __init__(self):
         self.host = os.getenv("POSTGRES_HOST")
@@ -15,49 +23,69 @@ class DBHelper:
         self.password = os.getenv("POSTGRES_PASSWORD")
         self.db = os.getenv("POSTGRES_DB")
 
-    def __connect__(self):
-        self.con = psycopg.connect(
-            host=self.host,
-            port=self.port,
-            user=self.user,
-            password=self.password,
-            dbname=self.db
-        )
-        self.cur = self.con.cursor()
+    def _get_pool(self):
+        """Use a bounded shared pool; cursors remain request-local and thread-safe."""
+        if ConnectionPool is None:
+            return None
+        if self.__class__._pool is None:
+            with self.__class__._pool_lock:
+                if self.__class__._pool is None:
+                    conninfo = make_conninfo(
+                        host=self.host, port=self.port, user=self.user,
+                        password=self.password, dbname=self.db,
+                    )
+                    self.__class__._pool = ConnectionPool(
+                        conninfo=conninfo,
+                        min_size=1,
+                        max_size=int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10")),
+                        timeout=int(os.getenv("POSTGRES_POOL_TIMEOUT_SECONDS", "10")),
+                        kwargs={
+                            "connect_timeout": int(os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS", "5")),
+                            "options": f"-c statement_timeout={int(os.getenv('POSTGRES_STATEMENT_TIMEOUT_MS', '15000'))}",
+                        },
+                    )
+        return self.__class__._pool
 
-    def __disconnect__(self):
-        self.cur.close()
-        self.con.close()
+    @contextmanager
+    def _connection(self):
+        pool = self._get_pool()
+        if pool is not None:
+            with pool.connection() as connection:
+                yield connection
+            return
+
+        connection = psycopg.connect(
+            host=self.host, port=self.port, user=self.user,
+            password=self.password, dbname=self.db,
+            connect_timeout=int(os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS", "5")),
+            options=f"-c statement_timeout={int(os.getenv('POSTGRES_STATEMENT_TIMEOUT_MS', '15000'))}",
+        )
+        try:
+            yield connection
+        finally:
+            connection.close()
 
     def fetch(self, sql, params=None):
-        self.__connect__()
-        try:
-            self.cur.execute(sql, params or ())
-            data = self.cur.fetchall()
-            columns = tuple(desc.name for desc in self.cur.description)
-            return data, columns
-        finally:
-            self.__disconnect__()
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params or ())
+                data = cursor.fetchall()
+                columns = tuple(desc.name for desc in cursor.description)
+                return data, columns
 
     def execute(self, sql, params=None):
-        self.__connect__()
-        try:
-            self.cur.execute(sql, params or ())
-            self.con.commit()
-        except Exception:
-            self.con.rollback()
-            raise
-        finally:
-            self.__disconnect__()
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params or ())
+                connection.commit()
 
     @contextmanager
     def transaction(self):
-        self.__connect__()
-        try:
-            yield self.cur
-            self.con.commit()
-        except Exception:
-            self.con.rollback()
-            raise
-        finally:
-            self.__disconnect__()
+        with self._connection() as connection:
+            with connection.cursor() as cursor:
+                try:
+                    yield cursor
+                    connection.commit()
+                except Exception:
+                    connection.rollback()
+                    raise

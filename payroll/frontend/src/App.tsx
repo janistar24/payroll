@@ -1,4 +1,5 @@
 import { Fragment, useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import takhliLogo from './imports/takhli_logo_color.jpeg'
 import {
   getDepartments,
@@ -13,13 +14,25 @@ import {
   type EmployeeSaveInput,
 } from './api/employees'
 import { createPosition, getPositions, type Position } from './api/positions'
+import { getBootstrap } from './api/bootstrap'
 import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
-import { createPayrollPeriod, getPayrollPeriods, payrollBatchAction, savePayrollBatchItems, type PayrollPeriodRecord } from './api/payroll'
+import { createSystemUser, getUsers, resetSystemUserPassword, type SystemUser } from './api/users'
+import { createPayrollPeriod, getPayrollPeriods, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollPeriodRecord } from './api/payroll'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Role = 'hr' | 'director' | 'admin'
 type DeptStatus = 'draft' | 'pending' | 'approved' | 'rejected' | 'closed'
 type EmailStatus = 'waiting' | 'sending' | 'sent' | 'failed'
+type PayslipDeliveryRow = {
+  period: PayrollPeriod
+  dept: DeptPayroll
+  employee: Employee
+  payrollItemId?: number
+  status: EmailStatus
+  hasEmail: boolean
+}
+
+type FloatingDropdownPosition = { top: number; left: number; width: number }
 
 type Page =
   | 'login'
@@ -32,9 +45,7 @@ type Page =
   | 'employees'
   | 'employee-form'
   | 'payslip-status'
-  | 'reports'
   | 'admin-users'
-  | 'admin-settings'
 
 interface Employee {
   id: string
@@ -78,6 +89,9 @@ interface DeptPayroll {
   rejectionReason?: string
   updatedAt: string
   emailStatuses?: Record<string, EmailStatus>
+  emailItemIds?: Record<string, number>
+  emailSentAt?: Record<string, string>
+  excludedEmployeeIds?: string[]
   employees?: Employee[]
 }
 
@@ -210,6 +224,7 @@ const thb = (n: number) => n.toLocaleString('th-TH', { minimumFractionDigits: 2,
 const thbInt = (n: number) => n.toLocaleString('th-TH')
 
 const MONTH_TH = ['', 'มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม']
+const MONTH_EN_SHORT = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 const periodLabel = (p: PayrollPeriod) => `${MONTH_TH[p.month]} ${p.year + 543}`
 
@@ -234,6 +249,7 @@ const databaseEmployeeToPayrollEmployee = (employee: DatabaseEmployee, departmen
 
 const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEmployee[], departments: Department[], positions: Position[]): PayrollPeriod[] => {
   const payrollEmployees = employees.map(employee => databaseEmployeeToPayrollEmployee(employee, departments, positions))
+  const payrollEmployeesByCode = new Map(payrollEmployees.map(employee => [employee.id, employee]))
   return records.map(record => ({
     id: String(record.id), databaseId: record.id, month: record.month, year: record.year,
     payDate: record.pay_date ?? `${record.year}-${String(record.month).padStart(2, '0')}-01`, note: record.note ?? '',
@@ -241,6 +257,8 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
     depts: record.departments.map(batch => {
       const rows: Record<string, PayrollRow> = {}
       const emailStatuses: Record<string, EmailStatus> = {}
+      const emailItemIds: Record<string, number> = {}
+      const emailSentAt: Record<string, string> = {}
       batch.payroll_items.forEach(item => {
         const lines = Object.fromEntries(item.lines.map(line => [line.code, Number(line.amount)]))
         rows[item.employee_code] = {
@@ -250,6 +268,41 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
         }
         const status = item.email_status
         emailStatuses[item.employee_code] = status === 'SENT' ? 'sent' : status === 'FAILED' ? 'failed' : 'waiting'
+        emailItemIds[item.employee_code] = item.id
+        if (item.email_sent_at) emailSentAt[item.employee_code] = item.email_sent_at
+      })
+      // A payroll batch is a historical snapshot.  Do not replace its staff list
+      // with every current employee in the department: someone removed from this
+      // month's table must not reappear in Director/Admin summaries after login.
+      const batchEmployees = batch.payroll_items.map(item => {
+        const currentEmployee = payrollEmployeesByCode.get(item.employee_code)
+        if (currentEmployee) {
+          return {
+            ...currentEmployee,
+            title: item.prefix ?? currentEmployee.title,
+            firstName: item.first_name,
+            lastName: item.last_name,
+            position: item.position_name ?? currentEmployee.position,
+            department: batch.department_name,
+            baseSalary: Number(item.base_salary),
+          }
+        }
+        // Keep old payrolls viewable even if the employee was later deactivated
+        // and therefore is no longer returned by the live employee directory.
+        return {
+          id: item.employee_code,
+          title: item.prefix ?? '',
+          firstName: item.first_name,
+          lastName: item.last_name,
+          position: item.position_name ?? '–',
+          department: batch.department_name,
+          baseSalary: Number(item.base_salary),
+          email: '',
+          status: 'inactive' as const,
+          startDate: '',
+          taxId: '',
+          socialSecId: '',
+        }
       })
       return {
         id: String(batch.id), databaseId: batch.id, periodId: String(record.id), department: batch.department_name,
@@ -258,7 +311,10 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
         approvedAt: batch.approved_at ?? undefined, rejectionReason: batch.reject_reason ?? undefined,
         updatedAt: batch.approved_at ?? batch.submitted_at ?? batch.created_at,
         emailStatuses,
-        employees: payrollEmployees.filter(employee => employee.department === batch.department_name && employee.status === 'active'),
+        emailItemIds,
+        emailSentAt,
+        excludedEmployeeIds: batch.excluded_employee_codes ?? [],
+        employees: batchEmployees,
       }
     }),
   }))
@@ -274,6 +330,209 @@ const escapeMarkup = (value: unknown) => String(value ?? '')
 const rowGross = (e: Employee, r: PayrollRow) => e.baseSalary + r.extra + r.posAllowance
 const rowDeduct = (r: PayrollRow) => r.debtKTB + r.tax + r.social + r.funeral + r.ktb + r.gsb
 const rowNet = (e: Employee, r: PayrollRow) => rowGross(e, r) - rowDeduct(r)
+
+// รูปแบบทางการของรายงาน ใช้ร่วมกันทั้ง HR / Director / Admin
+const PAYROLL_REPORT_COLUMNS = [
+  'ลำดับ', 'รหัส', 'ชื่อ-นามสกุล', 'ตำแหน่ง', 'เงินเดือน', 'เงินเพิ่ม/\nค่าตอบแทน',
+  'เงินประจำ\nตำแหน่ง', 'รวมรายการรับ', 'เพื่อชำระหนี้\nธนาคารกรุงไทย', 'ภาษีหัก ณ\nที่จ่าย',
+  'ประกันสังคม', 'ฌาปนกิจ', 'ธนาคาร\nกรุงไทย', 'ธนาคารออมสิน\nสาขาตาคลี', 'รวมรายการหัก', 'ยอดรับสุทธิ',
+]
+const PAYROLL_REPORT_WIDTHS = [7.19, 8.78, 21.79, 21.59, 12.39, 12.39, 11.19, 14.39, 15.99, 10.59, 12.39, 10.59, 15.78, 15.19, 14.19, 12.39]
+type PayrollExportEntry = { employee: Employee; row: PayrollRow }
+
+const exportPayrollWorkbook = async ({ period, department, entries }: {
+  period: PayrollPeriod; department: string; entries: PayrollExportEntry[]
+}) => {
+  const ExcelJS = (await import('exceljs')).default
+  const workbook = new ExcelJS.Workbook()
+  workbook.creator = 'PayFlow'
+  workbook.created = new Date()
+  const sheet = workbook.addWorksheet(`เงินเดือน ${MONTH_TH[period.month]}`)
+  sheet.properties.defaultRowHeight = 13
+  sheet.pageSetup = {
+    paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 1, scale: 67,
+    margins: { left: 0.75, right: 0.75, top: 1, bottom: 1, header: 0.51, footer: 0.51 },
+  }
+  sheet.pageSetup.horizontalCentered = false
+  sheet.columns = PAYROLL_REPORT_WIDTHS.map(width => ({ width }))
+  PAYROLL_REPORT_WIDTHS.forEach((width, index) => { sheet.getColumn(index + 1).width = width })
+
+  const border = { top: { style: 'thin' as const }, left: { style: 'thin' as const }, bottom: { style: 'thin' as const }, right: { style: 'thin' as const } }
+  const centered = { horizontal: 'center' as const, vertical: 'middle' as const, wrapText: false }
+  const printedAt = new Date().toLocaleString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+
+  sheet.mergeCells('E1:L1'); sheet.getCell('E1').value = 'เทศบาลเมืองตาคลี'
+  sheet.mergeCells('E2:L2'); sheet.getCell('E2').value = 'รายงานการปรับปรุงข้อมูลเงินเดือน'
+  sheet.getCell('A3').value = `วันที่พิมพ์ : ${printedAt}`
+  sheet.mergeCells('A4:D4'); sheet.getCell('A4').value = '1 ซ.ประชาตาคลี 3 ต.ตาคลี'
+  sheet.mergeCells('A5:D5'); sheet.getCell('A5').value = 'อ.ตาคลี จ.นครสวรรค์   60140'
+  sheet.mergeCells('E4:L4'); sheet.getCell('E4').value = department
+  sheet.mergeCells('E5:L5'); sheet.getCell('E5').value = `ประจำเดือน ${MONTH_TH[period.month]} พ.ศ.${period.year + 543}`
+  sheet.getCell('P1').value = 'หน้า 1/1'
+  ;[1, 2, 4, 5].forEach(rowNumber => { sheet.getRow(rowNumber).height = rowNumber === 1 ? 26 : rowNumber === 2 ? 16 : 15 })
+  ;['E1', 'E2', 'E4', 'E5'].forEach((address, index) => {
+    const cell = sheet.getCell(address)
+    cell.font = { name: 'Tahoma', size: index === 0 ? 16 : 12, bold: true }
+    cell.alignment = centered
+  })
+  sheet.getCell('A3').font = { name: 'Tahoma', size: 10 }
+  sheet.getCell('A4').font = { name: 'Tahoma', size: 10 }
+  sheet.getCell('A5').font = { name: 'Tahoma', size: 10 }
+  sheet.getCell('P1').font = { name: 'Tahoma', size: 9 }
+
+  try {
+    const response = await fetch(takhliLogo)
+    const logoId = workbook.addImage({ buffer: await response.arrayBuffer(), extension: 'jpeg' })
+    sheet.addImage(logoId, { tl: { col: 6.8, row: 0 }, ext: { width: 48, height: 48 } })
+  } catch {
+    // รายงานยัง export ได้แม้เบราว์เซอร์ไม่สามารถอ่านไฟล์โลโก้จาก cache ได้
+  }
+
+  sheet.mergeCells('A7:E7'); sheet.mergeCells('F7:H7'); sheet.mergeCells('I7:O7'); sheet.mergeCells('P7:P8')
+  sheet.getCell('A7').value = 'ข้อมูลพนักงาน'; sheet.getCell('F7').value = 'รายการรับ'; sheet.getCell('I7').value = 'รายการหัก'; sheet.getCell('P7').value = 'ยอดรับสุทธิ'
+  PAYROLL_REPORT_COLUMNS.forEach((label, index) => { sheet.getCell(8, index + 1).value = label })
+  sheet.getRow(7).height = 13; sheet.getRow(8).height = 42
+  for (let row = 7; row <= 8; row += 1) {
+    sheet.getRow(row).eachCell({ includeEmpty: true }, cell => {
+      cell.font = { name: 'Tahoma', size: 10, bold: true }
+      cell.alignment = { ...centered, wrapText: true }
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFCC' } }
+      cell.border = border
+    })
+  }
+
+  const totals = Array(12).fill(0) as number[]
+  entries.forEach(({ employee, row }, index) => {
+    const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
+    values.forEach((value, valueIndex) => { totals[valueIndex] += value })
+    const sheetRow = sheet.addRow([index + 1, employee.id, `${employee.title}${employee.firstName} ${employee.lastName}`, employee.position, ...values])
+    sheetRow.height = 13
+    sheetRow.eachCell({ includeEmpty: true }, (cell, column) => {
+      cell.font = { name: 'Tahoma', size: 10 }
+      cell.border = border
+      cell.alignment = column <= 2 ? centered : { horizontal: column >= 5 ? 'right' : 'left', vertical: 'middle', wrapText: false }
+      if (column >= 5) cell.numFmt = '#,##0.00'
+    })
+  })
+  const totalRow = sheet.addRow(['รวมทั้งสิ้น', '', '', '', ...totals])
+  sheet.mergeCells(`A${totalRow.number}:D${totalRow.number}`)
+  totalRow.height = 13
+  totalRow.eachCell({ includeEmpty: true }, (cell, column) => {
+    cell.font = { name: 'Tahoma', size: 10, bold: true }
+    cell.border = border
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFCC' } }
+    cell.alignment = column >= 5 ? { horizontal: 'right', vertical: 'middle', wrapText: false } : centered
+    if (column >= 5) cell.numFmt = '#,##0.00'
+  })
+
+  const raw = await workbook.xlsx.writeBuffer()
+  const url = URL.createObjectURL(new Blob([raw], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = `ตารางรอบเดือน_${department.replace(/[\\/:*?"<>|]/g, '-')}_${MONTH_EN_SHORT[period.month]}.xlsx`
+  anchor.click()
+  URL.revokeObjectURL(url)
+}
+
+const printPayrollReport = ({ period, department, status, entries }: {
+  period: PayrollPeriod; department: string; status: DeptStatus; entries: PayrollExportEntry[]
+}) => {
+  const printWindow = window.open('', '_blank', 'width=1200,height=800')
+  if (!printWindow) return false
+  printWindow.opener = null
+  const totals = Array(12).fill(0) as number[]
+  const body = entries.map(({ employee, row }, index) => {
+    const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
+    values.forEach((value, valueIndex) => { totals[valueIndex] += value })
+    return `<tr><td class="center">${index + 1}</td><td class="center">${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+  }).join('')
+  printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานการปรับปรุงข้อมูลเงินเดือน</title><style>@page{size:297mm 210mm;margin:8mm 7mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;color:#000;background:#fff;font-family:Tahoma,sans-serif;font-size:7.2pt}.head{display:grid;grid-template-columns:1fr auto 1fr;align-items:center}.head img{width:14mm;height:14mm;object-fit:contain}.head-title{text-align:center}.head-title h1,.head-title h2,.head-title p{margin:0}.head-title h1{font-size:13pt;line-height:1.25}.head-title h2{font-size:11pt;line-height:1.25}.head-title p{font-size:8.5pt;margin-top:2px}.page{text-align:right;font-size:8pt}.meta{display:grid;grid-template-columns:repeat(3,1fr);margin:5mm 0 2mm}.meta div:nth-child(2){text-align:center}.meta div:last-child{text-align:right}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:.45pt solid #000;padding:3px 2px;vertical-align:middle}thead th{background:#ffffcc;text-align:center;font-weight:700;line-height:1.15;font-size:7pt;overflow-wrap:anywhere}tbody td,tfoot td{font-size:6.6pt;line-height:1.15;white-space:nowrap;overflow-wrap:normal;word-break:keep-all}td.num{text-align:right;font-variant-numeric:tabular-nums}td.center{text-align:center}tfoot td{background:#ffffcc;font-weight:700;border-top:1pt solid #000;border-bottom:1pt solid #000}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:16mm;margin-top:9mm;text-align:center;line-height:1.65}col.c1{width:3.4%}col.c2{width:4.8%}col.c3{width:11.5%}col.c4{width:7.6%}col.c5{width:7.3%}col.c6{width:6.4%}col.c7{width:7.4%}col.c8{width:7.4%}col.c9{width:6.4%}col.c10{width:6.4%}col.c11{width:6.4%}col.c12{width:6.4%}col.c13{width:6.4%}col.c14{width:6.4%}col.c15{width:7.4%}col.c16{width:7.7%}</style></head><body><div class="head"><div><img src="${takhliLogo}" alt="ตราเทศบาลเมืองตาคลี"></div><div class="head-title"><h1>เทศบาลเมืองตาคลี</h1><h2>รายงานการปรับปรุงข้อมูลเงินเดือน</h2><p>${escapeMarkup(department)} · ประจำเดือน ${escapeMarkup(periodLabel(period))}</p></div><div class="page">หน้า 1/1</div></div><div class="meta"><div><b>วันที่จ่าย:</b> ${escapeMarkup(new Date(period.payDate).toLocaleDateString('th-TH', { dateStyle: 'long' }))}</div><div><b>จำนวนพนักงาน:</b> ${entries.length} คน</div><div><b>สถานะ:</b> ${escapeMarkup(statusLabel[status])}</div></div><table><colgroup>${Array.from({ length: 16 }, (_, index) => `<col class="c${index + 1}">`).join('')}</colgroup><thead><tr><th colspan="5">ข้อมูลพนักงาน</th><th colspan="3">รายการรับ</th><th colspan="7">รายการหัก</th><th rowspan="2">ยอดรับสุทธิ</th></tr><tr>${PAYROLL_REPORT_COLUMNS.slice(0, -1).map(value => `<th>${value}</th>`).join('')}</tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${totals.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr></tfoot></table><div class="signatures"><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้จัดทำ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้ตรวจสอบ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้อนุมัติ</div></div><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close())})<\/script></body></html>`)
+  // เอกสารเก่ามี listener print ตอน load อยู่แล้ว จึงกันไม่ให้เรียกซ้ำ แล้วสั่งพิมพ์จาก click นี้โดยตรง
+  printWindow.addEventListener('load', event => event.stopImmediatePropagation(), true)
+  printWindow.document.close()
+  return true
+}
+
+const legacyPrintPayrollTemplate = ({ period, department, status, entries }: {
+  period: PayrollPeriod; department: string; status: DeptStatus; entries: PayrollExportEntry[]
+}) => {
+  const printWindow = window.open('', '_blank', 'width=1200,height=800')
+  if (!printWindow) return false
+  printWindow.opener = null
+  const totals = Array(12).fill(0) as number[]
+  const body = entries.map(({ employee, row }, index) => {
+    const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
+    values.forEach((value, valueIndex) => { totals[valueIndex] += value })
+    return `<tr><td>${index + 1}</td><td>${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+  }).join('')
+  const widths = PAYROLL_REPORT_WIDTHS.map(width => `${(width / PAYROLL_REPORT_WIDTHS.reduce((sum, value) => sum + value, 0)) * 100}%`)
+  const printedAt = new Date().toLocaleString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานการปรับปรุงข้อมูลเงินเดือน</title><style>
+@page{size:A4 landscape;margin:12mm 11mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;color:#111;background:#fff;font-family:Tahoma,sans-serif;font-size:10pt}.report-head{position:relative;text-align:center;padding-bottom:4mm}.report-head img{position:absolute;left:0;top:0;width:17mm;height:17mm;object-fit:contain}.report-head h1,.report-head h2,.report-head p{margin:0}.report-head h1{font-size:16pt;line-height:1.25}.report-head h2{font-size:12pt;line-height:1.3}.report-head p{font-size:10pt;line-height:1.35}.page{position:absolute;right:0;top:0;font-size:9pt}.report-lines{margin:2mm 0 4mm;font-size:10pt;line-height:1.45}.report-lines div{min-height:5mm}.report-lines .address{text-align:center}.report-lines .department,.report-lines .period{text-align:center;font-size:12pt}.report-lines .period{font-weight:700}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:.5pt solid #000;padding:2px 3px;vertical-align:middle}thead th{background:#e6f2ff;text-align:center;font-size:10pt;font-weight:700;line-height:1.2;white-space:normal;overflow-wrap:anywhere}tbody td,tfoot td{font-size:10pt;line-height:1.2;white-space:nowrap;overflow-wrap:normal;word-break:keep-all}td:nth-child(1),td:nth-child(2){text-align:center}td.num{text-align:right;font-variant-numeric:tabular-nums}tfoot td{background:#e6f2ff;font-weight:700}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:16mm;margin-top:10mm;text-align:center;line-height:1.7;font-size:10pt}
+</style></head><body><div class="report-head"><img src="${takhliLogo}" alt="ตราเทศบาลเมืองตาคลี"><div class="page">หน้า 1/1</div><h1>เทศบาลเมืองตาคลี</h1><h2>รายงานการปรับปรุงข้อมูลเงินเดือน</h2></div><div class="report-lines"><div>วันที่พิมพ์ : ${escapeMarkup(printedAt)}</div><div class="address">1 ซ.ประชาตาคลี 3 ต.ตาคลี อ.ตาคลี จ.นครสวรรค์ 60140</div><div class="department">${escapeMarkup(department)}</div><div class="period">ประจำเดือน ${escapeMarkup(periodLabel(period))}</div></div><table><colgroup>${widths.map(width => `<col style="width:${width}">`).join('')}</colgroup><thead><tr><th colspan="5">ข้อมูลพนักงาน</th><th colspan="3">รายการรับ</th><th colspan="7">รายการหัก</th><th rowspan="2">ยอดรับสุทธิ</th></tr><tr>${PAYROLL_REPORT_COLUMNS.slice(0, -1).map(value => `<th>${value}</th>`).join('')}</tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${totals.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr></tfoot></table><div class="signatures"><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้จัดทำ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้ตรวจสอบ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้อนุมัติ</div></div><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close())})<\/script></body></html>`)
+  printWindow.document.close()
+  return true
+}
+
+const printPayrollTemplate = ({ period, department, status: _status, entries }: {
+  period: PayrollPeriod; department: string; status: DeptStatus; entries: PayrollExportEntry[]
+}) => {
+  const printWindow = window.open('', '_blank', 'width=1200,height=800')
+  if (!printWindow) return false
+  printWindow.opener = null
+  const totals = Array(12).fill(0) as number[]
+  const body = entries.map(({ employee, row }, index) => {
+    const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
+    values.forEach((value, valueIndex) => { totals[valueIndex] += value })
+    return `<tr><td>${index + 1}</td><td>${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+  }).join('')
+  const columnTracks = PAYROLL_REPORT_WIDTHS.map(width => `${width}fr`).join(' ')
+  const colgroup = PAYROLL_REPORT_WIDTHS.map(width => `<col style="width:${(width / PAYROLL_REPORT_WIDTHS.reduce((sum, value) => sum + value, 0)) * 100}%">`).join('')
+  const headerCells = PAYROLL_REPORT_COLUMNS.slice(0, -1).map(label => `<th>${escapeMarkup(label).replace(/\n/g, '<br>')}</th>`).join('')
+  const printedAt = new Date().toLocaleString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานการปรับปรุงข้อมูลเงินเดือน</title><style>
+@page{size:A4 landscape;margin:25.4mm 19.05mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;color:#000;background:#fff;font-family:Tahoma,sans-serif;font-size:10pt}.sheet-head{display:grid;grid-template-columns:${columnTracks};grid-template-rows:26pt 16pt 15pt 15pt 12pt;align-items:center;position:relative}.town{grid-column:5/13;grid-row:1;text-align:center;font-weight:700;font-size:16pt}.report-title{grid-column:5/13;grid-row:2;text-align:center;font-weight:700;font-size:12pt}.printed{grid-column:1/5;grid-row:3;font-size:10pt}.address{grid-column:5/13;grid-row:3;text-align:center;font-size:12pt}.department{grid-column:5/13;grid-row:4;text-align:center;font-size:12pt;font-weight:700}.period{grid-column:5/13;grid-row:5;text-align:center;font-size:12pt;font-weight:700}.page{grid-column:16;grid-row:1;text-align:right;font-size:9pt}.logo{grid-column:6/7;grid-row:1/4;z-index:2;justify-self:center;width:13.5mm;height:14.5mm;object-fit:contain}table{width:100%;border-collapse:collapse;table-layout:fixed;margin-top:6mm}th,td{border:.5pt solid #000;padding:2px 3px;vertical-align:middle}thead th{background:#ffffcc;text-align:center;font-family:Tahoma,sans-serif;font-size:10pt;font-weight:700;line-height:1.2;white-space:normal}thead tr:first-child{height:13pt}thead tr:last-child{height:42pt}tbody tr,tfoot tr{height:13pt}tbody td,tfoot td{font-family:Tahoma,sans-serif;font-size:10pt;white-space:nowrap;overflow:visible;line-height:1.2}td:nth-child(1),td:nth-child(2){text-align:center}td.num{text-align:right;font-variant-numeric:tabular-nums}tfoot td{background:#ffffcc;font-weight:700}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:16mm;margin-top:10mm;text-align:center;line-height:1.7;font-size:10pt}
+</style></head><body><div class="sheet-head"><div class="town">เทศบาลเมืองตาคลี</div><div class="report-title">รายงานการปรับปรุงข้อมูลเงินเดือน</div><div class="printed">วันที่พิมพ์ : ${escapeMarkup(printedAt)}</div><div class="address">1 ซ.ประชาตาคลี 3 ต.ตาคลี อ.ตาคลี จ.นครสวรรค์ 60140</div><div class="department">${escapeMarkup(department)}</div><div class="period">ประจำเดือน ${escapeMarkup(periodLabel(period))}</div><div class="page">หน้า 1/1</div><img class="logo" src="${takhliLogo}" alt="ตราเทศบาลเมืองตาคลี"></div><table><colgroup>${colgroup}</colgroup><thead><tr><th colspan="5">ข้อมูลพนักงาน</th><th colspan="3">รายการรับ</th><th colspan="7">รายการหัก</th><th rowspan="2">ยอดรับสุทธิ</th></tr><tr>${headerCells}</tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${totals.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr></tfoot></table><div class="signatures"><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้จัดทำ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้ตรวจสอบ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้อนุมัติ</div></div><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close()})<\/script></body></html>`)
+  printWindow.document.close()
+  return true
+}
+
+const printPayrollTemplateExact = ({ period, department, status: _status, entries }: {
+  period: PayrollPeriod; department: string; status: DeptStatus; entries: PayrollExportEntry[]
+}) => {
+  const printFrame = document.createElement('iframe')
+  printFrame.setAttribute('aria-hidden', 'true')
+  Object.assign(printFrame.style, { position: 'fixed', left: '-10000px', top: '0', width: '1px', height: '1px', border: '0', pointerEvents: 'none' })
+  document.body.appendChild(printFrame)
+  const printWindow = printFrame.contentWindow
+  if (!printWindow) {
+    printFrame.remove()
+    return false
+  }
+  const totals = Array(12).fill(0) as number[]
+  const body = entries.map(({ employee, row }, index) => {
+    const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
+    values.forEach((value, valueIndex) => { totals[valueIndex] += value })
+    return `<tr><td>${index + 1}</td><td>${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+  }).join('')
+  const colgroup = PAYROLL_REPORT_WIDTHS.map(width => `<col style="width:${(width / PAYROLL_REPORT_WIDTHS.reduce((sum, value) => sum + value, 0)) * 100}%">`).join('')
+  const headers = PAYROLL_REPORT_COLUMNS.slice(0, -1).map(label => `<th>${escapeMarkup(label).replace(/\n/g, '<br>')}</th>`).join('')
+  const printedAt = new Date().toLocaleString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานการปรับปรุงข้อมูลเงินเดือน</title><style>@page{size:A4 landscape;margin:25.4mm 19.05mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;color:#000;font-family:Tahoma,sans-serif;font-size:10pt}.header{position:relative}.header img{position:absolute;width:13.5mm;height:14.5mm;object-fit:contain;left:31%;top:0}.header table,.payroll{width:100%;border-collapse:collapse;table-layout:fixed}.header td{height:15pt;vertical-align:middle}.header .municipality{text-align:center;font-size:16pt;font-weight:700;height:26pt}.header .title{text-align:center;font-size:12pt;font-weight:700;height:16pt}.header .date,.header .address{font-size:10pt}.header .department,.header .period{text-align:center;font-size:12pt;font-weight:700}.payroll{margin-top:6mm}.payroll th,.payroll td{border:.5pt solid #000;padding:2px 3px;vertical-align:middle}.payroll thead th{background:#ffffcc;text-align:center;font-size:10pt;font-weight:700;line-height:1.2;white-space:normal}.payroll thead tr:first-child{height:13pt}.payroll thead tr:last-child{height:42pt}.payroll tbody tr,.payroll tfoot tr{height:13pt}.payroll tbody td,.payroll tfoot td{font-size:10pt;white-space:nowrap;line-height:1.2}.payroll td:nth-child(1),.payroll td:nth-child(2){text-align:center}.payroll .num{text-align:right;font-variant-numeric:tabular-nums}.payroll tfoot td{background:#ffffcc;font-weight:700}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:16mm;margin-top:10mm;text-align:center;line-height:1.7;font-size:10pt}</style></head><body><div class="header"><img src="${takhliLogo}" alt="ตราเทศบาลเมืองตาคลี"><table><colgroup>${colgroup}</colgroup><tbody><tr><td colspan="4"></td><td colspan="8" class="municipality">เทศบาลเมืองตาคลี</td><td colspan="3"></td><td class="date">หน้า 1/1</td></tr><tr><td colspan="4"></td><td colspan="8" class="title">รายงานการปรับปรุงข้อมูลเงินเดือน</td><td colspan="4"></td></tr><tr><td colspan="4" class="date">วันที่พิมพ์ : ${escapeMarkup(printedAt)}</td><td colspan="8"></td><td colspan="4"></td></tr><tr><td colspan="4" class="address">1 ซ.ประชาตาคลี 3 ต.ตาคลี</td><td colspan="8" class="department">${escapeMarkup(department)}</td><td colspan="4"></td></tr><tr><td colspan="4" class="address">อ.ตาคลี จ.นครสวรรค์&nbsp;&nbsp;&nbsp;60140</td><td colspan="8" class="period">ประจำเดือน ${escapeMarkup(periodLabel(period))}</td><td colspan="4"></td></tr></tbody></table></div><table class="payroll"><colgroup>${colgroup}</colgroup><thead><tr><th colspan="5">ข้อมูลพนักงาน</th><th colspan="3">รายการรับ</th><th colspan="7">รายการหัก</th><th rowspan="2">ยอดรับสุทธิ</th></tr><tr>${headers}</tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${totals.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr></tfoot></table><div class="signatures"><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้จัดทำ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้ตรวจสอบ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้อนุมัติ</div></div><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close()})<\/script></body></html>`)
+  printWindow.document.close()
+  const tableStyle = printWindow.document.createElement('style')
+  tableStyle.textContent = `
+    .header .municipality { font-size: 14pt !important; }
+    .header .title, .header .department, .header .period { font-size: 11pt !important; }
+    .payroll thead th { background: #ECEFF1 !important; font-size: 5.6pt !important; line-height: 1.15 !important; padding: 1px !important; white-space: normal !important; overflow: hidden !important; overflow-wrap: normal !important; word-break: keep-all !important; }
+    .payroll tbody td, .payroll tfoot td { font-size: 6.6pt !important; line-height: 1.15 !important; padding: 1px 1.5px !important; white-space: nowrap !important; overflow-wrap: normal !important; word-break: keep-all !important; }
+  `
+  printWindow.document.head.appendChild(tableStyle)
+  printWindow.addEventListener('afterprint', () => printFrame.remove(), { once: true })
+  printWindow.focus()
+  printWindow.print()
+  return true
+}
 
 const deptEmps = (dept: DeptPayroll) => dept.employees ?? EMPLOYEES.filter(e => e.department === dept.department)
 const deptTotals = (dept: DeptPayroll) => {
@@ -374,8 +633,6 @@ function Sidebar({ role, name, department, page, setPage }: { role: Role; name: 
     { id: 'employees',     label: 'พนักงาน', icon: '👥' },
     { id: 'payslip-status',label: 'สถานะการส่งอีเมล', icon: '📨' },
     { id: 'admin-users',   label: 'จัดการผู้ใช้งาน', icon: '👤' },
-    { id: 'admin-settings',label: 'ตั้งค่าระบบ', icon: '⚙️' },
-    { id: 'reports',       label: 'ประวัติการใช้งาน', icon: '🧾' },
   ]
   const navItems = role === 'hr' ? hrNav : role === 'director' ? dirNav : adminNav
 
@@ -928,19 +1185,35 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
             </thead>
             <tbody>
               {periods.slice(0, 6).map(period => {
-                const totals = periodTotals(period)
+                // HR sees one department at a time.  Its status must describe
+                // that department, not an aggregate such as "remaining 1/6".
+                const hrDepartment = role === 'hr'
+                  ? period.depts.find(department => department.department === userDepartment) ?? period.depts[0]
+                  : undefined
+                const totals = hrDepartment
+                  ? (() => {
+                      const departmentTotals = deptTotals(hrDepartment)
+                      return {
+                        emps: departmentTotals.count,
+                        gross: departmentTotals.totalGross,
+                        net: departmentTotals.totalNet,
+                      }
+                    })()
+                  : periodTotals(period)
                 const isExpanded = expandedDashboardPeriodId === period.id
                 const completedCount = period.depts.filter(department => ['approved', 'closed'].includes(department.status)).length
                 const remainingCount = period.depts.length - completedCount
-                const periodStatus = remainingCount > 0
-                  ? { type: 'pending', label: `รอดำเนินการ ${remainingCount}/${period.depts.length} ฝ่าย` }
-                  : { type: 'approved', label: `เสร็จสิ้น ${completedCount}/${period.depts.length} ฝ่าย` }
+                const periodStatus = hrDepartment
+                  ? { type: hrDepartment.status, label: statusLabel[hrDepartment.status] }
+                  : remainingCount > 0
+                    ? { type: 'pending', label: `รอดำเนินการ ${remainingCount}/${period.depts.length} ฝ่าย` }
+                    : { type: 'approved', label: `เสร็จสิ้น ${completedCount}/${period.depts.length} ฝ่าย` }
                 return (
                   <Fragment key={period.id}>
                     <tr key={period.id} style={{ cursor: 'pointer' }} onClick={() => {
                       setActivePeriodId(period.id)
-                      if (role === 'hr' && period.depts[0]) {
-                        setActiveDeptId(period.depts[0].id)
+                      if (role === 'hr' && hrDepartment) {
+                        setActiveDeptId(hrDepartment.id)
                         setPage('dept-table')
                       } else {
                         setPage('period-detail')
@@ -1014,10 +1287,10 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
 
 // ─── Payroll Periods List ─────────────────────────────────────────────────────
 
-function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, role, userDepartment, reloadPayroll }: {
+function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, role, userDepartment, reloadPayroll, error }: {
   periods: PayrollPeriod[];
   setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; setActiveDeptId: (id: string) => void;
-  role: Role; userDepartment: string | null; reloadPayroll: () => Promise<void>;
+  role: Role; userDepartment: string | null; reloadPayroll: () => Promise<void>; error: string;
 }) {
   const [showCreate, setShowCreate] = useState(false)
   const [createMonth, setCreateMonth] = useState(String(new Date().getMonth() + 1))
@@ -1043,7 +1316,16 @@ function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, rol
         actions={role === 'hr' ? <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ สร้างรอบเงินเดือน</button> : undefined}
       />
       <div className="flex flex-col gap-4">
-        {periods.map(p => {
+        {error ? (
+          <div className="card" style={{ padding: 28, textAlign: 'center' }}>
+            <div style={{ fontSize: 28, marginBottom: 8 }}>⚠️</div>
+            <div style={{ fontWeight: 700 }}>ไม่สามารถโหลดรอบเงินเดือนได้</div>
+            <div style={{ marginTop: 6, color: 'var(--text-secondary)', fontSize: 13 }}>{error}</div>
+            <button className="btn btn-secondary" style={{ marginTop: 16 }} onClick={() => void reloadPayroll()}>↻ ลองโหลดใหม่</button>
+          </div>
+        ) : periods.length === 0 ? (
+          <div className="card empty-state"><div className="empty-icon">📅</div><div>ยังไม่มีรอบเงินเดือน</div></div>
+        ) : periods.map(p => {
           const t = periodTotals(p)
           const completedCount = p.depts.filter(d => ['approved', 'closed'].includes(d.status)).length
           const remainingCount = p.depts.length - completedCount
@@ -1208,10 +1490,10 @@ interface CellInputProps {
 }
 
 function CellInput({ empId, field, value, isReadonly, onFocus, onCommit }: CellInputProps) {
-  const [localVal, setLocalVal] = useState(value === 0 ? '' : String(value))
+  const [localVal, setLocalVal] = useState(String(value))
   const ref = useRef<HTMLInputElement>(null)
 
-  useEffect(() => { setLocalVal(value === 0 ? '' : String(value)) }, [value])
+  useEffect(() => { setLocalVal(String(value)) }, [value])
 
   if (isReadonly) return <td className="num readonly">{thb(value)}</td>
 
@@ -1230,7 +1512,16 @@ function CellInput({ empId, field, value, isReadonly, onFocus, onCommit }: CellI
           if (n < 0) return
           onCommit(empId, field, n)
         }}
-        onChange={e => setLocalVal(e.target.value)}
+        onChange={event => {
+          const nextValue = event.target.value
+          setLocalVal(nextValue)
+          // Update the shared draft immediately, rather than waiting for blur.
+          // This keeps the pending-change count accurate for every numeric cell.
+          const parsed = Number(nextValue)
+          if (nextValue === '' || (Number.isFinite(parsed) && parsed >= 0)) {
+            onCommit(empId, field, nextValue === '' ? 0 : parsed)
+          }
+        }}
         onKeyDown={e => e.key === 'Enter' && ref.current?.blur()}
       />
     </td>
@@ -1239,16 +1530,34 @@ function CellInput({ empId, field, value, isReadonly, onFocus, onCommit }: CellI
 
 // ─── Dept Payroll Table ───────────────────────────────────────────────────────
 
-function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, reloadPayroll }: {
+function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, departments, positions, reloadPayroll }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
   setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void;
-  databaseEmployees: DatabaseEmployee[]; reloadPayroll: () => Promise<void>;
+  databaseEmployees: DatabaseEmployee[]; departments: Department[]; positions: Position[]; reloadPayroll: () => Promise<void>;
 }) {
-  const allDepartmentEmployees = useMemo(() => deptEmps(dept), [dept])
+  // Combine the payroll snapshot with the live employee directory.  A staff member
+  // added after this payroll period was first loaded must be available immediately.
+  const allDepartmentEmployees = useMemo(() => {
+    const byCode = new Map(deptEmps(dept).map(employee => [employee.id, employee]))
+    databaseEmployees
+      .filter(employee => employee.status === 'ACTIVE')
+      .map(employee => databaseEmployeeToPayrollEmployee(employee, departments, positions))
+      .filter(employee => employee.department === dept.department)
+      .forEach(employee => byCode.set(employee.id, employee))
+    return Array.from(byCode.values())
+  }, [databaseEmployees, departments, dept, positions])
   const [includedEmployeeIds, setIncludedEmployeeIds] = useState<string[]>(() => {
     const savedEmployeeIds = Object.keys(dept.rows)
-    return savedEmployeeIds.length > 0 ? savedEmployeeIds : (dept.employees ?? []).map(employee => employee.id)
+    const excludedIds = new Set(dept.excludedEmployeeIds ?? [])
+    // Active employees that were already present when this screen loaded are
+    // part of the initial table, not an unsaved change.  This prevents a fresh
+    // page reload from incorrectly showing “1 รายการ” before the user edits.
+    const activeDirectoryIds = allDepartmentEmployees
+      .filter(employee => employee.status === 'active' && !excludedIds.has(employee.id))
+      .map(employee => employee.id)
+    return Array.from(new Set([...savedEmployeeIds, ...activeDirectoryIds]))
   })
+  const [excludedEmployeeIds, setExcludedEmployeeIds] = useState<string[]>(() => dept.excludedEmployeeIds ?? [])
   const emps = useMemo(
     () => allDepartmentEmployees.filter(employee => includedEmployeeIds.includes(employee.id)),
     [allDepartmentEmployees, includedEmployeeIds]
@@ -1258,12 +1567,21 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     emps.forEach(e => { r[e.id] = dept.rows[e.id] ?? makeDefaultRow(e) })
     return r
   })
+  const initialIncludedEmployeeIds = useRef<string[]>(includedEmployeeIds)
+  const initialRows = useRef<Record<string, PayrollRow>>(rows)
   const [dirty, setDirty] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [showDiscardModal, setShowDiscardModal] = useState(false)
   const [showSubmitModal, setShowSubmitModal] = useState(false)
-  const [showAddEmployeeModal, setShowAddEmployeeModal] = useState(false)
+  const [showLockedEditModal, setShowLockedEditModal] = useState(false)
   const [focusRow, setFocusRow] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const [search, setSearch] = useState('')
+  const [inlineAddSearch, setInlineAddSearch] = useState('')
+  const [inlineAddOpen, setInlineAddOpen] = useState(false)
+  const [inlineAddPosition, setInlineAddPosition] = useState<FloatingDropdownPosition | null>(null)
+  const inlineAddRef = useRef<HTMLDivElement>(null)
+  const inlineDropdownRef = useRef<HTMLDivElement>(null)
   const isReadonly = dept.status === 'pending' || dept.status === 'approved' || dept.status === 'closed'
   const availableEmployees = allDepartmentEmployees.filter(employee => !includedEmployeeIds.includes(employee.id))
   const visibleEmployees = emps.filter(employee => {
@@ -1271,11 +1589,88 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     if (!keyword) return true
     return employee.id.toLowerCase().includes(keyword) || `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(keyword)
   })
+  const inlineCandidates = useMemo(() => {
+    const keyword = inlineAddSearch.trim().toLowerCase()
+    if (!keyword) return []
+    return availableEmployees.filter(employee =>
+      // One-character searches are useful for names, but every employee code
+      // includes "EMP".  Only begin matching codes after two characters.
+      `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(keyword) ||
+      (keyword.length >= 2 && employee.id.toLowerCase().startsWith(keyword))
+    ).slice(0, 8)
+  }, [availableEmployees, inlineAddSearch])
+
+  const updateInlineAddPosition = useCallback(() => {
+    const rect = inlineAddRef.current?.getBoundingClientRect()
+    if (!rect) return
+    setInlineAddPosition({ top: rect.bottom + 4, left: rect.left, width: Math.max(rect.width, 290) })
+  }, [])
+
+  const openInlineDropdown = useCallback(() => {
+    updateInlineAddPosition()
+    setInlineAddOpen(true)
+  }, [updateInlineAddPosition])
+
+  useEffect(() => {
+    const closeDropdown = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (
+        inlineAddRef.current && !inlineAddRef.current.contains(target) &&
+        inlineDropdownRef.current && !inlineDropdownRef.current.contains(target)
+      ) {
+        setInlineAddOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', closeDropdown)
+    return () => document.removeEventListener('mousedown', closeDropdown)
+  }, [])
+
+  useEffect(() => {
+    if (!inlineAddOpen) return
+    const update = () => updateInlineAddPosition()
+    window.addEventListener('resize', update)
+    document.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      document.removeEventListener('scroll', update, true)
+    }
+  }, [inlineAddOpen, updateInlineAddPosition])
+
+  useEffect(() => {
+    if (isReadonly) return
+    const newlyAvailable = allDepartmentEmployees.filter(employee =>
+      employee.status === 'active' && !includedEmployeeIds.includes(employee.id) && !excludedEmployeeIds.includes(employee.id)
+    )
+    if (newlyAvailable.length === 0) return
+    setIncludedEmployeeIds(previous => Array.from(new Set([...previous, ...newlyAvailable.map(employee => employee.id)])))
+    setRows(previous => ({
+      ...previous,
+      ...Object.fromEntries(newlyAvailable.map(employee => [employee.id, previous[employee.id] ?? makeDefaultRow(employee)])),
+    }))
+    setDirty(true)
+  }, [allDepartmentEmployees, excludedEmployeeIds, includedEmployeeIds, isReadonly])
 
   const setCell = useCallback((empId: string, field: keyof PayrollRow, val: number) => {
     setRows(prev => ({ ...prev, [empId]: { ...prev[empId], [field]: val } }))
     setDirty(true)
   }, [])
+
+  const pendingChangeCount = useMemo(() => {
+    const originalIds = new Set(initialIncludedEmployeeIds.current)
+    const currentIds = new Set(includedEmployeeIds)
+    const added = includedEmployeeIds.filter(id => !originalIds.has(id)).length
+    const removed = initialIncludedEmployeeIds.current.filter(id => !currentIds.has(id)).length
+    const editableFields: Array<Exclude<keyof PayrollRow, 'empId'>> = ['extra', 'posAllowance', 'debtKTB', 'tax', 'social', 'funeral', 'ktb', 'gsb']
+    const editedCells = includedEmployeeIds.reduce((count, id) => {
+      if (!originalIds.has(id)) return count
+      const original = initialRows.current[id]
+      const current = rows[id]
+      if (!original || !current) return count
+      return count + editableFields.filter(field => original[field] !== current[field]).length
+    }, 0)
+    return added + removed + editedCells
+  }, [includedEmployeeIds, rows])
+  const hasPendingChanges = pendingChangeCount > 0
 
   const persistRows = async () => {
     if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
@@ -1292,25 +1687,85 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     await savePayrollBatchItems(dept.databaseId, payload)
   }
 
-  const save = async () => {
+  const closeEditor = () => {
+    setEditing(false)
+    setInlineAddOpen(false)
+    setInlineAddSearch('')
+    setFocusRow(null)
+  }
+
+  const discardUnsavedChanges = () => {
+    // Restore the exact last-saved snapshot.  Local table actions must never
+    // survive merely because the editor was closed without saving.
+    const savedIds = [...initialIncludedEmployeeIds.current]
+    setIncludedEmployeeIds(savedIds)
+    setRows(Object.fromEntries(
+      savedIds
+        .filter(id => initialRows.current[id])
+        .map(id => [id, { ...initialRows.current[id] }])
+    ))
+    setExcludedEmployeeIds(dept.excludedEmployeeIds ?? [])
+    setDirty(false)
+    setShowDiscardModal(false)
+    closeEditor()
+  }
+
+  const requestCloseEditor = () => {
+    if (hasPendingChanges) {
+      setShowDiscardModal(true)
+      return
+    }
+    closeEditor()
+  }
+
+  const save = async (): Promise<boolean> => {
+    if (saving) return false
+    setSaving(true)
     try {
       await persistRows()
-      await reloadPayroll()
+      initialIncludedEmployeeIds.current = [...includedEmployeeIds]
+      initialRows.current = Object.fromEntries(includedEmployeeIds.map(id => [id, { ...rows[id] }]))
       setDirty(false)
-      setEditing(false)
+      closeEditor()
       showToast('บันทึกข้อมูลแบบร่างเรียบร้อยแล้ว', 'success')
+      // The table is already in its confirmed local state.  Refresh the rest of
+      // the page in the background so saving is not delayed by several read APIs.
+      void reloadPayroll().catch(() => undefined)
+      return true
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'บันทึกข้อมูลไม่สำเร็จ', 'error')
+      return false
+    } finally {
+      setSaving(false)
     }
   }
 
+  const saveAndCloseEditor = async () => {
+    const saved = await save()
+    if (saved) setShowDiscardModal(false)
+  }
+
   const addEmployeeToTable = (employee: Employee) => {
-    setRows(previous => ({ ...previous, [employee.id]: makeDefaultRow(employee) }))
+    setRows(previous => ({ ...previous, [employee.id]: previous[employee.id] ?? initialRows.current[employee.id] ?? makeDefaultRow(employee) }))
     setIncludedEmployeeIds(previous => [...previous, employee.id])
+    setExcludedEmployeeIds(previous => previous.filter(employeeId => employeeId !== employee.id))
     setDirty(true)
     setEditing(true)
-    setShowAddEmployeeModal(false)
+    setInlineAddSearch('')
+    setInlineAddOpen(false)
     showToast(`เพิ่ม ${employee.firstName} ${employee.lastName} เข้าตารางแล้ว`, 'success')
+  }
+
+  const removeEmployeeFromTable = (employee: Employee) => {
+    setIncludedEmployeeIds(previous => previous.filter(employeeId => employeeId !== employee.id))
+    setExcludedEmployeeIds(previous => Array.from(new Set([...previous, employee.id])))
+    setRows(previous => {
+      const next = { ...previous }
+      delete next[employee.id]
+      return next
+    })
+    setDirty(true)
+    showToast(`นำ ${employee.firstName} ${employee.lastName} ออกจากตารางแล้ว`, 'success')
   }
 
   const submitForApproval = async () => {
@@ -1345,9 +1800,16 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     setCell(id, field, val)
   }, [setCell])
 
-  const exportExcel = () => {
-    const numberCell = (value: number) => `<Cell ss:StyleID="Number"><Data ss:Type="Number">${value}</Data></Cell>`
+  const exportExcel = () => exportPayrollWorkbook({
+    period,
+    department: dept.department,
+    entries: emps.map(employee => ({ employee, row: rows[employee.id] })),
+  })
+
+  const legacyExportExcel = () => {
+    const numberCell = (value: number, style = 'Number') => `<Cell ss:StyleID="${style}"><Data ss:Type="Number">${value}</Data></Cell>`
     const textCell = (value: unknown, style = 'Text') => `<Cell ss:StyleID="${style}"><Data ss:Type="String">${escapeMarkup(value)}</Data></Cell>`
+    const totalValues = [totals.base, totals.extra, totals.pos, totals.gross, totals.debtKTB, totals.tax, totals.social, totals.funeral, totals.ktb, totals.gsb, totals.deduct, totals.net]
     const dataRows = emps.map((employee, index) => {
       const row = rows[employee.id]
       const gross = rowGross(employee, row)
@@ -1376,23 +1838,31 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   <Row><Cell ss:MergeAcross="4" ss:StyleID="Header"><Data ss:Type="String">ข้อมูลพนักงาน</Data></Cell><Cell ss:MergeAcross="2" ss:StyleID="Header"><Data ss:Type="String">รายการรับ</Data></Cell><Cell ss:MergeAcross="6" ss:StyleID="Header"><Data ss:Type="String">รายการหัก</Data></Cell><Cell ss:StyleID="Header"><Data ss:Type="String">ยอดรับสุทธิ</Data></Cell></Row>
   <Row>${['ลำดับ','รหัส','ชื่อ-นามสกุล','ตำแหน่ง','ฐานเงินเดือน','เงินเพิ่ม','เงินประจำตำแหน่ง','รวมรายการรับ','ชำระหนี้ KTB','ภาษีหัก ณ ที่จ่าย','ประกันสังคม','ฌาปนกิจ','ธนาคารกรุงไทย','ธนาคารออมสิน','รวมรายการหัก','ยอดรับสุทธิ'].map(value => textCell(value, 'Header')).join('')}</Row>
   ${dataRows}
-  <Row><Cell ss:MergeAcross="3" ss:StyleID="Header"><Data ss:Type="String">รวมทั้งหมด (${emps.length} คน)</Data></Cell><Cell ss:StyleID="Total"><Data ss:Type="Number">${totals.base}</Data></Cell><Cell/><Cell/><Cell ss:StyleID="Total"><Data ss:Type="Number">${totals.gross}</Data></Cell><Cell ss:MergeAcross="5"/><Cell ss:StyleID="Total"><Data ss:Type="Number">${totals.deduct}</Data></Cell><Cell ss:StyleID="Total"><Data ss:Type="Number">${totals.net}</Data></Cell></Row>
+  <Row><Cell ss:MergeAcross="3" ss:StyleID="Header"><Data ss:Type="String">รวมทั้งสิ้น</Data></Cell>${totalValues.map(value => numberCell(value, 'Total')).join('')}</Row>
 </Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><Selected/><FreezePanes/><FrozenNoSplit/><SplitHorizontal>6</SplitHorizontal><TopRowBottomPane>6</TopRowBottomPane><ActivePane>2</ActivePane><PageSetup><Layout x:Orientation="Landscape" xmlns:x="urn:schemas-microsoft-com:office:excel"/></PageSetup></WorksheetOptions></Worksheet>
 </Workbook>`
     const blob = new Blob([workbook], { type: 'application/vnd.ms-excel;charset=utf-8' })
     const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
-    anchor.download = `payroll-${period.year}-${String(period.month).padStart(2, '0')}-${dept.department}.xls`
+    const safeDepartmentName = dept.department.replace(/[\\/:*?"<>|]/g, '-')
+    anchor.download = `ตารางรอบเดือน_${safeDepartmentName}_${MONTH_EN_SHORT[period.month]}.xls`
     anchor.click()
     URL.revokeObjectURL(url)
   }
 
   const printPayrollTable = () => {
+    if (!printPayrollTemplateExact({ period, department: dept.department, status: dept.status, entries: emps.map(employee => ({ employee, row: rows[employee.id] })) })) {
+      showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error')
+    }
+  }
+
+  const legacyPrintPayrollTable = () => {
+    const printTotalValues = [totals.base, totals.extra, totals.pos, totals.gross, totals.debtKTB, totals.tax, totals.social, totals.funeral, totals.ktb, totals.gsb, totals.deduct, totals.net]
     const printRows = emps.map((employee, index) => {
       const row = rows[employee.id]
       const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
-      return `<tr><td class="center">${index + 1}</td><td class="center">${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+      return `<tr><td class="center">${index + 1}</td><td class="center">${escapeMarkup(employee.id)}</td><td class="employee-name">${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
     }).join('')
     const printWindow = window.open('', '_blank', 'width=1200,height=800')
     if (!printWindow) {
@@ -1401,8 +1871,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     }
     printWindow.opener = null
     printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>บัญชีรายละเอียดการจ่ายเงินเดือน</title><style>
-      @page{size:A4 landscape;margin:12mm 10mm}*{box-sizing:border-box}body{margin:0;color:#000;background:#fff;font-family:Thonburi,Tahoma,sans-serif;font-size:8pt}h1,h2,p{margin:0}h1{text-align:center;font-size:14pt;line-height:1.3}h2{text-align:center;font-size:12pt;line-height:1.3}.department{text-align:center;font-size:9pt;margin-top:2px}.meta{display:grid;grid-template-columns:repeat(3,1fr);margin:7mm 0 2mm}.meta div:nth-child(2){text-align:center}.meta div:last-child{text-align:right}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:.45pt solid #000;padding:4px 3px;vertical-align:middle;overflow-wrap:anywhere}thead th{background:#ececec;text-align:center;font-weight:600;line-height:1.25}td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}td.center{text-align:center}tfoot td{background:#f3f3f3;font-weight:600;border-top:1pt solid #000;border-bottom:1pt solid #000}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:16mm;margin-top:12mm;text-align:center;line-height:1.8}col.c1{width:2.2%}col.c2{width:5%}col.c3{width:10.5%}col.c4{width:11.5%}col.c5{width:6.7%}col.c6{width:5.2%}col.c7{width:7%}col.c8{width:6.8%}col.c9{width:6.1%}col.c10{width:6.1%}col.c11{width:5.6%}col.c12{width:5.1%}col.c13{width:6.3%}col.c14{width:6.3%}col.c15{width:6.8%}col.c16{width:7.1%}
-    </style></head><body><h1>เทศบาลเมืองตาคลี</h1><h2>บัญชีรายละเอียดการจ่ายเงินเดือน ประจำเดือน${escapeMarkup(periodLabel(period))}</h2><p class="department">${escapeMarkup(dept.department)}</p><div class="meta"><div><b>วันที่จ่าย:</b> ${escapeMarkup(new Date(period.payDate).toLocaleDateString('th-TH', { dateStyle: 'long' }))}</div><div><b>จำนวนพนักงาน:</b> ${emps.length} คน</div><div><b>สถานะ:</b> ${escapeMarkup(statusLabel[dept.status])}</div></div><table><colgroup>${Array.from({ length: 16 }, (_, index) => `<col class="c${index + 1}">`).join('')}</colgroup><thead><tr><th colspan="5">ข้อมูลพนักงาน</th><th colspan="3">รายการรับ</th><th colspan="7">รายการหัก</th><th>ยอดรับสุทธิ</th></tr><tr>${['ลำดับ','รหัส','ชื่อ-นามสกุล','ตำแหน่ง','ฐานเงินเดือน','เงินเพิ่ม','เงินประจำตำแหน่ง','รวมรายการรับ','ชำระหนี้ KTB','ภาษีหัก ณ ที่จ่าย','ประกันสังคม','ฌาปนกิจ','ธนาคารกรุงไทย','ธนาคารออมสิน','รวมรายการหัก','ยอดรับสุทธิ'].map(value => `<th>${value}</th>`).join('')}</tr></thead><tbody>${printRows}</tbody><tfoot><tr><td colspan="4">รวมทั้งหมด (${emps.length} คน)</td><td class="num">${thb(totals.base)}</td><td></td><td></td><td class="num">${thb(totals.gross)}</td><td colspan="6"></td><td class="num">${thb(totals.deduct)}</td><td class="num">${thb(totals.net)}</td></tr></tfoot></table><div class="signatures"><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้จัดทำ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้ตรวจสอบ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้อนุมัติ</div></div><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close())})<\/script></body></html>`)
+      @page{size:297mm 210mm!important;margin:8mm 7mm!important}@media print{html,body{width:auto!important;height:auto!important;min-width:0!important;min-height:0!important;overflow:visible!important}body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;color:#000;background:#fff;font-family:Thonburi,Tahoma,sans-serif;font-size:7.2pt}h1,h2,p{margin:0}h1{text-align:center;font-size:13pt;line-height:1.25}h2{text-align:center;font-size:11pt;line-height:1.25}.department{text-align:center;font-size:8.5pt;margin-top:2px}.meta{display:grid;grid-template-columns:repeat(3,1fr);margin:5mm 0 2mm}.meta div:nth-child(2){text-align:center}.meta div:last-child{text-align:right}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:.45pt solid #000;padding:3px 2px;vertical-align:middle;overflow-wrap:anywhere}thead th{background:#ececec;text-align:center;font-weight:600;line-height:1.15;font-size:7pt}thead tr:last-child th:first-child{white-space:nowrap;overflow-wrap:normal;word-break:keep-all;font-size:6.6pt}tbody td,tfoot td{font-size:6.6pt;line-height:1.15;white-space:nowrap;overflow-wrap:normal;word-break:keep-all}td.num{text-align:right;font-variant-numeric:tabular-nums}td.center{text-align:center}tfoot td{background:#f3f3f3;font-weight:600;border-top:1pt solid #000;border-bottom:1pt solid #000}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:16mm;margin-top:9mm;text-align:center;line-height:1.65}col.c1{width:3.4%}col.c2{width:4.8%}col.c3{width:11.5%}col.c4{width:7.6%}col.c5{width:7.3%}col.c6{width:6.4%}col.c7{width:7.4%}col.c8{width:7.4%}col.c9{width:6.4%}col.c10{width:6.4%}col.c11{width:6.4%}col.c12{width:6.4%}col.c13{width:6.4%}col.c14{width:6.4%}col.c15{width:7.4%}col.c16{width:7.7%}
+    </style></head><body><h1>เทศบาลเมืองตาคลี</h1><h2>รายงานการปรับปรุงข้อมูลเงินเดือน</h2><p class="department">${escapeMarkup(dept.department)} · ประจำเดือน ${escapeMarkup(periodLabel(period))}</p><div class="meta"><div><b>วันที่จ่าย:</b> ${escapeMarkup(new Date(period.payDate).toLocaleDateString('th-TH', { dateStyle: 'long' }))}</div><div><b>จำนวนพนักงาน:</b> ${emps.length} คน</div><div><b>สถานะ:</b> ${escapeMarkup(statusLabel[dept.status])}</div></div><table><colgroup>${Array.from({ length: 16 }, (_, index) => `<col class="c${index + 1}">`).join('')}</colgroup><thead><tr><th colspan="5">ข้อมูลพนักงาน</th><th colspan="3">รายการรับ</th><th colspan="7">รายการหัก</th><th>ยอดรับสุทธิ</th></tr><tr>${PAYROLL_REPORT_COLUMNS.map(value => `<th>${value}</th>`).join('')}</tr></thead><tbody>${printRows}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${printTotalValues.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr></tfoot></table><div class="signatures"><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้จัดทำ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้ตรวจสอบ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้อนุมัติ</div></div><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close())})<\/script></body></html>`)
     printWindow.document.close()
   }
 
@@ -1417,8 +1887,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
         ]} />}
         actions={!isReadonly ? (
           <>
-            {dirty && <span style={{ fontSize: 12, color: 'var(--status-pending-text)', fontWeight: 600 }}>● ยังไม่ได้บันทึก</span>}
-            {dept.status !== 'pending' && <button className="btn btn-primary" onClick={() => { save(); setShowSubmitModal(true) }}>ส่งให้ผู้อำนวยการอนุมัติ →</button>}
+            {dept.status !== 'pending' && <button className="btn btn-primary" onClick={() => void save().then(saved => { if (saved) setShowSubmitModal(true) })} disabled={saving}>ส่งให้ผู้อำนวยการอนุมัติ →</button>}
           </>
         ) : <StatusBadge s={dept.status} />}
       />
@@ -1439,9 +1908,24 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           <div className="flex items-center gap-2 flex-wrap">
             <button className="btn btn-secondary" onClick={printPayrollTable}>🖨️ พิมพ์ตาราง</button>
             <button className="btn btn-secondary" onClick={exportExcel}>📥 Export Excel</button>
-            <button className="btn btn-secondary" onClick={() => setShowAddEmployeeModal(true)} disabled={isReadonly} title={isReadonly ? 'รอบนี้ถูกส่งอนุมัติหรืออนุมัติแล้ว จึงไม่สามารถเพิ่มพนักงานได้' : undefined}>➕ เพิ่มพนักงานเข้าตาราง</button>
-            <button className="btn btn-secondary" onClick={() => setEditing(true)} disabled={isReadonly} title={isReadonly ? 'รอบนี้ถูกล็อก ไม่สามารถแก้ไขข้อมูลได้' : undefined}>✏️ แก้ไขข้อมูล</button>
-            <button className="btn btn-primary" onClick={save} disabled={isReadonly || !dirty} title={isReadonly ? 'รอบนี้ถูกล็อก ไม่สามารถบันทึกข้อมูลได้' : undefined}>💾 บันทึก</button>
+            <button className="btn btn-secondary" onClick={() => {
+              if (isReadonly) {
+                setShowLockedEditModal(true)
+                return
+              }
+              if (editing) requestCloseEditor()
+              else setEditing(true)
+            }} title={isReadonly ? 'รอบนี้ถูกล็อก ไม่สามารถแก้ไขข้อมูลได้' : undefined} style={editing ? {
+              color: '#A85B00',
+              border: '2px solid #E4A11B',
+              background: '#FFF8E8',
+              boxShadow: '0 1px 4px rgba(168,91,0,.12)',
+            } : undefined}>
+              {editing
+                ? `✏️ ปิดการแก้ไข${hasPendingChanges ? ` · ${pendingChangeCount} รายการแก้ไข` : ''}`
+                : '✏️ แก้ไขข้อมูล'}
+            </button>
+            <button className="btn btn-primary" onClick={() => void save()} disabled={isReadonly || !hasPendingChanges || saving} title={isReadonly ? 'รอบนี้ถูกล็อก ไม่สามารถบันทึกข้อมูลได้' : undefined}>{saving ? 'กำลังบันทึก…' : '💾 บันทึก'}</button>
           </div>
         </div>
       </div>
@@ -1463,6 +1947,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               <th colSpan={3} className="th-group th-group-income">รายการรับ</th>
               <th colSpan={7} className="th-group th-group-deduct">รายการหัก</th>
               <th colSpan={1} className="th-group th-group-net">ยอดรับสุทธิ</th>
+              {editing && !isReadonly && <th rowSpan={2} className="th-group th-group-emp" style={{ minWidth: 88 }}>ดำเนินการ</th>}
             </tr>
             <tr>
               {/* Emp */}
@@ -1510,9 +1995,32 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                   <CellInput empId={e.id} field="gsb"     value={r.gsb}     isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
                   <td className="num total" style={{ background: '#FFF8F6', color: '#B91C1C' }}>{thb(d)}</td>
                   <td className="num total" style={{ background: '#F5F3FF', color: 'var(--purple-600)', fontFamily: 'var(--font-display)' }}>{thb(n)}</td>
+                  {editing && !isReadonly && (
+                    <td className="readonly" style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
+                      <button className="btn btn-danger btn-xs" onClick={() => removeEmployeeFromTable(e)}>ลบ</button>
+                    </td>
+                  )}
                 </tr>
               )
             })}
+            {editing && !isReadonly && (
+              <tr className="payroll-inline-add-row" style={{ background: 'rgba(240,236,251,0.35)', borderTop: '2px dashed rgba(124,92,191,0.25)' }}>
+                <td colSpan={3} style={{ padding: '10px 12px' }}>
+                  <div style={{ fontSize: 11, color: 'var(--purple-600)', marginBottom: 6, fontWeight: 700 }}>+ เพิ่มพนักงาน</div>
+                  <div ref={inlineAddRef} style={{ position: 'relative', width: '100%' }}>
+                    <input
+                      className="inp"
+                      placeholder="พิมพ์ชื่อหรือรหัสพนักงาน"
+                      value={inlineAddSearch}
+                      onChange={event => { setInlineAddSearch(event.target.value); openInlineDropdown() }}
+                      onFocus={() => inlineAddSearch && openInlineDropdown()}
+                      style={{ fontSize: 12, padding: '7px 10px', width: '100%' }}
+                    />
+                  </div>
+                </td>
+                <td colSpan={14} />
+              </tr>
+            )}
           </tbody>
           <tfoot>
             <tr>
@@ -1529,24 +2037,70 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               <td className="num">{thb(totals.gsb)}</td>
               <td className="num" style={{ color: '#B91C1C' }}>{thb(totals.deduct)}</td>
               <td className="num" style={{ color: 'var(--purple-600)' }}>{thb(totals.net)}</td>
+              {editing && !isReadonly && <td />}
             </tr>
           </tfoot>
         </table>
       </div>
 
-      {showAddEmployeeModal && (
-        <Modal title="เพิ่มพนักงานเข้าตารางเงินเดือน" onClose={() => setShowAddEmployeeModal(false)}>
-          {availableEmployees.length === 0 ? (
-            <div className="empty-state"><div className="empty-icon">👥</div><div>พนักงานในฝ่ายถูกเพิ่มเข้าตารางครบแล้ว</div><div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 4 }}>หากต้องการเพิ่มคนใหม่ ให้เพิ่มในเมนูพนักงานก่อน</div></div>
-          ) : (
-            <div className="flex flex-col gap-2">
-              {availableEmployees.map(employee => (
-                <button key={employee.id} className="btn btn-secondary" style={{ justifyContent: 'space-between' }} onClick={() => addEmployeeToTable(employee)}>
-                  <span>{employee.title}{employee.firstName} {employee.lastName}</span><span style={{ color: 'var(--text-muted)' }}>{employee.id} · เพิ่ม</span>
-                </button>
-              ))}
+      {inlineAddOpen && inlineAddPosition && createPortal(
+        <div ref={inlineDropdownRef} style={{
+          position: 'fixed', top: inlineAddPosition.top, left: inlineAddPosition.left,
+          width: inlineAddPosition.width, maxHeight: 230, overflowY: 'auto', zIndex: 1000,
+          background: 'rgba(255,255,255,.98)', backdropFilter: 'blur(16px)',
+          border: '1px solid rgba(196,181,240,.5)', borderRadius: 12,
+          boxShadow: '0 8px 24px rgba(124,92,191,.18)',
+        }}>
+          {!inlineAddSearch.trim() ? (
+            <div style={{ padding: '12px 14px', fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
+              พิมพ์ชื่อหรือรหัสพนักงานเพื่อค้นหา
             </div>
-          )}
+          ) : inlineCandidates.length === 0 ? (
+            <div style={{ padding: '12px 14px', fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
+              ไม่พบพนักงานที่ยังไม่อยู่ในตาราง
+            </div>
+          ) : inlineCandidates.map(employee => (
+            <button key={employee.id} type="button" onMouseDown={() => addEmployeeToTable(employee)} style={{
+              display: 'block', width: '100%', border: 0, borderBottom: '1px solid rgba(200,190,240,.18)',
+              background: 'transparent', padding: '10px 14px', textAlign: 'left', cursor: 'pointer',
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{employee.title}{employee.firstName} {employee.lastName}</div>
+              <div style={{ display: 'flex', gap: 8, marginTop: 2, fontSize: 11, color: 'var(--text-muted)' }}>
+                <span style={{ fontFamily: 'monospace' }}>{employee.id}</span><span>{employee.position}</span>
+              </div>
+            </button>
+          ))}
+        </div>,
+        document.body,
+      )}
+
+      {showDiscardModal && (
+        <Modal title="มีรายการแก้ไขที่ยังไม่ได้บันทึก" onClose={() => setShowDiscardModal(false)}>
+          <div className="flex flex-col gap-4">
+            <div style={{ background: 'var(--status-pending-bg)', border: '1px solid var(--status-pending-border)', borderRadius: 10, padding: '12px 14px', fontSize: 13, color: 'var(--status-pending-text)' }}>
+              คุณมี <strong>{pendingChangeCount} รายการ</strong> ที่ยังไม่ได้บันทึก หากปิดการแก้ไขโดยไม่บันทึก ระบบจะคืนตารางเป็นข้อมูลล่าสุดที่บันทึกไว้
+            </div>
+            <div className="flex gap-3 justify-end flex-wrap">
+              <button className="btn btn-secondary" onClick={() => setShowDiscardModal(false)}>กลับไปแก้ไข</button>
+              <button className="btn btn-secondary" onClick={discardUnsavedChanges}>ไม่บันทึก</button>
+              <button className="btn btn-primary" onClick={() => void saveAndCloseEditor()}>💾 บันทึกและออก</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {showLockedEditModal && (
+        <Modal title={dept.status === 'pending' ? 'กำลังรอการอนุมัติ' : 'รอบเงินเดือนถูกล็อก'} onClose={() => setShowLockedEditModal(false)}>
+          <div className="flex flex-col gap-4">
+            <div style={{ background: 'var(--status-pending-bg)', border: '1px solid var(--status-pending-border)', borderRadius: 10, padding: '14px 16px', fontSize: 13, lineHeight: 1.7, color: 'var(--status-pending-text)' }}>
+              {dept.status === 'pending'
+                ? <>รอบเงินเดือนของ <strong>{dept.department}</strong> ถูกส่งให้ผู้อำนวยการพิจารณาแล้ว จึงยังไม่สามารถแก้ไขข้อมูลได้<br />กรุณารอผลการอนุมัติ หรือรอให้ส่งกลับมาแก้ไขก่อน</>
+                : <>รอบเงินเดือนนี้อยู่ในสถานะ <strong>{statusLabel[dept.status]}</strong> จึงไม่สามารถแก้ไขข้อมูลได้</>}
+            </div>
+            <div className="flex justify-end">
+              <button className="btn btn-primary" onClick={() => setShowLockedEditModal(false)}>รับทราบ</button>
+            </div>
+          </div>
         </Modal>
       )}
 
@@ -1696,7 +2250,13 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
     return emps.filter(employee => employee.id.toLowerCase().includes(keyword) || `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(keyword))
   }, [emps, search])
 
-  const exportExcel = () => {
+  const exportExcel = () => exportPayrollWorkbook({
+    period,
+    department: dept.department,
+    entries: visibleEmployees.map(employee => ({ employee, row: dept.rows[employee.id] ?? makeDefaultRow(employee) })),
+  })
+
+  const legacyExportExcel = () => {
     const escapeCell = (value: unknown) => String(value ?? '').replace(/[\t\r\n]/g, ' ')
     const columns = ['ลำดับ', 'รหัส', 'ชื่อ-นามสกุล', 'ตำแหน่ง', 'ฐานเงินเดือน', 'เงินเพิ่ม', 'เงินประจำตำแหน่ง', 'รวมรายการรับ', 'ชำระหนี้ KTB', 'ภาษีหัก ณ ที่จ่าย', 'ประกันสังคม', 'ฌาปนกิจ', 'ธนาคารกรุงไทย', 'ธนาคารออมสิน', 'รวมรายการหัก', 'ยอดรับสุทธิ']
     const rows = visibleEmployees.map((employee, index) => {
@@ -1713,6 +2273,12 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
   }
 
   const printPayrollTable = () => {
+    if (!printPayrollTemplateExact({ period, department: dept.department, status: dept.status, entries: visibleEmployees.map(employee => ({ employee, row: dept.rows[employee.id] ?? makeDefaultRow(employee) })) })) {
+      showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error')
+    }
+  }
+
+  const legacyPrintPayrollTable = () => {
     const printWindow = window.open('', '_blank', 'width=1200,height=800')
     if (!printWindow) { showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error'); return }
     const escapeMarkup = (value: unknown) => String(value ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -1979,7 +2545,7 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
       <PageHeader
         title="พนักงาน"
         subtitle={`พนักงานที่ใช้งานอยู่ ${activeCount} คน จากทั้งหมด ${employees.length} คน`}
-        actions={['director', 'admin'].includes(role) ? <button className="btn btn-primary" onClick={() => { setEditEmpId(null); setPage('employee-form') }}>+ เพิ่มพนักงาน</button> : undefined}
+        actions={<button className="btn btn-primary" onClick={() => { setEditEmpId(null); setPage('employee-form') }}>+ เพิ่มพนักงาน</button>}
       />
       <div className="card" style={{ padding: '14px 18px', marginBottom: 14 }}>
         <div className="flex items-center gap-3">
@@ -2095,7 +2661,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
   positions: Position[]
   setPage: (p: Page) => void
   showToast: (msg: string, t?: 'success' | 'error') => void
-  onSaved: () => Promise<void>
+  onSaved: (optimisticEmployee?: DatabaseEmployee) => Promise<void>
 }) {
   const emp = empId ? employees.find(employee => employee.id === empId) : null
   const initialPrefix = emp?.prefix ?? ''
@@ -2116,6 +2682,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
   const [employeeType, setEmployeeType] = useState<DatabaseEmployee['employee_type']>(emp?.employee_type ?? 'CIVIL_SERVANT')
   const [employeeTypeOther, setEmployeeTypeOther] = useState(emp?.employee_type_other ?? '')
   const [status, setStatus] = useState<DatabaseEmployee['status']>(emp?.status ?? 'ACTIVE')
+  const [birthDate, setBirthDate] = useState(emp?.birth_date ?? '')
   const [startDate, setStartDate] = useState(emp?.start_date ?? '')
   const [endDate, setEndDate] = useState(emp?.end_date ?? '')
   const [bankName, setBankName] = useState(emp?.bank_name ?? '')
@@ -2131,8 +2698,8 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
   }, [emp?.position_id, positionName, positions])
 
   const handleSave = async () => {
-    if (!employeeCode.trim() || nationalId.length !== 13 || !firstName.trim() || !lastName.trim() || !baseSalary || (prefixChoice === 'OTHER' && !customPrefix.trim()) || (employeeType === 'OTHER' && !employeeTypeOther.trim())) {
-      setSaveError('กรุณากรอกช่องที่จำเป็นให้ครบ และเลขประจำตัวประชาชนต้องมี 13 หลัก')
+    if (!employeeCode.trim() || nationalId.length !== 13 || !firstName.trim() || !lastName.trim() || !birthDate || !baseSalary || (prefixChoice === 'OTHER' && !customPrefix.trim()) || (employeeType === 'OTHER' && !employeeTypeOther.trim())) {
+      setSaveError('กรุณากรอกช่องที่จำเป็นให้ครบ รวมถึงวันเดือนปีเกิด และเลขประจำตัวประชาชนต้องมี 13 หลัก')
       return
     }
 
@@ -2156,6 +2723,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
         employee_type: employeeType,
         employee_type_other: employeeType === 'OTHER' ? employeeTypeOther.trim() : null,
         status,
+        birth_date: birthDate || null,
         start_date: startDate || null,
         end_date: endDate || null,
         email: email.trim() || null,
@@ -2164,9 +2732,17 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
         bank_account_no: bankAccountNo.trim() || null,
         base_salary: baseSalary,
       }
+      const savedEmployeeId = empId ?? await createEmployee(payload)
       if (empId) await updateEmployee(empId, payload)
-      else await createEmployee(payload)
-      await onSaved()
+      const savedAt = new Date().toISOString()
+      const optimisticEmployee: DatabaseEmployee = {
+        id: savedEmployeeId,
+        ...payload,
+        base_salary: String(payload.base_salary),
+        created_at: emp?.created_at ?? savedAt,
+        updated_at: savedAt,
+      }
+      void onSaved(optimisticEmployee)
       showToast(empId ? 'อัปเดตข้อมูลพนักงานแล้ว' : 'เพิ่มพนักงานใหม่แล้ว', 'success')
       setPage('employees')
     } catch (error) {
@@ -2199,6 +2775,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
           )}
           <FormField label="ชื่อ" required><input className="inp" value={firstName} onChange={e => setFirstName(e.target.value)} placeholder="ชื่อ" /></FormField>
           <FormField label="นามสกุล" required><input className="inp" value={lastName} onChange={e => setLastName(e.target.value)} placeholder="นามสกุล" /></FormField>
+          <FormField label="วันเดือนปีเกิด (ค.ศ.)" required><input className="inp" type="date" value={birthDate} onChange={e => setBirthDate(e.target.value)} /></FormField>
           <FormField label="อีเมล"><input className="inp" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="example@muni.go.th" /></FormField>
           <FormField label="โทรศัพท์"><input className="inp" value={phone} onChange={e => setPhone(e.target.value)} /></FormField>
         </div>
@@ -2270,30 +2847,101 @@ function FormField({ label, required, children }: { label: string; required?: bo
 
 // ─── Payslip Status ───────────────────────────────────────────────────────────
 
-function PayslipStatus({ periods }: { periods: PayrollPeriod[] }) {
+function PayslipStatus({ periods, onReload, showToast, onManageEmployees }: {
+  periods: PayrollPeriod[]
+  onReload: () => Promise<void>
+  showToast: (message: string, type?: 'success' | 'error' | 'info') => void
+  onManageEmployees: () => void
+}) {
+  const [sendingId, setSendingId] = useState<number | null>(null)
+  const [showBulkSendModal, setShowBulkSendModal] = useState(false)
+  const [bulkSending, setBulkSending] = useState(false)
+  const [bulkProgress, setBulkProgress] = useState(0)
+  const [bulkTarget, setBulkTarget] = useState<{ periodLabel: string; rows: PayslipDeliveryRow[]; missingEmailCount: number } | null>(null)
   const approvedDepts = useMemo(() =>
     periods.flatMap(p => p.depts.filter(d => d.status === 'approved').map(d => ({ period: p, dept: d }))),
     [periods]
   )
+  const approvedPeriods = useMemo(() => periods.map(period => ({
+    period,
+    depts: period.depts.filter(dept => dept.status === 'approved'),
+  })).filter(group => group.depts.length > 0), [periods])
+  const emailDeliveryRows = useMemo<PayslipDeliveryRow[]>(() => approvedDepts.flatMap(({ period, dept }) =>
+    deptEmps(dept).map(employee => ({
+      period,
+      dept,
+      employee,
+      payrollItemId: dept.emailItemIds?.[employee.id],
+      status: dept.emailStatuses?.[employee.id] ?? 'waiting' as EmailStatus,
+      hasEmail: Boolean(employee.email?.trim()),
+    }))
+  ), [approvedDepts])
+  const sendAllPending = async () => {
+    const targetRows = bulkTarget?.rows ?? []
+    if (bulkSending || targetRows.length === 0) return
+    setBulkSending(true)
+    setBulkProgress(0)
+    let sent = 0
+    let failed = 0
+    try {
+      // Send one at a time to keep SMTP connections stable and give every
+      // employee an independent delivery status in the database.
+      for (const [index, row] of targetRows.entries()) {
+        try {
+          await sendPayslipEmail(row.payrollItemId!)
+          sent += 1
+        } catch {
+          failed += 1
+        }
+        setBulkProgress(index + 1)
+      }
+      await onReload()
+      setShowBulkSendModal(false)
+      setBulkTarget(null)
+      showToast(failed > 0
+        ? `ส่งสำเร็จ ${sent} ราย และส่งไม่สำเร็จ ${failed} ราย`
+        : `ส่งสลิปสำเร็จ ${sent} ราย`, failed > 0 ? 'error' : 'success')
+    } finally {
+      setBulkSending(false)
+    }
+  }
 
   return (
     <div className="anim">
-      <PageHeader title="สถานะการส่งสลิปเงินเดือน" subtitle="ติดตามสถานะ PDF และอีเมลสลิปเงินเดือนรายฝ่าย" />
+      <PageHeader title="สถานะการส่งสลิปเงินเดือน" subtitle="ติดตามสถานะ PDF และอีเมลสลิปเงินเดือนแยกรอบและฝ่าย" />
       {approvedDepts.length === 0 && <div className="card"><div className="empty-state"><div className="empty-icon">✉</div><div>ยังไม่มีฝ่ายที่ได้รับการอนุมัติ</div></div></div>}
-      {approvedDepts.map(({ period: p, dept: d }) => {
-        const emps = deptEmps(d)
-        const sentCount = emps.filter(e => d.emailStatuses?.[e.id] === 'sent').length
+      {approvedPeriods.map(({ period: p, depts }) => {
+        const periodRows = emailDeliveryRows.filter(row => row.period.id === p.id)
+        const missingEmailRows = periodRows.filter(row => !row.hasEmail)
+        const bulkSendRows = periodRows.filter(row => row.hasEmail && row.payrollItemId && row.status !== 'sent')
         return (
-          <div key={d.id} className="card" style={{ marginBottom: 16, padding: 0, overflow: 'hidden' }}>
-            <div className="flex items-center justify-between px-6 py-4" style={{ borderBottom: '1px solid rgba(0,0,0,0.07)', background: '#F0FDF4' }}>
+          <section key={p.id} className="card" style={{ marginBottom: 20, padding: 0, overflow: 'hidden' }}>
+            <div className="flex items-center justify-between gap-4 px-6 py-5 flex-wrap" style={{ background: 'linear-gradient(100deg, #F4F0FF, #F8FAFF)', borderBottom: '1px solid #E6DFFE' }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--purple-600)', letterSpacing: '.04em', marginBottom: 3 }}>รอบเงินเดือน</div>
+                <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 19 }}>{periodLabel(p)}</div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 3 }}>วันที่จ่าย {new Date(p.payDate).toLocaleDateString('th-TH')} · {depts.length} ฝ่ายที่อนุมัติแล้ว</div>
+              </div>
+              <button className="btn btn-primary" disabled={bulkSendRows.length === 0 || bulkSending} onClick={() => {
+                setBulkTarget({ periodLabel: periodLabel(p), rows: bulkSendRows, missingEmailCount: missingEmailRows.length })
+                setShowBulkSendModal(true)
+              }}>📨 ส่งอีเมลทั้งหมด{bulkSendRows.length > 0 ? ` (${bulkSendRows.length})` : ''}</button>
+            </div>
+            {missingEmailRows.length > 0 && <div className="flex items-center justify-between gap-4 flex-wrap" style={{ margin: '16px 18px 0', padding: '12px 14px', borderRadius: 10, background: '#FFF8E8', border: '1px solid #F3D28B' }}>
+              <div><strong style={{ color: '#9A5A00', fontSize: 13 }}>⚠️ พบ {missingEmailRows.length} รายที่ยังไม่มีอีเมล</strong><div style={{ fontSize: 12, color: '#7A5A24', marginTop: 2 }}>ระบบจะข้ามรายชื่อเหล่านี้ในการส่งของรอบนี้</div></div>
+              <button className="btn btn-secondary btn-sm" onClick={onManageEmployees}>จัดการข้อมูลพนักงาน</button>
+            </div>}
+            <div style={{ padding: 18, display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {depts.map(d => {
+              const emps = deptEmps(d)
+              const sentCount = emps.filter(e => d.emailStatuses?.[e.id] === 'sent').length
+              return <div key={d.id} style={{ border: '1px solid var(--border)', borderRadius: 12, overflow: 'hidden' }}>
+            <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: '1px solid rgba(0,0,0,0.07)', background: '#F0FDF4' }}>
               <div>
                 <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>{d.department}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>{periodLabel(p)} · อนุมัติโดย {d.approvedBy} · {d.approvedAt ? new Date(d.approvedAt).toLocaleDateString('th-TH') : ''}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>อนุมัติโดย {d.approvedBy ?? '–'} · {d.approvedAt ? new Date(d.approvedAt).toLocaleDateString('th-TH') : '–'}</div>
               </div>
-              <div className="flex items-center gap-4">
-                <div style={{ textAlign: 'right' }}><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>ส่งสำเร็จ</div><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 18, color: '#15803D' }}>{sentCount}/{emps.length}</div></div>
-                <span className="badge badge-approved">✓ อนุมัติแล้ว</span>
-              </div>
+              <div className="flex items-center gap-4"><div style={{ textAlign: 'right' }}><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>ส่งสำเร็จ</div><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 18, color: '#15803D' }}>{sentCount}/{emps.length}</div></div><span className="badge badge-approved">✓ อนุมัติแล้ว</span></div>
             </div>
             <table className="tbl">
               <thead>
@@ -2309,20 +2957,57 @@ function PayslipStatus({ periods }: { periods: PayrollPeriod[] }) {
               </thead>
               <tbody>
                 {emps.map(e => {
-                  const es = d.emailStatuses?.[e.id] ?? 'sent'
+                  const es = d.emailStatuses?.[e.id] ?? 'waiting'
+                  const payrollItemId = d.emailItemIds?.[e.id]
+                  const sentAt = d.emailSentAt?.[e.id]
+                  const sendEmail = async () => {
+                    if (!payrollItemId) return
+                    setSendingId(payrollItemId)
+                    try {
+                      const { recipient } = await sendPayslipEmail(payrollItemId)
+                      showToast(`ส่งสลิปไปที่ ${recipient} แล้ว`, 'success')
+                      await onReload()
+                    } catch (error) {
+                      showToast(error instanceof Error ? error.message : 'ส่งอีเมลไม่สำเร็จ', 'error')
+                      await onReload()
+                    } finally {
+                      setSendingId(null)
+                    }
+                  }
+                  const openPayslip = async (download = false) => {
+                    if (!payrollItemId) return
+                    const previewWindow = download ? null : window.open('', '_blank')
+                    try {
+                      const pdf = await getPayslipPdf(payrollItemId)
+                      const url = URL.createObjectURL(pdf)
+                      if (download) {
+                        const link = document.createElement('a')
+                        link.href = url
+                        link.download = `payslip-${e.id}.pdf`
+                        link.click()
+                      } else if (previewWindow) {
+                        previewWindow.location.href = url
+                      }
+                      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+                    } catch (error) {
+                      previewWindow?.close()
+                      showToast(error instanceof Error ? error.message : 'โหลดสลิปไม่สำเร็จ', 'error')
+                    }
+                  }
                   return (
                     <tr key={e.id}>
                       <td style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{e.id}</td>
                       <td>{e.title}{e.firstName} {e.lastName}</td>
-                      <td style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{e.email}</td>
+                      <td style={{ fontSize: 12, color: e.email?.trim() ? 'var(--text-secondary)' : '#B45309', fontWeight: e.email?.trim() ? 400 : 600 }}>{e.email?.trim() || '⚠️ ยังไม่มีอีเมล'}</td>
                       <td><span className="badge badge-approved">✓ สร้างแล้ว</span></td>
                       <td><span className={`badge ${es === 'sent' ? 'badge-approved' : es === 'failed' ? 'badge-rejected' : 'badge-pending'}`}>{es === 'sent' ? '✓ ส่งสำเร็จ' : es === 'failed' ? '✕ ส่งไม่สำเร็จ' : '◔ รอส่ง'}</span></td>
-                      <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{d.approvedAt ? new Date(d.approvedAt).toLocaleDateString('th-TH') : '–'}</td>
+                      <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{sentAt ? new Date(sentAt).toLocaleString('th-TH') : '–'}</td>
                       <td>
                         <div className="flex gap-1">
-                          <button className="btn btn-ghost btn-xs">ดูสลิป</button>
-                          <button className="btn btn-ghost btn-xs">⬇ PDF</button>
-                          {es === 'failed' && <button className="btn btn-secondary btn-xs">ส่งซ้ำ</button>}
+                          {payrollItemId && <button className="btn btn-ghost btn-xs" onClick={() => openPayslip()}>ดูสลิป</button>}
+                          {payrollItemId && <button className="btn btn-ghost btn-xs" onClick={() => openPayslip(true)}>⬇ PDF</button>}
+                          {e.email?.trim() && payrollItemId && <button className="btn btn-secondary btn-xs" disabled={sendingId === payrollItemId} onClick={sendEmail}>{sendingId === payrollItemId ? 'กำลังส่ง…' : es === 'sent' ? 'ส่งอีกครั้ง' : es === 'failed' ? 'ส่งซ้ำ' : 'ส่งอีเมล'}</button>}
+                          {!e.email?.trim() && <button className="btn btn-secondary btn-xs" onClick={onManageEmployees}>เพิ่มอีเมล</button>}
                         </div>
                       </td>
                     </tr>
@@ -2330,9 +3015,28 @@ function PayslipStatus({ periods }: { periods: PayrollPeriod[] }) {
                 })}
               </tbody>
             </table>
-          </div>
+            </div>
+            })}
+            </div>
+          </section>
         )
       })}
+      {showBulkSendModal && (
+        <Modal title="ยืนยันส่งสลิปทางอีเมล" onClose={() => !bulkSending && setShowBulkSendModal(false)}>
+          <div className="flex flex-col gap-4">
+            <div style={{ background: '#F6F3FF', border: '1px solid #DDD2FE', borderRadius: 10, padding: '14px 16px', fontSize: 13, lineHeight: 1.7 }}>
+              ระบบจะส่งสลิป PDF ที่เข้ารหัสแล้วของรอบ <strong>{bulkTarget?.periodLabel}</strong> ให้ <strong>{bulkTarget?.rows.length ?? 0} ราย</strong> ที่อยู่ในสถานะรอส่งหรือส่งไม่สำเร็จ
+              {(bulkTarget?.missingEmailCount ?? 0) > 0 && <><br />จะข้าม <strong>{bulkTarget?.missingEmailCount} ราย</strong> ที่ยังไม่มีอีเมล</>}
+              <br /><span style={{ color: 'var(--text-secondary)' }}>รายการที่ส่งสำเร็จแล้วจะไม่ถูกส่งซ้ำจากปุ่มนี้</span>
+            </div>
+            {bulkSending && <div style={{ fontSize: 13, color: 'var(--purple-600)', fontWeight: 600 }}>กำลังส่ง {bulkProgress}/{bulkTarget?.rows.length ?? 0} ราย…</div>}
+            <div className="flex gap-3 justify-end">
+              <button className="btn btn-secondary" disabled={bulkSending} onClick={() => { setShowBulkSendModal(false); setBulkTarget(null) }}>ยกเลิก</button>
+              <button className="btn btn-primary" disabled={bulkSending} onClick={() => void sendAllPending()}>{bulkSending ? 'กำลังส่ง…' : 'ยืนยันส่งอีเมล'}</button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }
@@ -2410,11 +3114,22 @@ function ReportsPage({ periods }: { periods: PayrollPeriod[] }) {
 
 // ─── Admin Users ──────────────────────────────────────────────────────────────
 
-function AdminUsers({ users }: { users: UserAccount[] }) {
+function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; showToast: (msg: string, type?: 'success' | 'error') => void }) {
   const roleLabel: Record<Role, string> = { hr: 'HR Officer', director: 'Director', admin: 'Administrator' }
+  const [users, setUsers] = useState<SystemUser[]>([])
+  const [showCreate, setShowCreate] = useState(false)
+  const [username, setUsername] = useState('')
+  const [temporaryPassword, setTemporaryPassword] = useState('')
+  const [employeeId, setEmployeeId] = useState('')
+  const [newRole, setNewRole] = useState<Role>('hr')
+  const load = useCallback(async () => { try { setUsers(await getUsers()) } catch (error) { showToast(error instanceof Error ? error.message : 'โหลดบัญชีไม่สำเร็จ', 'error') } }, [showToast])
+  useEffect(() => { void load() }, [load])
+  const create = async () => { try { await createSystemUser({ username, temporary_password: temporaryPassword, employee_id: Number(employeeId), role: newRole }); showToast('สร้างบัญชีผู้ใช้งานแล้ว', 'success'); setShowCreate(false); setUsername(''); setTemporaryPassword(''); setEmployeeId(''); await load() } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างบัญชีไม่สำเร็จ', 'error') } }
+  const reset = async (user: SystemUser) => { const password = window.prompt(`กำหนดรหัสผ่านชั่วคราวใหม่สำหรับ ${user.username} (อย่างน้อย 8 ตัวอักษร)`); if (!password) return; try { await resetSystemUserPassword(user.id, password); showToast('รีเซ็ตรหัสผ่านแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'รีเซ็ตรหัสผ่านไม่สำเร็จ', 'error') } }
+  const linkedEmployeeIds = new Set(users.map(user => user.employee_id).filter((id): id is number => id !== null))
   return (
     <div className="anim">
-      <PageHeader title="จัดการผู้ใช้งาน" subtitle="บัญชีผู้ใช้งานทั้งหมดในระบบ" actions={<button className="btn btn-primary">+ เพิ่มผู้ใช้งาน</button>} />
+      <PageHeader title="จัดการผู้ใช้งาน" subtitle="สร้างบัญชีโดยผูกกับข้อมูลพนักงานจริง" actions={<button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ เพิ่มผู้ใช้งาน</button>} />
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         <table className="tbl">
           <thead><tr><th>Username</th><th>ชื่อ</th><th>Role</th><th>สถานะ</th><th>ดำเนินการ</th></tr></thead>
@@ -2427,8 +3142,7 @@ function AdminUsers({ users }: { users: UserAccount[] }) {
                 <td><span className={`badge ${u.active ? 'badge-approved' : 'badge-rejected'}`}>{u.active ? '● ใช้งานอยู่' : '● ปิดการใช้งาน'}</span></td>
                 <td>
                   <div className="flex gap-1">
-                    <button className="btn btn-ghost btn-xs">แก้ไข</button>
-                    <button className="btn btn-ghost btn-xs">รีเซ็ตรหัสผ่าน</button>
+                    <button className="btn btn-ghost btn-xs" onClick={() => void reset(u)}>รีเซ็ตรหัสผ่าน</button>
                   </div>
                 </td>
               </tr>
@@ -2436,6 +3150,14 @@ function AdminUsers({ users }: { users: UserAccount[] }) {
           </tbody>
         </table>
       </div>
+      {showCreate && <Modal title="เพิ่มผู้ใช้งาน" onClose={() => setShowCreate(false)}><div className="flex flex-col gap-4">
+        <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>เลือกพนักงานที่มีข้อมูลจริงแล้ว ระบบจะใช้ชื่อและอีเมลจากข้อมูลพนักงานโดยอัตโนมัติ</div>
+        <FormField label="พนักงาน" required><select className="inp" value={employeeId} onChange={e => setEmployeeId(e.target.value)}><option value="">เลือกพนักงาน</option>{employees.filter(e => !linkedEmployeeIds.has(e.id)).map(e => <option key={e.id} value={e.id}>{e.employee_code} · {e.prefix}{e.first_name} {e.last_name}</option>)}</select></FormField>
+        <FormField label="Username" required><input className="inp" value={username} onChange={e => setUsername(e.target.value)} /></FormField>
+        <FormField label="รหัสผ่านชั่วคราว (อย่างน้อย 8 ตัวอักษร)" required><input className="inp" type="password" value={temporaryPassword} onChange={e => setTemporaryPassword(e.target.value)} /></FormField>
+        <FormField label="สิทธิ์" required><select className="inp" value={newRole} onChange={e => setNewRole(e.target.value as Role)}><option value="hr">HR Officer</option><option value="director">Director</option><option value="admin">Administrator</option></select></FormField>
+        <div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setShowCreate(false)}>ยกเลิก</button><button className="btn btn-primary" disabled={!employeeId || username.trim().length < 3 || temporaryPassword.length < 8} onClick={() => void create()}>บันทึกบัญชี</button></div>
+      </div></Modal>}
     </div>
   )
 }
@@ -2606,6 +3328,7 @@ export default function App() {
   const [positions, setPositions] = useState<Position[]>([])
   const [employeeLoading, setEmployeeLoading] = useState(true)
   const [employeeError, setEmployeeError] = useState('')
+  const [payrollError, setPayrollError] = useState('')
   const [loggedIn, setLoggedIn] = useState(false)
   const [role, setRole] = useState<Role>('hr')
   const [userName, setUserName] = useState('')
@@ -2619,23 +3342,47 @@ export default function App() {
   const [toast, setToast] = useState<{ msg: string; type?: 'success' | 'error'; key: number } | null>(null)
   const toastKey = useRef(0)
 
+  const reloadEmployeeDirectory = useCallback(async (optimisticEmployee?: DatabaseEmployee) => {
+    if (optimisticEmployee) {
+      setDatabaseEmployees(current => {
+        const existingIndex = current.findIndex(employee => employee.id === optimisticEmployee.id)
+        return existingIndex >= 0
+          ? current.map(employee => employee.id === optimisticEmployee.id ? optimisticEmployee : employee)
+          : [...current, optimisticEmployee]
+      })
+    }
+    const [employeeData, positionData] = await Promise.all([getEmployees(), getPositions()])
+    setDatabaseEmployees(employeeData)
+    setPositions(positionData)
+  }, [])
+
   const loadEmployeeData = useCallback(async () => {
       try {
         setEmployeeLoading(true)
         setEmployeeError('')
-        const [employeeData, departmentData, positionData, payrollData] = await Promise.all([
-          getEmployees(),
-          getDepartments(),
-          getPositions(),
+        // Both endpoints are independent.  Loading them together removes one
+        // full network round-trip from the post-login dashboard wait.
+        const [bootstrapResult, payrollResult] = await Promise.allSettled([
+          getBootstrap(),
           getPayrollPeriods(),
         ])
-        const mappedPeriods = mapPayrollPeriods(payrollData, employeeData, departmentData, positionData)
+        if (bootstrapResult.status === 'rejected') throw bootstrapResult.reason
+        const { employees: employeeData, departments: departmentData, positions: positionData } = bootstrapResult.value
         setDatabaseEmployees(employeeData)
         setDepartments(departmentData)
         setPositions(positionData)
-        setPeriods(mappedPeriods)
-        setActivePeriodId(current => current && mappedPeriods.some(period => period.id === current) ? current : mappedPeriods[0]?.id ?? '')
-        setActiveDeptId(current => current && mappedPeriods.some(period => period.depts.some(department => department.id === current)) ? current : mappedPeriods[0]?.depts[0]?.id ?? '')
+        setEmployeeLoading(false)
+
+        if (payrollResult.status === 'fulfilled') {
+          const mappedPeriods = mapPayrollPeriods(payrollResult.value, employeeData, departmentData, positionData)
+          setPeriods(mappedPeriods)
+          setPayrollError('')
+          setActivePeriodId(current => current && mappedPeriods.some(period => period.id === current) ? current : mappedPeriods[0]?.id ?? '')
+          setActiveDeptId(current => current && mappedPeriods.some(period => period.depts.some(department => department.id === current)) ? current : mappedPeriods[0]?.depts[0]?.id ?? '')
+        } else {
+          setPeriods([])
+          setPayrollError(payrollResult.reason instanceof Error ? payrollResult.reason.message : 'เกิดข้อผิดพลาดในการเชื่อมต่อข้อมูลรอบเงินเดือน')
+        }
       } catch (loadError) {
         setEmployeeError(loadError instanceof Error ? loadError.message : 'เกิดข้อผิดพลาดในการโหลดข้อมูล')
       } finally {
@@ -2675,8 +3422,8 @@ export default function App() {
 
   const pageTitle: Partial<Record<Page, string>> = {
     dashboard: 'หน้าหลัก', periods: 'รอบเงินเดือน', employees: 'พนักงาน',
-    reports: 'รายงาน', 'payslip-status': 'สถานะการส่งอีเมล', 'director-approvals': 'อนุมัติเงินเดือน',
-    'admin-users': 'จัดการผู้ใช้งาน', 'admin-settings': 'ตั้งค่าระบบ',
+    'payslip-status': 'สถานะการส่งอีเมล', 'director-approvals': 'อนุมัติเงินเดือน',
+    'admin-users': 'จัดการผู้ใช้งาน',
   }
 
   return (
@@ -2702,13 +3449,14 @@ export default function App() {
               setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
           )}
           {page === 'periods' && (
-            <PeriodsPage periods={visiblePeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} reloadPayroll={loadEmployeeData} />
+            <PeriodsPage periods={visiblePeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} reloadPayroll={loadEmployeeData} error={payrollError} />
           )}
           {page === 'period-detail' && activePeriod && role !== 'hr' && (
             <PeriodDetail period={activePeriod} setPage={setPage} setActiveDeptId={setActiveDeptId} role={role} />
           )}
           {(page === 'dept-table' || (page === 'period-detail' && role === 'hr')) && activePeriod && activeDept && (
-            <DeptPayrollTable period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} databaseEmployees={visibleEmployees} reloadPayroll={loadEmployeeData} />
+            <DeptPayrollTable period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast}
+              databaseEmployees={visibleEmployees} departments={departments} positions={positions} reloadPayroll={loadEmployeeData} />
           )}
           {page === 'director-approvals' && (
             <DirectorApprovals periods={visiblePeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
@@ -2726,32 +3474,17 @@ export default function App() {
               role={role}
               setPage={setPage}
               setEditEmpId={setEditEmpId}
-              onChanged={loadEmployeeData}
+              onChanged={reloadEmployeeDirectory}
               showToast={showToast}
             />
           )}
           {page === 'employee-form' && (
             <EmployeeForm empId={editEmpId} employees={visibleEmployees} departments={departments} positions={positions}
-              setPage={setPage} showToast={showToast} onSaved={loadEmployeeData} />
+              setPage={setPage} showToast={showToast} onSaved={reloadEmployeeDirectory} />
           )}
-          {page === 'payslip-status' && <PayslipStatus periods={visiblePeriods} />}
-          {page === 'reports' && <ReportsPage periods={visiblePeriods} />}
-          {page === 'admin-users' && <AdminUsers users={users} />}
-          {page === 'admin-settings' && (
-            <div className="anim">
-              <PageHeader title="ตั้งค่าระบบ" />
-              <div className="card" style={{ padding: 32, maxWidth: 560 }}>
-                <div className="flex flex-col gap-4">
-                  <FormField label="ชื่อหน่วยงาน"><input className="inp" defaultValue="เทศบาลตำบลสมุทร" /></FormField>
-                  <FormField label="SMTP Server"><input className="inp" defaultValue="smtp.muni.go.th" /></FormField>
-                  <FormField label="อีเมลผู้ส่ง"><input className="inp" defaultValue="payroll@muni.go.th" /></FormField>
-                  <div className="flex gap-3 justify-end mt-2">
-                    <button className="btn btn-primary" onClick={() => showToast('บันทึกการตั้งค่าแล้ว', 'success')}>บันทึก</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
+          {page === 'payslip-status' && <PayslipStatus periods={visiblePeriods} onReload={loadEmployeeData} showToast={showToast}
+            onManageEmployees={() => setPage('employees')} />}
+          {page === 'admin-users' && <AdminUsers employees={databaseEmployees} showToast={showToast} />}
         </main>
       </div>
 

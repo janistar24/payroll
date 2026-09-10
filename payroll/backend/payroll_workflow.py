@@ -1,3 +1,4 @@
+import json
 from decimal import Decimal
 
 from DBHelper import DBHelper
@@ -59,12 +60,34 @@ class PayrollWorkflow:
             else:
                 salaries = {}
 
+            # Remember staff intentionally removed from this payroll batch.  Without
+            # this, the live employee directory would add them back after a refresh.
+            if employee_ids:
+                cursor.execute(
+                    "DELETE FROM public.payroll_batch_employee_exclusions WHERE department_batch_id = %s AND employee_id = ANY(%s)",
+                    (batch_id, employee_ids),
+                )
+            cursor.execute(
+                """
+                INSERT INTO public.payroll_batch_employee_exclusions (department_batch_id, employee_id)
+                SELECT %s, employee.id
+                FROM public.employees employee
+                WHERE employee.department_id = %s
+                  AND employee.status = 'ACTIVE'
+                  AND (CARDINALITY(%s::integer[]) = 0 OR employee.id <> ALL(%s::integer[]))
+                ON CONFLICT (department_batch_id, employee_id) DO NOTHING
+                """,
+                (batch_id, department_id, employee_ids, employee_ids),
+            )
+
             cursor.execute("SELECT id FROM public.payroll_items WHERE department_batch_id = %s", (batch_id,))
             previous_item_ids = [record[0] for record in cursor.fetchall()]
             if previous_item_ids:
                 cursor.execute("DELETE FROM public.payroll_item_lines WHERE payroll_item_id = ANY(%s)", (previous_item_ids,))
             cursor.execute("DELETE FROM public.payroll_items WHERE department_batch_id = %s", (batch_id,))
 
+            item_payload = []
+            line_payload = []
             for row in rows:
                 base_salary = Decimal(str(salaries[row["employee_id"]]))
                 line_values = row.get("lines", {})
@@ -72,32 +95,64 @@ class PayrollWorkflow:
                 deductions = sum(Decimal(str(value)) for code, value in line_values.items() if code in {"KTB_LOAN", "TAX", "SSF", "FUNERAL_FUND", "SAVINGS_BANK_LOAN"})
                 total_earnings = base_salary + earnings
                 net_pay = total_earnings - deductions
+                item_payload.append({
+                    "employee_id": row["employee_id"],
+                    "base_salary": str(base_salary),
+                    "total_earnings": str(total_earnings),
+                    "total_deductions": str(deductions),
+                    "net_pay": str(net_pay),
+                })
+
+            # Insert every employee in one SQL call.  The old approach inserted
+            # each person, then each pay line, one round-trip at a time.
+            item_ids = {}
+            if item_payload:
                 cursor.execute(
                     """
                     INSERT INTO public.payroll_items (
                         payroll_period_id, department_batch_id, department_id, employee_id,
                         base_salary, total_earnings, total_deductions, net_pay, created_at
                     )
-                    SELECT payroll_period_id, id, department_id, %s, %s, %s, %s, %s, NOW()
-                    FROM public.payroll_department_batches WHERE id = %s
-                    RETURNING id
-                    """,
-                    (row["employee_id"], base_salary, total_earnings, deductions, net_pay, batch_id),
-                )
-                item_id = cursor.fetchone()[0]
-                for code, amount in line_values.items():
-                    amount = Decimal(str(amount))
-                    if amount == 0:
-                        continue
-                    cursor.execute(
-                        """
-                        INSERT INTO public.payroll_item_lines (payroll_item_id, pay_item_type_id, amount)
-                        SELECT %s, id, %s FROM public.pay_item_types WHERE code = %s
-                        """,
-                        (item_id, amount, code),
+                    SELECT batch.payroll_period_id, batch.id, batch.department_id,
+                           payload.employee_id, payload.base_salary, payload.total_earnings,
+                           payload.total_deductions, payload.net_pay, NOW()
+                    FROM public.payroll_department_batches batch
+                    CROSS JOIN jsonb_to_recordset(%s::jsonb) AS payload(
+                        employee_id integer, base_salary numeric, total_earnings numeric,
+                        total_deductions numeric, net_pay numeric
                     )
-                    if cursor.rowcount != 1:
-                        raise ValueError(f"ไม่พบประเภทรายการ {code}")
+                    WHERE batch.id = %s
+                    RETURNING employee_id, id
+                    """,
+                    (json.dumps(item_payload), batch_id),
+                )
+                item_ids = dict(cursor.fetchall())
+
+            for row in rows:
+                item_id = item_ids[row["employee_id"]]
+                for code, amount in row.get("lines", {}).items():
+                    amount = Decimal(str(amount))
+                    if amount != 0:
+                        line_payload.append({
+                            "payroll_item_id": item_id,
+                            "code": code,
+                            "amount": str(amount),
+                        })
+
+            if line_payload:
+                cursor.execute(
+                    """
+                    INSERT INTO public.payroll_item_lines (payroll_item_id, pay_item_type_id, amount)
+                    SELECT payload.payroll_item_id, item_type.id, payload.amount
+                    FROM jsonb_to_recordset(%s::jsonb) AS payload(
+                        payroll_item_id integer, code text, amount numeric
+                    )
+                    JOIN public.pay_item_types item_type ON item_type.code = payload.code
+                    """,
+                    (json.dumps(line_payload),),
+                )
+                if cursor.rowcount != len(line_payload):
+                    raise ValueError("พบประเภทรายการรับหรือรายการหักที่ไม่ถูกต้อง")
 
             cursor.execute("UPDATE public.payroll_periods SET updated_at = NOW() WHERE id = (SELECT payroll_period_id FROM public.payroll_department_batches WHERE id = %s)", (batch_id,))
 

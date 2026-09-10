@@ -28,6 +28,7 @@ export interface PayrollBatchRecord {
   reject_reason: string | null
   created_at: string
   payroll_items: PayrollItemRecord[]
+  excluded_employee_codes?: string[]
 }
 
 export interface PayrollItemRecord {
@@ -40,6 +41,7 @@ export interface PayrollItemRecord {
   position_name: string | null
   base_salary: string | number
   email_status?: 'PENDING' | 'SENT' | 'FAILED' | null
+  email_sent_at?: string | null
   lines: { code: string; amount: string | number }[]
 }
 
@@ -69,4 +71,21 @@ export async function savePayrollBatchItems(batchId: number, rows: { employee_id
 export async function payrollBatchAction(batchId: number, action: 'submit' | 'approve' | 'reject', reject_reason?: string): Promise<void> {
   const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ action, reject_reason }) })
   if (!response.ok) return parseError(response, `เปลี่ยนสถานะเงินเดือนไม่สำเร็จ: ${response.status}`)
+}
+
+export async function sendPayslipEmail(payrollItemId: number): Promise<{ recipient: string }> {
+  const response = await fetch(`${API_URL}/payslip-email-deliveries/${payrollItemId}/send`, {
+    method: 'POST',
+    headers: authorizationHeaders(),
+  })
+  if (!response.ok) return parseError(response, `ส่งอีเมลไม่สำเร็จ: ${response.status}`)
+  return (await response.json()).data as { recipient: string }
+}
+
+export async function getPayslipPdf(payrollItemId: number): Promise<Blob> {
+  const response = await fetch(`${API_URL}/payslip-email-deliveries/${payrollItemId}/pdf`, {
+    headers: authorizationHeaders(),
+  })
+  if (!response.ok) return parseError(response, `โหลดสลิปไม่สำเร็จ: ${response.status}`)
+  return response.blob()
 }

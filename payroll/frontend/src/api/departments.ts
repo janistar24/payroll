@@ -15,7 +15,7 @@ const API_URL =
   import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
 
 export async function getDepartments(): Promise<Department[]> {
-  const response = await fetch(`${API_URL}/departments`)
+  const response = await fetch(`${API_URL}/departments`, { headers: authorizationHeaders() })
 
   if (!response.ok) {
     throw new Error(`โหลดข้อมูลหน่วยงานไม่สำเร็จ: ${response.status}`)
@@ -29,3 +29,4 @@ export async function getDepartments(): Promise<Department[]> {
 
   return result.data
 }
+import { authorizationHeaders } from './auth'

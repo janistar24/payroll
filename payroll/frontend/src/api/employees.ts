@@ -21,6 +21,7 @@ export interface Employee {
     | 'OTHER'
   employee_type_other: string | null
   status: 'ACTIVE' | 'ON_LEAVE' | 'RESIGNED' | 'RETIRED' | 'TERMINATED'
+  birth_date: string | null
   start_date: string | null
   end_date: string | null
   email: string | null

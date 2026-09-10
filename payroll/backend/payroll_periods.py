@@ -54,7 +54,7 @@ class Payroll_periods:
                    item.net_pay, item.created_at, line.pay_item_type_id,
                    item_type.code AS pay_item_code, item_type.name AS pay_item_name,
                    item_type.category AS pay_item_category, line.amount,
-                   delivery.status AS email_status
+                   delivery.status AS email_status, delivery.sent_at AS email_sent_at
             FROM public.payroll_items item
             JOIN public.employees employee ON employee.id = item.employee_id
             LEFT JOIN public.positions position ON position.id = employee.position_id
@@ -68,13 +68,25 @@ class Payroll_periods:
             (department_id, department_id)
         )
 
+        exclusion_data, exclusion_columns = self.db.fetch(
+            """
+            SELECT exclusion.department_batch_id, employee.employee_code
+            FROM public.payroll_batch_employee_exclusions exclusion
+            JOIN public.employees employee ON employee.id = exclusion.employee_id
+            JOIN public.payroll_department_batches batch ON batch.id = exclusion.department_batch_id
+            WHERE %s::integer IS NULL OR batch.department_id = %s
+            ORDER BY exclusion.department_batch_id, employee.employee_code
+            """,
+            (department_id, department_id)
+        )
+
         periods = {
             row[0]: {**dict(zip(period_columns, row)), "departments": []}
             for row in period_data
         }
         batches = {}
         for row in batch_data:
-            batch = {**dict(zip(batch_columns, row)), "payroll_items": []}
+            batch = {**dict(zip(batch_columns, row)), "payroll_items": [], "excluded_employee_codes": []}
             batches[batch["id"]] = batch
             if batch["payroll_period_id"] in periods:
                 periods[batch["payroll_period_id"]]["departments"].append(batch)
@@ -102,6 +114,12 @@ class Payroll_periods:
                     "category": record["pay_item_category"],
                     "amount": record["amount"]
                 })
+
+        for row in exclusion_data:
+            exclusion = dict(zip(exclusion_columns, row))
+            batch = batches.get(exclusion["department_batch_id"])
+            if batch is not None:
+                batch["excluded_employee_codes"].append(exclusion["employee_code"])
 
         return list(periods.values())
 

@@ -717,6 +717,37 @@ html, body {
   white-space: nowrap;
 }
 
+/* Payroll values stay readable while the user scrolls horizontally. */
+.payroll-detail-table {
+  min-width: 1780px !important;
+}
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(5),
+.payroll-detail-table tbody tr > *:nth-child(5) { min-width: 120px; }
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(6),
+.payroll-detail-table tbody tr > *:nth-child(6) { min-width: 112px; }
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(7),
+.payroll-detail-table tbody tr > *:nth-child(7) { min-width: 152px; }
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(8),
+.payroll-detail-table tbody tr > *:nth-child(8) { min-width: 126px; }
+.payroll-detail-table thead tr:nth-child(2) > *:nth-child(n+9),
+.payroll-detail-table tbody tr > *:nth-child(n+9) { min-width: 116px; }
+.payroll-detail-table .cell-inp { min-width: 92px; }
+
+/* The inline add control occupies the sticky identity columns, not the scrollable amount area. */
+.payroll-detail-table tbody .payroll-inline-add-row > *:nth-child(-n+3) {
+  background: #F7F4FF;
+  z-index: 5;
+}
+.payroll-detail-table tbody .payroll-inline-add-row > *:first-child {
+  position: sticky;
+  left: 0;
+  width: 322px !important;
+  min-width: 322px !important;
+  z-index: 7;
+  background: #F7F4FF !important;
+  box-shadow: 5px 0 8px rgba(0,0,0,0.06);
+}
+
 /* ── Scrollbar ─────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }

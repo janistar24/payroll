@@ -102,6 +102,7 @@ class Employees:
                     employee_type,
                     employee_type_other,
                     status,
+                    birth_date,
                     start_date,
                     end_date,
                     email,
@@ -111,7 +112,7 @@ class Employees:
                     base_salary
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 RETURNING id
                 """,
@@ -126,6 +127,7 @@ class Employees:
                     employee.employee_type,
                     employee.employee_type_other.strip() if employee.employee_type_other else None,
                     employee.status,
+                    employee.birth_date,
                     employee.start_date,
                     employee.end_date,
                     employee.email.strip() if employee.email else None,
@@ -155,9 +157,10 @@ class Employees:
                     department_id = %s,
                     position_id = %s,
                     employee_type = %s,
-                    employee_type_other = %s,
-                    status = %s,
-                    start_date = %s,
+                employee_type_other = %s,
+                status = %s,
+                birth_date = %s,
+                start_date = %s,
                     end_date = %s,
                     email = %s,
                     phone = %s,
@@ -179,6 +182,7 @@ class Employees:
                     employee.employee_type,
                     employee.employee_type_other.strip() if employee.employee_type_other else None,
                     employee.status,
+                    employee.birth_date,
                     employee.start_date,
                     employee.end_date,
                     employee.email.strip() if employee.email else None,

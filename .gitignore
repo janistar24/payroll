@@ -1,0 +1,23 @@
+# Local environments and dependencies
+.venv/
+venv/
+**/.venv/
+**/venv/
+**/node_modules/
+
+# Generated application and test output
+**/dist/
+**/build/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+*.py[cod]
+*.log
+.coverage
+coverage/
+
+# Local configuration and operating-system files
+.env
+.env.*
+!.env.example
+.DS_Store

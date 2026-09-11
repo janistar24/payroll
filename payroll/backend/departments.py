@@ -15,6 +15,7 @@ class Departments:
                 name,
                 is_active
             FROM public.departments
+            WHERE is_active = TRUE
             ORDER BY id
             """
         )

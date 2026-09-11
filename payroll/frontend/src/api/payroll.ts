@@ -27,6 +27,11 @@ export interface PayrollBatchRecord {
   approved_at: string | null
   reject_reason: string | null
   created_at: string
+  revision_number?: number
+  parent_batch_id?: number | null
+  revision_type?: string | null
+  revision_reason?: string | null
+  revision_created_by_name?: string | null
   payroll_items: PayrollItemRecord[]
   excluded_employee_codes?: string[]
 }
@@ -66,6 +71,11 @@ export async function createPayrollPeriod(input: { year: number; month: number; 
 export async function savePayrollBatchItems(batchId: number, rows: { employee_id: number; lines: Record<string, number> }[]): Promise<void> {
   const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/items`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ rows }) })
   if (!response.ok) return parseError(response, `บันทึกตารางเงินเดือนไม่สำเร็จ: ${response.status}`)
+}
+export async function createPayrollRevision(batchId: number, revision_type: string, reason: string): Promise<{ batch_id: number }> {
+  const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/revisions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ revision_type, reason }) })
+  if (!response.ok) return parseError(response, `สร้างฉบับแก้ไขไม่สำเร็จ: ${response.status}`)
+  return (await response.json()).data as { batch_id: number }
 }
 
 export async function payrollBatchAction(batchId: number, action: 'submit' | 'approve' | 'reject', reject_reason?: string): Promise<void> {

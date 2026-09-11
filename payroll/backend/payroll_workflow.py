@@ -30,19 +30,49 @@ class PayrollWorkflow:
             )
             return period_id
 
+    def create_revision(self, batch_id, revision_type, reason, actor_id):
+        with self.db.transaction() as cursor:
+            cursor.execute("SELECT payroll_period_id, department_id, status, revision_number, is_current FROM public.payroll_department_batches WHERE id=%s FOR UPDATE", (batch_id,))
+            source = cursor.fetchone()
+            if source is None or source[2] not in {"APPROVED", "PAID"} or not source[4]:
+                raise ValueError("สร้างฉบับแก้ไขได้เฉพาะรายการที่อนุมัติแล้ว")
+            cursor.execute("UPDATE public.payroll_department_batches SET is_current=FALSE WHERE payroll_period_id=%s AND department_id=%s AND is_current=TRUE", (source[0], source[1]))
+            cursor.execute("""INSERT INTO public.payroll_department_batches (payroll_period_id,department_id,status,created_at,revision_number,parent_batch_id,revision_type,revision_reason,revision_created_by_id,is_current)
+                              VALUES (%s,%s,'DRAFT',NOW(),%s,%s,%s,%s,%s,TRUE) RETURNING id""", (source[0],source[1],source[3]+1,batch_id,revision_type,reason.strip(),actor_id))
+            revision_id=cursor.fetchone()[0]
+            cursor.execute("""INSERT INTO public.payroll_items (payroll_period_id,department_batch_id,department_id,employee_id,base_salary,total_earnings,total_deductions,net_pay,created_at)
+                              SELECT payroll_period_id,%s,department_id,employee_id,base_salary,total_earnings,total_deductions,net_pay,NOW() FROM public.payroll_items WHERE department_batch_id=%s""", (revision_id,batch_id))
+            cursor.execute("""INSERT INTO public.payroll_item_lines (payroll_item_id,pay_item_type_id,amount)
+                              SELECT new.id,line.pay_item_type_id,line.amount FROM public.payroll_item_lines line JOIN public.payroll_items old ON old.id=line.payroll_item_id JOIN public.payroll_items new ON new.department_batch_id=%s AND new.employee_id=old.employee_id WHERE old.department_batch_id=%s""", (revision_id,batch_id))
+            # Keep intentional removals in the revised version as well.  Without
+            # this, employees removed from the original batch return after a
+            # refresh of the newly created revision.
+            cursor.execute(
+                """INSERT INTO public.payroll_batch_employee_exclusions (department_batch_id, employee_id)
+                   SELECT %s, employee_id
+                   FROM public.payroll_batch_employee_exclusions
+                   WHERE department_batch_id = %s
+                   ON CONFLICT (department_batch_id, employee_id) DO NOTHING""",
+                (revision_id, batch_id),
+            )
+            return revision_id
+
     def save_batch_items(self, batch_id, department_id, rows):
         with self.db.transaction() as cursor:
             cursor.execute(
                 """
-                SELECT batch.id
+                SELECT batch.id, batch.status, batch.is_current
                 FROM public.payroll_department_batches batch
                 WHERE batch.id = %s AND batch.department_id = %s
                 FOR UPDATE
                 """,
                 (batch_id, department_id),
             )
-            if cursor.fetchone() is None:
+            batch = cursor.fetchone()
+            if batch is None:
                 raise ValueError("ไม่พบรายการฝ่ายของรอบเงินเดือน")
+            if batch[1] not in {"DRAFT", "REJECTED"} or not batch[2]:
+                raise ValueError("รายการนี้ถูกส่งอนุมัติหรือปิดแล้ว จึงไม่สามารถบันทึกทับได้")
 
             employee_ids = [row["employee_id"] for row in rows]
             if employee_ids:

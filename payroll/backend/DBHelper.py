@@ -73,6 +73,26 @@ class DBHelper:
                 columns = tuple(desc.name for desc in cursor.description)
                 return data, columns
 
+    def fetch_many(self, statements):
+        """Run independent read queries in one PostgreSQL pipeline round-trip.
+
+        Hosted databases make network latency more expensive than these small
+        reads.  This is intentionally read-only and falls back to the normal
+        cursor behavior when a driver does not support pipelining.
+        """
+        with self._connection() as connection:
+            try:
+                with connection.pipeline():
+                    cursors = [connection.execute(sql, params or ()) for sql, params in statements]
+                return [(cursor.fetchall(), tuple(desc.name for desc in cursor.description)) for cursor in cursors]
+            except (AttributeError, NotImplementedError, psycopg.NotSupportedError):
+                with connection.cursor() as cursor:
+                    results = []
+                    for sql, params in statements:
+                        cursor.execute(sql, params or ())
+                        results.append((cursor.fetchall(), tuple(desc.name for desc in cursor.description)))
+                    return results
+
     def execute(self, sql, params=None):
         with self._connection() as connection:
             with connection.cursor() as cursor:

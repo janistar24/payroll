@@ -1,4 +1,4 @@
-import { Fragment, useState, useMemo, useCallback, useEffect, useRef } from 'react'
+import { Fragment, Children, isValidElement, useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import takhliLogo from './imports/takhli_logo_color.jpeg'
 import {
@@ -14,10 +14,11 @@ import {
   type EmployeeSaveInput,
 } from './api/employees'
 import { createPosition, getPositions, type Position } from './api/positions'
-import { getBootstrap } from './api/bootstrap'
+import { getAppData } from './api/bootstrap'
 import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
-import { createSystemUser, getUsers, resetSystemUserPassword, type SystemUser } from './api/users'
-import { createPayrollPeriod, getPayrollPeriods, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollPeriodRecord } from './api/payroll'
+import { approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, revealAccessRequestPassword, type AccessRequest, type SystemUser } from './api/users'
+import { getInvite, submitInvite, type InviteData } from './api/invites'
+import { createPayrollPeriod, createPayrollRevision, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollPeriodRecord } from './api/payroll'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Role = 'hr' | 'director' | 'admin'
@@ -33,6 +34,14 @@ type PayslipDeliveryRow = {
 }
 
 type FloatingDropdownPosition = { top: number; left: number; width: number }
+
+function EyeIcon({ off = false }: { off?: boolean }) {
+  return <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 12s3.4-6 9.5-6 9.5 6 9.5 6-3.4 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.7" />{off && <path d="M3 3l18 18" />}</svg>
+}
+
+function PersonIcon() {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.3" /><path d="M5.5 20c.8-3.3 3-5.1 6.5-5.1s5.7 1.8 6.5 5.1" /></svg>
+}
 
 type Page =
   | 'login'
@@ -93,6 +102,10 @@ interface DeptPayroll {
   emailSentAt?: Record<string, string>
   excludedEmployeeIds?: string[]
   employees?: Employee[]
+  revisionNumber?: number
+  revisionType?: string
+  revisionReason?: string
+  revisionCreatedBy?: string
 }
 
 interface PayrollPeriod {
@@ -164,8 +177,10 @@ const EMPLOYEES: Employee[] = [
 ]
 
 const makeDefaultRow = (e: Employee): PayrollRow => ({
-  empId: e.id, extra: 0, posAllowance: e.position.startsWith('ครู') ? 5000 : e.position.includes('วิศวกร') ? 3000 : 0,
-  debtKTB: 0, tax: Math.round(e.baseSalary * 0.05), social: 750, funeral: 200, ktb: 0, gsb: 0,
+  // A new payroll line must never invent statutory deductions or allowances.
+  // HR enters and saves the actual values for the period.
+  empId: e.id, extra: 0, posAllowance: 0,
+  debtKTB: 0, tax: 0, social: 0, funeral: 0, ktb: 0, gsb: 0,
 })
 
 // Deterministic extras per employee index so seed data is stable
@@ -222,6 +237,13 @@ const LOGIN_MAP: Record<string, { name: string; role: Role; department: string |
 
 const thb = (n: number) => n.toLocaleString('th-TH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 const thbInt = (n: number) => n.toLocaleString('th-TH')
+const BUDDHIST_LOCALE = 'th-TH-u-ca-buddhist'
+const formatBuddhistDate = (value: string | Date, long = false) => new Intl.DateTimeFormat(BUDDHIST_LOCALE, {
+  timeZone: 'Asia/Bangkok', day: 'numeric', month: long ? 'long' : 'numeric', year: 'numeric',
+}).format(new Date(value))
+const formatBuddhistDateTime = (value: string | Date) => new Intl.DateTimeFormat(BUDDHIST_LOCALE, {
+  timeZone: 'Asia/Bangkok', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+}).format(new Date(value))
 
 const MONTH_TH = ['', 'มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม']
 const MONTH_EN_SHORT = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -315,6 +337,10 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
         emailSentAt,
         excludedEmployeeIds: batch.excluded_employee_codes ?? [],
         employees: batchEmployees,
+        revisionNumber: batch.revision_number ?? 0,
+        revisionType: batch.revision_type ?? undefined,
+        revisionReason: batch.revision_reason ?? undefined,
+        revisionCreatedBy: batch.revision_created_by_name ?? undefined,
       }
     }),
   }))
@@ -359,7 +385,7 @@ const exportPayrollWorkbook = async ({ period, department, entries }: {
 
   const border = { top: { style: 'thin' as const }, left: { style: 'thin' as const }, bottom: { style: 'thin' as const }, right: { style: 'thin' as const } }
   const centered = { horizontal: 'center' as const, vertical: 'middle' as const, wrapText: false }
-  const printedAt = new Date().toLocaleString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const printedAt = formatBuddhistDateTime(new Date())
 
   sheet.mergeCells('E1:L1'); sheet.getCell('E1').value = 'เทศบาลเมืองตาคลี'
   sheet.mergeCells('E2:L2'); sheet.getCell('E2').value = 'รายงานการปรับปรุงข้อมูลเงินเดือน'
@@ -466,7 +492,7 @@ const legacyPrintPayrollTemplate = ({ period, department, status, entries }: {
     return `<tr><td>${index + 1}</td><td>${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
   }).join('')
   const widths = PAYROLL_REPORT_WIDTHS.map(width => `${(width / PAYROLL_REPORT_WIDTHS.reduce((sum, value) => sum + value, 0)) * 100}%`)
-  const printedAt = new Date().toLocaleString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const printedAt = formatBuddhistDateTime(new Date())
   printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานการปรับปรุงข้อมูลเงินเดือน</title><style>
 @page{size:A4 landscape;margin:12mm 11mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;color:#111;background:#fff;font-family:Tahoma,sans-serif;font-size:10pt}.report-head{position:relative;text-align:center;padding-bottom:4mm}.report-head img{position:absolute;left:0;top:0;width:17mm;height:17mm;object-fit:contain}.report-head h1,.report-head h2,.report-head p{margin:0}.report-head h1{font-size:16pt;line-height:1.25}.report-head h2{font-size:12pt;line-height:1.3}.report-head p{font-size:10pt;line-height:1.35}.page{position:absolute;right:0;top:0;font-size:9pt}.report-lines{margin:2mm 0 4mm;font-size:10pt;line-height:1.45}.report-lines div{min-height:5mm}.report-lines .address{text-align:center}.report-lines .department,.report-lines .period{text-align:center;font-size:12pt}.report-lines .period{font-weight:700}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:.5pt solid #000;padding:2px 3px;vertical-align:middle}thead th{background:#e6f2ff;text-align:center;font-size:10pt;font-weight:700;line-height:1.2;white-space:normal;overflow-wrap:anywhere}tbody td,tfoot td{font-size:10pt;line-height:1.2;white-space:nowrap;overflow-wrap:normal;word-break:keep-all}td:nth-child(1),td:nth-child(2){text-align:center}td.num{text-align:right;font-variant-numeric:tabular-nums}tfoot td{background:#e6f2ff;font-weight:700}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:16mm;margin-top:10mm;text-align:center;line-height:1.7;font-size:10pt}
 </style></head><body><div class="report-head"><img src="${takhliLogo}" alt="ตราเทศบาลเมืองตาคลี"><div class="page">หน้า 1/1</div><h1>เทศบาลเมืองตาคลี</h1><h2>รายงานการปรับปรุงข้อมูลเงินเดือน</h2></div><div class="report-lines"><div>วันที่พิมพ์ : ${escapeMarkup(printedAt)}</div><div class="address">1 ซ.ประชาตาคลี 3 ต.ตาคลี อ.ตาคลี จ.นครสวรรค์ 60140</div><div class="department">${escapeMarkup(department)}</div><div class="period">ประจำเดือน ${escapeMarkup(periodLabel(period))}</div></div><table><colgroup>${widths.map(width => `<col style="width:${width}">`).join('')}</colgroup><thead><tr><th colspan="5">ข้อมูลพนักงาน</th><th colspan="3">รายการรับ</th><th colspan="7">รายการหัก</th><th rowspan="2">ยอดรับสุทธิ</th></tr><tr>${PAYROLL_REPORT_COLUMNS.slice(0, -1).map(value => `<th>${value}</th>`).join('')}</tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${totals.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr></tfoot></table><div class="signatures"><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้จัดทำ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้ตรวจสอบ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้อนุมัติ</div></div><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close())})<\/script></body></html>`)
@@ -489,7 +515,7 @@ const printPayrollTemplate = ({ period, department, status: _status, entries }: 
   const columnTracks = PAYROLL_REPORT_WIDTHS.map(width => `${width}fr`).join(' ')
   const colgroup = PAYROLL_REPORT_WIDTHS.map(width => `<col style="width:${(width / PAYROLL_REPORT_WIDTHS.reduce((sum, value) => sum + value, 0)) * 100}%">`).join('')
   const headerCells = PAYROLL_REPORT_COLUMNS.slice(0, -1).map(label => `<th>${escapeMarkup(label).replace(/\n/g, '<br>')}</th>`).join('')
-  const printedAt = new Date().toLocaleString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const printedAt = formatBuddhistDateTime(new Date())
   printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานการปรับปรุงข้อมูลเงินเดือน</title><style>
 @page{size:A4 landscape;margin:25.4mm 19.05mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;color:#000;background:#fff;font-family:Tahoma,sans-serif;font-size:10pt}.sheet-head{display:grid;grid-template-columns:${columnTracks};grid-template-rows:26pt 16pt 15pt 15pt 12pt;align-items:center;position:relative}.town{grid-column:5/13;grid-row:1;text-align:center;font-weight:700;font-size:16pt}.report-title{grid-column:5/13;grid-row:2;text-align:center;font-weight:700;font-size:12pt}.printed{grid-column:1/5;grid-row:3;font-size:10pt}.address{grid-column:5/13;grid-row:3;text-align:center;font-size:12pt}.department{grid-column:5/13;grid-row:4;text-align:center;font-size:12pt;font-weight:700}.period{grid-column:5/13;grid-row:5;text-align:center;font-size:12pt;font-weight:700}.page{grid-column:16;grid-row:1;text-align:right;font-size:9pt}.logo{grid-column:6/7;grid-row:1/4;z-index:2;justify-self:center;width:13.5mm;height:14.5mm;object-fit:contain}table{width:100%;border-collapse:collapse;table-layout:fixed;margin-top:6mm}th,td{border:.5pt solid #000;padding:2px 3px;vertical-align:middle}thead th{background:#ffffcc;text-align:center;font-family:Tahoma,sans-serif;font-size:10pt;font-weight:700;line-height:1.2;white-space:normal}thead tr:first-child{height:13pt}thead tr:last-child{height:42pt}tbody tr,tfoot tr{height:13pt}tbody td,tfoot td{font-family:Tahoma,sans-serif;font-size:10pt;white-space:nowrap;overflow:visible;line-height:1.2}td:nth-child(1),td:nth-child(2){text-align:center}td.num{text-align:right;font-variant-numeric:tabular-nums}tfoot td{background:#ffffcc;font-weight:700}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:16mm;margin-top:10mm;text-align:center;line-height:1.7;font-size:10pt}
 </style></head><body><div class="sheet-head"><div class="town">เทศบาลเมืองตาคลี</div><div class="report-title">รายงานการปรับปรุงข้อมูลเงินเดือน</div><div class="printed">วันที่พิมพ์ : ${escapeMarkup(printedAt)}</div><div class="address">1 ซ.ประชาตาคลี 3 ต.ตาคลี อ.ตาคลี จ.นครสวรรค์ 60140</div><div class="department">${escapeMarkup(department)}</div><div class="period">ประจำเดือน ${escapeMarkup(periodLabel(period))}</div><div class="page">หน้า 1/1</div><img class="logo" src="${takhliLogo}" alt="ตราเทศบาลเมืองตาคลี"></div><table><colgroup>${colgroup}</colgroup><thead><tr><th colspan="5">ข้อมูลพนักงาน</th><th colspan="3">รายการรับ</th><th colspan="7">รายการหัก</th><th rowspan="2">ยอดรับสุทธิ</th></tr><tr>${headerCells}</tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${totals.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr></tfoot></table><div class="signatures"><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้จัดทำ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้ตรวจสอบ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้อนุมัติ</div></div><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close()})<\/script></body></html>`)
@@ -517,7 +543,7 @@ const printPayrollTemplateExact = ({ period, department, status: _status, entrie
   }).join('')
   const colgroup = PAYROLL_REPORT_WIDTHS.map(width => `<col style="width:${(width / PAYROLL_REPORT_WIDTHS.reduce((sum, value) => sum + value, 0)) * 100}%">`).join('')
   const headers = PAYROLL_REPORT_COLUMNS.slice(0, -1).map(label => `<th>${escapeMarkup(label).replace(/\n/g, '<br>')}</th>`).join('')
-  const printedAt = new Date().toLocaleString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const printedAt = formatBuddhistDateTime(new Date())
   printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานการปรับปรุงข้อมูลเงินเดือน</title><style>@page{size:A4 landscape;margin:25.4mm 19.05mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;color:#000;font-family:Tahoma,sans-serif;font-size:10pt}.header{position:relative}.header img{position:absolute;width:13.5mm;height:14.5mm;object-fit:contain;left:31%;top:0}.header table,.payroll{width:100%;border-collapse:collapse;table-layout:fixed}.header td{height:15pt;vertical-align:middle}.header .municipality{text-align:center;font-size:16pt;font-weight:700;height:26pt}.header .title{text-align:center;font-size:12pt;font-weight:700;height:16pt}.header .date,.header .address{font-size:10pt}.header .department,.header .period{text-align:center;font-size:12pt;font-weight:700}.payroll{margin-top:6mm}.payroll th,.payroll td{border:.5pt solid #000;padding:2px 3px;vertical-align:middle}.payroll thead th{background:#ffffcc;text-align:center;font-size:10pt;font-weight:700;line-height:1.2;white-space:normal}.payroll thead tr:first-child{height:13pt}.payroll thead tr:last-child{height:42pt}.payroll tbody tr,.payroll tfoot tr{height:13pt}.payroll tbody td,.payroll tfoot td{font-size:10pt;white-space:nowrap;line-height:1.2}.payroll td:nth-child(1),.payroll td:nth-child(2){text-align:center}.payroll .num{text-align:right;font-variant-numeric:tabular-nums}.payroll tfoot td{background:#ffffcc;font-weight:700}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:16mm;margin-top:10mm;text-align:center;line-height:1.7;font-size:10pt}</style></head><body><div class="header"><img src="${takhliLogo}" alt="ตราเทศบาลเมืองตาคลี"><table><colgroup>${colgroup}</colgroup><tbody><tr><td colspan="4"></td><td colspan="8" class="municipality">เทศบาลเมืองตาคลี</td><td colspan="3"></td><td class="date">หน้า 1/1</td></tr><tr><td colspan="4"></td><td colspan="8" class="title">รายงานการปรับปรุงข้อมูลเงินเดือน</td><td colspan="4"></td></tr><tr><td colspan="4" class="date">วันที่พิมพ์ : ${escapeMarkup(printedAt)}</td><td colspan="8"></td><td colspan="4"></td></tr><tr><td colspan="4" class="address">1 ซ.ประชาตาคลี 3 ต.ตาคลี</td><td colspan="8" class="department">${escapeMarkup(department)}</td><td colspan="4"></td></tr><tr><td colspan="4" class="address">อ.ตาคลี จ.นครสวรรค์&nbsp;&nbsp;&nbsp;60140</td><td colspan="8" class="period">ประจำเดือน ${escapeMarkup(periodLabel(period))}</td><td colspan="4"></td></tr></tbody></table></div><table class="payroll"><colgroup>${colgroup}</colgroup><thead><tr><th colspan="5">ข้อมูลพนักงาน</th><th colspan="3">รายการรับ</th><th colspan="7">รายการหัก</th><th rowspan="2">ยอดรับสุทธิ</th></tr><tr>${headers}</tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${totals.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr></tfoot></table><div class="signatures"><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้จัดทำ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้ตรวจสอบ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้อนุมัติ</div></div><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close()})<\/script></body></html>`)
   printWindow.document.close()
   const tableStyle = printWindow.document.createElement('style')
@@ -534,7 +560,7 @@ const printPayrollTemplateExact = ({ period, department, status: _status, entrie
   return true
 }
 
-const deptEmps = (dept: DeptPayroll) => dept.employees ?? EMPLOYEES.filter(e => e.department === dept.department)
+const deptEmps = (dept: DeptPayroll) => dept.employees ?? []
 const deptTotals = (dept: DeptPayroll) => {
   const emps = deptEmps(dept)
   let totalBase = 0, totalExtra = 0, totalPos = 0, totalGross = 0, totalDebtKTB = 0, totalTax = 0, totalSocial = 0, totalFuneral = 0, totalKTB = 0, totalGSB = 0, totalDeduct = 0, totalNet = 0
@@ -613,7 +639,7 @@ function Modal({ title, children, onClose, size }: { title: string; children: Re
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
-function Sidebar({ role, name, department, page, setPage }: { role: Role; name: string; department: string | null; page: Page; setPage: (p: Page) => void }) {
+function Sidebar({ role, page, setPage }: { role: Role; page: Page; setPage: (p: Page) => void }) {
   type NavEntry = { id: Page; label: string; icon: string }
   const hrNav: NavEntry[] = [
     { id: 'dashboard', label: 'หน้าหลัก', icon: '🏠' },
@@ -635,9 +661,6 @@ function Sidebar({ role, name, department, page, setPage }: { role: Role; name: 
     { id: 'admin-users',   label: 'จัดการผู้ใช้งาน', icon: '👤' },
   ]
   const navItems = role === 'hr' ? hrNav : role === 'director' ? dirNav : adminNav
-
-  const roleLabel: Record<Role, string> = { hr: 'HR Officer', director: 'Director', admin: 'Administrator' }
-  const roleBg: Record<Role, string> = { hr: 'var(--purple-100)', director: 'var(--blue-100)', admin: 'var(--salmon-100)' }
 
   return (
     <aside className="sidebar flex flex-col" style={{ width: 220, minWidth: 220, height: '100vh', position: 'sticky', top: 0, flexShrink: 0 }}>
@@ -661,18 +684,6 @@ function Sidebar({ role, name, department, page, setPage }: { role: Role; name: 
           </button>
         ))}
       </nav>
-      {/* User */}
-      <div className="px-4 py-4" style={{ borderTop: '1px solid rgba(0,0,0,0.06)' }}>
-        <div className="flex items-center gap-3">
-          <div style={{ width: 36, height: 36, borderRadius: '50%', background: roleBg[role], display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: role === 'hr' ? 'var(--purple-600)' : role === 'director' ? '#1565C0' : '#9A3412', flexShrink: 0 }}>
-            {name.split(' ')[0][0]}
-          </div>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 600, color: '#1A1A1A', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
-            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{role === 'hr' && department ? `พนักงานธุรการฝ่าย${department}` : roleLabel[role]}</div>
-          </div>
-        </div>
-      </div>
     </aside>
   )
 }
@@ -838,7 +849,7 @@ function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Ro
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    if (!username || !password) { setError('กรุณากรอก Username และ Password'); return }
+    if (!username || !password) { setError('กรุณากรอกชื่อผู้ใช้และรหัสผ่าน'); return }
     setLoading(true)
     try {
       const user: AuthUser = await loginWithDatabase(username.trim(), password)
@@ -880,13 +891,13 @@ function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Ro
         {/* Form */}
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#1A1A1A', marginBottom: 6 }}>Username</label>
-            <input className="inp" value={username} onChange={e => setUsername(e.target.value)} placeholder="กรอก Username" autoComplete="username" />
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#1A1A1A', marginBottom: 6 }}>ชื่อผู้ใช้</label>
+            <input className="inp" value={username} onChange={e => setUsername(e.target.value)} placeholder="กรอกชื่อผู้ใช้" autoComplete="username" />
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#1A1A1A', marginBottom: 6 }}>Password</label>
+            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: '#1A1A1A', marginBottom: 6 }}>รหัสผ่าน</label>
             <div style={{ position: 'relative' }}>
-              <input className="inp" type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} placeholder="กรอก Password" autoComplete="current-password" style={{ paddingRight: 44 }} />
+              <input className="inp" type={showPw ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)} placeholder="กรอกรหัสผ่าน" autoComplete="current-password" style={{ paddingRight: 44 }} />
               <button type="button" onClick={() => setShowPw(!showPw)} style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 16 }}>
                 {showPw ? '◡' : '◠'}
               </button>
@@ -899,10 +910,6 @@ function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Ro
         </form>
         <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-muted)', marginTop: 20 }}>
           ลืมรหัสผ่าน? กรุณาติดต่อผู้ดูแลระบบ
-        </div>
-        <div style={{ background: 'var(--purple-100)', borderRadius: 10, padding: '10px 14px', marginTop: 16, fontSize: 11.5, color: 'var(--purple-600)', lineHeight: 1.8 }}>
-          <strong>เข้าสู่ระบบด้วยบัญชีจริงในฐานข้อมูล</strong><br />
-          ติดต่อผู้ดูแลระบบหากยังไม่มีบัญชี
         </div>
       </div>
     </div>
@@ -955,8 +962,19 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
   employees: DatabaseEmployee[]; departments: Department[];
   setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; setActiveDeptId: (id: string) => void;
 }) {
-  const currentPeriod = periods[0]
-  const prevPeriod = periods[1]
+  const [dashboardPeriodId, setDashboardPeriodId] = useState(periods[0]?.id ?? '')
+  useEffect(() => {
+    if (!periods.some(period => period.id === dashboardPeriodId)) setDashboardPeriodId(periods[0]?.id ?? '')
+  }, [periods, dashboardPeriodId])
+  const currentPeriod = periods.find(period => period.id === dashboardPeriodId) ?? periods[0]
+  const currentPeriodIndex = periods.findIndex(period => period.id === currentPeriod?.id)
+  const prevPeriod = currentPeriodIndex >= 0 ? periods[currentPeriodIndex + 1] : undefined
+  const dashboardYears = [...new Set(periods.map(period => period.year))].sort((a, b) => b - a)
+  const dashboardMonths = periods.filter(period => period.year === currentPeriod?.year).map(period => period.month).sort((a, b) => b - a)
+  const selectDashboardPeriod = (year: number, month: number) => {
+    const period = periods.find(item => item.year === year && item.month === month)
+    if (period) setDashboardPeriodId(period.id)
+  }
   const [expandedDashboardPeriodId, setExpandedDashboardPeriodId] = useState<string | null>(null)
   const [isDashboardPrinting, setIsDashboardPrinting] = useState(false)
   const [isRecentPeriodsHighlighted, setIsRecentPeriodsHighlighted] = useState(false)
@@ -967,11 +985,13 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
 
   const pendingDepts = currentPeriod?.depts.filter(d => d.status === 'pending') ?? []
 
-  const monthLabels = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.']
+  // Use only records returned by the API; never display demo chart values.
+  const chartPeriods = [...periods].slice(0, 7).reverse()
+  const monthLabels = chartPeriods.map(period => `${MONTH_TH[period.month].slice(0, 3)} ${String(period.year + 543).slice(-2)}`)
   const lineData = [
-    { label: 'รายการรับรวม', values: [820000, 835000, 828000, 842000, 851000, 838000, currentTotals.gross, 0].slice(0, 7), color: '#9C6FE4' },
-    { label: 'รายการหักรวม', values: [92000,  94000,  91000,  95000,  97000,  93000,  currentTotals.deduct, 0].slice(0, 7), color: '#FFB4A2' },
-    { label: 'ยอดรับสุทธิรวม', values: [728000, 741000, 737000, 747000, 754000, 745000, currentTotals.net, 0].slice(0, 7), color: '#22C55E' },
+    { label: 'รายการรับรวม', values: chartPeriods.map(period => periodTotals(period).gross), color: '#9C6FE4' },
+    { label: 'รายการหักรวม', values: chartPeriods.map(period => periodTotals(period).deduct), color: '#FFB4A2' },
+    { label: 'ยอดรับสุทธิรวม', values: chartPeriods.map(period => periodTotals(period).net), color: '#22C55E' },
   ]
   const dashboardRows = currentPeriod?.depts.flatMap(dept => Object.values(dept.rows)) ?? []
   const currentPayrollEmployeeCodes = new Set(dashboardRows.map(row => row.empId))
@@ -1064,7 +1084,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
             </div>
             {currentPeriod && (
               <div style={{ fontSize: 13.5, color: 'var(--text-secondary)', marginTop: 6 }}>
-                รอบเงินเดือน <strong style={{ color: '#1A1A1A' }}>{periodLabel(currentPeriod)}</strong> · วันที่จ่าย {new Date(currentPeriod.payDate).toLocaleDateString('th-TH')}
+                รอบเงินเดือน <strong style={{ color: '#1A1A1A' }}>{periodLabel(currentPeriod)}</strong> · วันที่จ่าย {formatBuddhistDate(currentPeriod.payDate)}
                 {role === 'hr' && pendingDepts.length > 0 && <span style={{ marginLeft: 12, color: 'var(--status-pending-text)', fontWeight: 600 }}>◔ ข้อมูลฝ่ายรออนุมัติ</span>}
               </div>
             )}
@@ -1076,9 +1096,23 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
         </div>
       </div>
 
+      <div className="card" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 13, fontWeight: 800, color: '#4C3B73', whiteSpace: 'nowrap' }}>แสดงข้อมูลรอบเงินเดือน</span>
+        <AppSelect className="inp" style={{ width: 150 }} value={String(currentPeriod?.month ?? '')} onChange={event => selectDashboardPeriod(currentPeriod?.year ?? 0, Number(event.target.value))}>
+          {dashboardMonths.map(month => <option key={month} value={month}>{MONTH_TH[month]}</option>)}
+        </AppSelect>
+        <AppSelect className="inp" style={{ width: 120 }} value={String(currentPeriod?.year ?? '')} onChange={event => {
+          const year = Number(event.target.value)
+          const period = periods.find(item => item.year === year && item.month === currentPeriod?.month) ?? periods.find(item => item.year === year)
+          if (period) setDashboardPeriodId(period.id)
+        }}>
+          {dashboardYears.map(year => <option key={year} value={year}>{year + 543}</option>)}
+        </AppSelect>
+      </div>
+
       <div className="dashboard-quick-menu">
         <div style={{ fontFamily: 'var(--font-display)', fontSize: 15, fontWeight: 700, marginBottom: 10 }}>
-          {role === 'hr' ? 'ขั้นตอนการทำงานเงินเดือน' : 'เมนูด่วน'}
+          เมนูลัด
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: 12 }}>
           {quickMenuItems.map(item => (
@@ -1220,7 +1254,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
                       }
                     }}>
                       <td style={{ fontWeight: 600 }}>{periodLabel(period)}</td>
-                      <td style={{ color: 'var(--text-secondary)' }}>{new Date(period.payDate).toLocaleDateString('th-TH')}</td>
+                      <td style={{ color: 'var(--text-secondary)' }}>{formatBuddhistDate(period.payDate)}</td>
                       <td>{totals.emps} คน</td>
                       <td className="num">{thb(totals.gross)}</td>
                       <td className="num" style={{ fontWeight: 600, color: 'var(--purple-600)' }}>{thb(totals.net)}</td>
@@ -1349,7 +1383,7 @@ function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, rol
                 <div>
                   <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 17, color: '#1A1A1A' }}>{periodLabel(p)}</div>
                   <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 3 }}>
-                    วันที่จ่าย {new Date(p.payDate).toLocaleDateString('th-TH')} · สร้างโดย {p.createdBy}
+                    วันที่จ่าย {formatBuddhistDate(p.payDate)} · สร้างโดย {p.createdBy}
                   </div>
                 </div>
                 <div className="flex items-center gap-6">
@@ -1378,9 +1412,9 @@ function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, rol
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
               <div>
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>เดือน <span style={{ color: 'red' }}>*</span></label>
-                <select className="inp" value={createMonth} onChange={e => setCreateMonth(e.target.value)}>
+                <AppSelect className="inp" value={createMonth} onChange={e => setCreateMonth(e.target.value)}>
                   {MONTH_TH.slice(1).map((m, i) => <option key={i+1} value={i+1}>{m}</option>)}
-                </select>
+                </AppSelect>
               </div>
               <div>
                 <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>ปี (พ.ศ.) <span style={{ color: 'red' }}>*</span></label>
@@ -1388,8 +1422,8 @@ function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, rol
               </div>
             </div>
             <div>
-              <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>วันที่จ่ายเงินเดือน <span style={{ color: 'red' }}>*</span></label>
-              <input className="inp" type="date" value={createPayDate} onChange={e => setCreatePayDate(e.target.value)} />
+              <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>วันที่จ่ายเงินเดือน (พ.ศ.) <span style={{ color: 'red' }}>*</span></label>
+              <BuddhistDateInput value={createPayDate} onChange={setCreatePayDate} required />
             </div>
             <div>
               <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>หมายเหตุ</label>
@@ -1416,7 +1450,7 @@ function PeriodDetail({ period, setPage, setActiveDeptId, role }: {
     <div className="anim">
       <PageHeader
         title={`รอบเงินเดือน ${periodLabel(period)}`}
-        subtitle={`วันที่จ่าย ${new Date(period.payDate).toLocaleDateString('th-TH')} · สร้างโดย ${period.createdBy}`}
+        subtitle={`วันที่จ่าย ${formatBuddhistDate(period.payDate)} · สร้างโดย ${period.createdBy}`}
         breadcrumb={<Crumb items={[{ label: 'รอบเงินเดือน', onClick: () => setPage('periods') }, { label: periodLabel(period) }]} />}
       />
       {/* Summary */}
@@ -1455,7 +1489,7 @@ function PeriodDetail({ period, setPage, setActiveDeptId, role }: {
                   <td className="num">{thb(dt.totalDeduct)}</td>
                   <td className="num total">{thb(dt.totalNet)}</td>
                   <td><StatusBadge s={d.status} /></td>
-                  <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{new Date(d.updatedAt).toLocaleDateString('th-TH')}</td>
+                  <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{formatBuddhistDate(d.updatedAt)}</td>
                   <td>
                     <div className="flex items-center gap-1">
                       {role === 'hr' && (d.status === 'draft' || d.status === 'rejected') && (
@@ -1574,6 +1608,10 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const [showDiscardModal, setShowDiscardModal] = useState(false)
   const [showSubmitModal, setShowSubmitModal] = useState(false)
   const [showLockedEditModal, setShowLockedEditModal] = useState(false)
+  const [showRevisionModal, setShowRevisionModal] = useState(false)
+  const [revisionType, setRevisionType] = useState('')
+  const [revisionReason, setRevisionReason] = useState('')
+  const [creatingRevision, setCreatingRevision] = useState(false)
   const [focusRow, setFocusRow] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const [search, setSearch] = useState('')
@@ -1744,6 +1782,23 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     const saved = await save()
     if (saved) setShowDiscardModal(false)
   }
+  const createRevision = async () => {
+    if (!revisionType) {
+      showToast('กรุณาเลือกประเภทการแก้ไข', 'error')
+      return
+    }
+    if (revisionReason.trim().length < 5) {
+      showToast('กรุณาระบุเหตุผลการแก้ไขอย่างน้อย 5 ตัวอักษร', 'error')
+      return
+    }
+    if (!dept.databaseId) {
+      showToast('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล', 'error')
+      return
+    }
+    try { setCreatingRevision(true); await createPayrollRevision(dept.databaseId, revisionType, revisionReason.trim()); showToast('สร้างฉบับแก้ไขเพิ่มเติมแล้ว กรุณาแก้ไขและส่งอนุมัติใหม่', 'success'); setShowRevisionModal(false); await reloadPayroll() }
+    catch (error) { showToast(error instanceof Error ? error.message : 'สร้างฉบับแก้ไขไม่สำเร็จ', 'error') }
+    finally { setCreatingRevision(false) }
+  }
 
   const addEmployeeToTable = (employee: Employee) => {
     setRows(previous => ({ ...previous, [employee.id]: previous[employee.id] ?? initialRows.current[employee.id] ?? makeDefaultRow(employee) }))
@@ -1898,6 +1953,14 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           <strong>เหตุผลที่ไม่อนุมัติ:</strong> {dept.rejectionReason}
         </div>
       )}
+      {(dept.revisionNumber ?? 0) > 0 && (
+        <div style={{ background: '#F6F3FF', border: '1px solid #D9CBFF', borderRadius: 'var(--radius-sm)', padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#4D3A78' }}>
+          <strong>ฉบับแก้ไขเพิ่มเติม ครั้งที่ {dept.revisionNumber}</strong>
+          {dept.revisionType ? <> · {dept.revisionType}</> : null}
+          {dept.revisionReason ? <><br />เหตุผล: {dept.revisionReason}</> : null}
+          {dept.revisionCreatedBy ? <> · สร้างโดย {dept.revisionCreatedBy}</> : null}
+        </div>
+      )}
 
       <div className="card" style={{ padding: '12px 14px', marginBottom: 16 }}>
         <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -1907,8 +1970,14 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <button className="btn btn-secondary" onClick={printPayrollTable}>🖨️ พิมพ์ตาราง</button>
-            <button className="btn btn-secondary" onClick={exportExcel}>📥 Export Excel</button>
+            <button className="btn btn-secondary" onClick={exportExcel}>📥 ส่งออก Excel</button>
             <button className="btn btn-secondary" onClick={() => {
+              if (dept.status === 'approved' || dept.status === 'closed') {
+                setRevisionType('')
+                setRevisionReason('')
+                setShowRevisionModal(true)
+                return
+              }
               if (isReadonly) {
                 setShowLockedEditModal(true)
                 return
@@ -1921,7 +1990,9 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               background: '#FFF8E8',
               boxShadow: '0 1px 4px rgba(168,91,0,.12)',
             } : undefined}>
-              {editing
+              {dept.status === 'approved' || dept.status === 'closed'
+                ? '✏️ แก้ไขเพิ่มเติม'
+                : editing
                 ? `✏️ ปิดการแก้ไข${hasPendingChanges ? ` · ${pendingChangeCount} รายการแก้ไข` : ''}`
                 : '✏️ แก้ไขข้อมูล'}
             </button>
@@ -1932,9 +2003,9 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
 
       {/* Compact period metadata */}
       <div className="payroll-period-meta">
-        <span>📅 วันที่จ่าย {new Date(period.payDate).toLocaleDateString('th-TH')}</span>
+        <span>📅 วันที่จ่าย {formatBuddhistDate(period.payDate)}</span>
         <span>👥 {emps.length} คน</span>
-        <span>🕘 แก้ไขล่าสุด {new Date(dept.updatedAt).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })}</span>
+        <span>🕘 แก้ไขล่าสุด {formatBuddhistDateTime(dept.updatedAt)}</span>
         <StatusBadge s={dept.status} />
       </div>
 
@@ -2104,6 +2175,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
         </Modal>
       )}
 
+      {showRevisionModal && <Modal title="แก้ไขเพิ่มเติมหลังอนุมัติ" onClose={() => !creatingRevision && setShowRevisionModal(false)}><div className="flex flex-col gap-4"><div style={{ background: '#F6F3FF', borderRadius: 10, padding: 13, fontSize: 13, lineHeight: 1.65 }}>ระบบจะสร้างฉบับแก้ไขใหม่เฉพาะ <strong>{dept.department}</strong> ของรอบ <strong>{periodLabel(period)}</strong> โดยเก็บฉบับเดิมไว้เป็นประวัติ</div><FormField label="ประเภทการแก้ไข" required><AppSelect className="inp" value={revisionType} onChange={e => setRevisionType(e.target.value)}><option value="">เลือกประเภทการแก้ไข</option><option>เพิ่มพนักงานกลางเดือน</option><option>แก้ไขรายการรับหรือรายการหัก</option><option>พนักงานลาออกหรือปรับยอดสุดท้าย</option><option>อื่น ๆ</option></AppSelect></FormField><FormField label="เหตุผลการแก้ไข" required><textarea className="inp" rows={3} value={revisionReason} onChange={e => setRevisionReason(e.target.value)} placeholder="ระบุเหตุผลอย่างน้อย 5 ตัวอักษร" /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingRevision} onClick={() => setShowRevisionModal(false)}>ยกเลิก</button><button className="btn btn-primary" disabled={creatingRevision} onClick={() => void createRevision()}>{creatingRevision ? 'กำลังสร้าง…' : 'สร้างฉบับแก้ไข'}</button></div></div></Modal>}
+
       {/* Submit modal */}
       {showSubmitModal && (
         <Modal title="ยืนยันส่งให้ผู้อำนวยการอนุมัติ" onClose={() => setShowSubmitModal(false)}>
@@ -2167,20 +2240,20 @@ function DirectorApprovals({ periods, setPage, setActivePeriodId, setActiveDeptI
       <div className="card" style={{ padding: '14px 18px', marginBottom: 16 }}>
         <div className="flex items-center gap-3 flex-wrap">
           <input className="inp" style={{ maxWidth: 200 }} placeholder="ค้นหาฝ่าย..." value={search} onChange={e => setSearch(e.target.value)} />
-          <select className="inp" style={{ maxWidth: 180 }} value={filterPeriod} onChange={e => setFilterPeriod(e.target.value)}>
+          <AppSelect className="inp" style={{ maxWidth: 180 }} value={filterPeriod} onChange={e => setFilterPeriod(e.target.value)}>
             <option value="all">ทุกรอบ</option>
             {periods.map(p => <option key={p.id} value={p.id}>{periodLabel(p)}</option>)}
-          </select>
-          <select className="inp" style={{ maxWidth: 220 }} value={filterDept} onChange={e => setFilterDept(e.target.value)}>
+          </AppSelect>
+          <AppSelect className="inp" style={{ maxWidth: 220 }} value={filterDept} onChange={e => setFilterDept(e.target.value)}>
             <option value="all">ทุกฝ่าย</option>
-            {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
-          </select>
-          <select className="inp" style={{ maxWidth: 160 }} value={filterStatus} onChange={e => setFilterStatus(e.target.value as DeptStatus | 'all')}>
+            {[...new Set(allDepts.map(({ dept }) => dept.department))].map(d => <option key={d} value={d}>{d}</option>)}
+          </AppSelect>
+          <AppSelect className="inp" style={{ maxWidth: 160 }} value={filterStatus} onChange={e => setFilterStatus(e.target.value as DeptStatus | 'all')}>
             <option value="all">ทุกสถานะ</option>
             <option value="pending">รออนุมัติ</option>
             <option value="approved">อนุมัติแล้ว</option>
             <option value="rejected">ไม่อนุมัติ</option>
-          </select>
+          </AppSelect>
           <button className="btn btn-ghost btn-sm" onClick={() => { setSearch(''); setFilterPeriod('all'); setFilterDept('all'); setFilterStatus('pending') }}>ล้างตัวกรอง</button>
         </div>
       </div>
@@ -2216,7 +2289,7 @@ function DirectorApprovals({ periods, setPage, setActivePeriodId, setActiveDeptI
                   <td className="num">{thb(t.totalDeduct)}</td>
                   <td className="num total">{thb(t.totalNet)}</td>
                   <td style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{d.submittedBy ?? '–'}</td>
-                  <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{d.submittedAt ? new Date(d.submittedAt).toLocaleDateString('th-TH') : '–'}</td>
+                  <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{d.submittedAt ? formatBuddhistDate(d.submittedAt) : '–'}</td>
                   <td><StatusBadge s={d.status} /></td>
                   <td>
                     <button className="btn btn-secondary btn-xs" onClick={() => { setActivePeriodId(p.id); setActiveDeptId(d.id); setPage('director-detail') }}>ดูรายละเอียด</button>
@@ -2322,7 +2395,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
     <div className="anim">
       <PageHeader
         title={dept.department}
-        subtitle={`${periodLabel(period)} · ส่งโดย ${dept.submittedBy ?? '–'} · ${dept.submittedAt ? new Date(dept.submittedAt).toLocaleDateString('th-TH') : ''}`}
+        subtitle={`${periodLabel(period)} · ส่งโดย ${dept.submittedBy ?? '–'} · ${dept.submittedAt ? formatBuddhistDate(dept.submittedAt) : ''}`}
         breadcrumb={<Crumb items={[{ label: 'หน้าหลัก', onClick: () => setPage('dashboard') }, { label: dept.department }]} />}
         actions={dept.status === 'pending' ? (
           <>
@@ -2332,6 +2405,15 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
         ) : <StatusBadge s={dept.status} />}
       />
 
+      {(dept.revisionNumber ?? 0) > 0 && (
+        <div style={{ background: '#F6F3FF', border: '1px solid #D9CBFF', borderRadius: 'var(--radius-sm)', padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#4D3A78' }}>
+          <strong>ฉบับแก้ไขเพิ่มเติม ครั้งที่ {dept.revisionNumber}</strong>
+          {dept.revisionType ? <> · {dept.revisionType}</> : null}
+          {dept.revisionReason ? <><br />เหตุผล: {dept.revisionReason}</> : null}
+          {dept.revisionCreatedBy ? <> · สร้างโดย {dept.revisionCreatedBy}</> : null}
+        </div>
+      )}
+
       <div className="card" style={{ padding: '12px 14px', marginBottom: 16 }}>
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap" style={{ flex: 1 }}>
@@ -2340,15 +2422,15 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
           </div>
           <div className="flex items-center gap-2 flex-wrap">
             <button className="btn btn-secondary" onClick={printPayrollTable}>🖨️ พิมพ์ตาราง</button>
-            <button className="btn btn-secondary" onClick={exportExcel}>📥 Export Excel</button>
+            <button className="btn btn-secondary" onClick={exportExcel}>📥 ส่งออก Excel</button>
           </div>
         </div>
       </div>
 
       <div className="payroll-period-meta">
-        <span>📅 วันที่จ่าย {new Date(period.payDate).toLocaleDateString('th-TH')}</span>
+        <span>📅 วันที่จ่าย {formatBuddhistDate(period.payDate)}</span>
         <span>👥 {emps.length} คน</span>
-        <span>🕘 แก้ไขล่าสุด {new Date(dept.updatedAt).toLocaleString('th-TH', { dateStyle: 'medium', timeStyle: 'short' })}</span>
+        <span>🕘 แก้ไขล่าสุด {formatBuddhistDateTime(dept.updatedAt)}</span>
         <StatusBadge s={dept.status} />
       </div>
 
@@ -2551,10 +2633,10 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
         <div className="flex items-center gap-3">
           <input className="inp" style={{ maxWidth: 240 }} placeholder="ค้นหาชื่อหรือรหัสพนักงาน..." value={search} onChange={e => setSearch(e.target.value)} />
           {role !== 'hr' && (
-            <select className="inp" style={{ maxWidth: 220 }} value={filterDept} onChange={e => setFilterDept(e.target.value)}>
+            <AppSelect className="inp" style={{ maxWidth: 220 }} value={filterDept} onChange={e => setFilterDept(e.target.value)}>
               <option value="all">ทุกฝ่าย</option>
               {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
+            </AppSelect>
           )}
         </div>
       </div>
@@ -2761,21 +2843,21 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
       <div className="card" style={{ padding: 28 }}>
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.04em' }}>ข้อมูลส่วนตัว</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
-          <FormField label="รหัสพนักงาน" required><input className="inp" value={employeeCode} onChange={e => setEmployeeCode(e.target.value)} /></FormField>
-          <FormField label="เลขประจำตัวประชาชน" required><input className="inp" inputMode="numeric" maxLength={13} value={nationalId} onChange={e => setNationalId(e.target.value.replace(/\D/g, ''))} /></FormField>
+          <FormField label="รหัสพนักงาน" required><input className="inp" value={employeeCode} onChange={e => setEmployeeCode(e.target.value.toUpperCase())} placeholder="EMP000" /></FormField>
+          <FormField label="เลขประจำตัวประชาชน" required><input className="inp" inputMode="numeric" maxLength={13} value={nationalId} onChange={e => setNationalId(e.target.value.replace(/\D/g, '').slice(0, 13))} /></FormField>
           <FormField label="คำนำหน้า">
-            <select className="inp" value={prefixChoice} onChange={e => setPrefixChoice(e.target.value)}>
+            <AppSelect className="inp" value={prefixChoice} onChange={e => setPrefixChoice(e.target.value)}>
               <option value="">ไม่ระบุ</option>
               {EMPLOYEE_PREFIXES.map(option => <option key={option} value={option}>{option}</option>)}
               <option value="OTHER">อื่นๆ (โปรดระบุ)</option>
-            </select>
+            </AppSelect>
           </FormField>
           {prefixChoice === 'OTHER' && (
             <FormField label="คำนำหน้าอื่นๆ"><input className="inp" value={customPrefix} onChange={e => setCustomPrefix(e.target.value)} maxLength={20} placeholder="โปรดระบุคำนำหน้า" /></FormField>
           )}
           <FormField label="ชื่อ" required><input className="inp" value={firstName} onChange={e => setFirstName(e.target.value)} placeholder="ชื่อ" /></FormField>
           <FormField label="นามสกุล" required><input className="inp" value={lastName} onChange={e => setLastName(e.target.value)} placeholder="นามสกุล" /></FormField>
-          <FormField label="วันเดือนปีเกิด (ค.ศ.)" required><input className="inp" type="date" value={birthDate} onChange={e => setBirthDate(e.target.value)} /></FormField>
+          <FormField label="วันเดือนปีเกิด (พ.ศ.)" required><BuddhistDateInput value={birthDate} onChange={setBirthDate} required /></FormField>
           <FormField label="อีเมล"><input className="inp" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="example@muni.go.th" /></FormField>
           <FormField label="โทรศัพท์"><input className="inp" value={phone} onChange={e => setPhone(e.target.value)} /></FormField>
         </div>
@@ -2783,24 +2865,24 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.04em' }}>ข้อมูลการทำงาน</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
           <FormField label="ฝ่าย" required>
-            <select className="inp" value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
+            <AppSelect className="inp" value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
               <option value="">ไม่ระบุ</option>
               {departments
-                .filter(d => d.is_active && DEPARTMENTS.includes(d.name))
+                .filter(d => d.is_active)
                 .filter((department, index, options) => options.findIndex(option => option.name === department.name) === index)
                 .map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
+            </AppSelect>
           </FormField>
           <FormField label="ตำแหน่ง">
-            <input className="inp" list="employee-position-options" value={positionName} onChange={e => setPositionName(e.target.value)} placeholder="เลือกหรือพิมพ์ตำแหน่งใหม่" />
+            <input className="inp" list="employee-position-options" value={positionName} onChange={e => setPositionName(e.target.value)} />
             <datalist id="employee-position-options">
               {positions.filter(p => p.is_active).map(p => <option key={p.id} value={p.name} />)}
             </datalist>
           </FormField>
           <FormField label="ประเภทพนักงาน" required>
-            <select className="inp" value={employeeType} onChange={e => setEmployeeType(e.target.value as DatabaseEmployee['employee_type'])}>
+            <AppSelect className="inp" value={employeeType} onChange={e => setEmployeeType(e.target.value as DatabaseEmployee['employee_type'])}>
               {EMPLOYEE_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-            </select>
+            </AppSelect>
           </FormField>
           {employeeType === 'OTHER' && (
             <FormField label="ประเภทพนักงานอื่นๆ" required>
@@ -2808,12 +2890,12 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
             </FormField>
           )}
           <FormField label="สถานะ" required>
-            <select className="inp" value={status} onChange={e => setStatus(e.target.value as DatabaseEmployee['status'])}>
+            <AppSelect className="inp" value={status} onChange={e => setStatus(e.target.value as DatabaseEmployee['status'])}>
               <option value="ACTIVE">ปกติ</option><option value="ON_LEAVE">ลา</option><option value="RESIGNED">ลาออก</option><option value="RETIRED">เกษียณ</option><option value="TERMINATED">สิ้นสุดการจ้าง</option>
-            </select>
+            </AppSelect>
           </FormField>
-          <FormField label="วันที่เริ่มงาน"><input className="inp" type="date" value={startDate} onChange={e => setStartDate(e.target.value)} /></FormField>
-          <FormField label="วันที่สิ้นสุด"><input className="inp" type="date" value={endDate} onChange={e => setEndDate(e.target.value)} /></FormField>
+          <FormField label="วันที่เริ่มงาน (พ.ศ.)"><BuddhistDateInput value={startDate} onChange={setStartDate} /></FormField>
+          <FormField label="วันที่สิ้นสุด (พ.ศ.)"><BuddhistDateInput value={endDate} onChange={setEndDate} /></FormField>
         </div>
         <div className="divider" />
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.04em' }}>ข้อมูลเงินเดือน</div>
@@ -2843,6 +2925,83 @@ function FormField({ label, required, children }: { label: string; required?: bo
       {children}
     </div>
   )
+}
+
+/** A controlled menu rendered in a portal, so it always opens below its field. */
+function AppSelect({ children, className = '', style, value, onChange, disabled, ...props }: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  const [open, setOpen] = useState(false)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  const [menu, setMenu] = useState<{ left: number; top: number; width: number; maxHeight: number } | null>(null)
+  const options = (Children.toArray(children).filter(node => isValidElement(node) && node.type === 'option') as React.ReactElement<{ value?: string | number; children?: React.ReactNode }>[]) 
+  // Native <option> uses its text as the value when no explicit value is
+  // supplied.  Mirror that behavior so a Thai label-only option never sends
+  // an empty string to the API (for example, the payroll revision type).
+  const optionValueOf = (option: React.ReactElement<{ value?: string | number; children?: React.ReactNode }>) =>
+    String(option.props.value ?? (typeof option.props.children === 'string' ? option.props.children : ''))
+  const selected = options.find(option => optionValueOf(option) === String(value ?? ''))
+  const openMenu = () => {
+    if (disabled || !buttonRef.current) return
+    const rect = buttonRef.current.getBoundingClientRect()
+    setMenu({ left: rect.left, top: rect.bottom + 5, width: rect.width, maxHeight: Math.max(120, Math.min(300, window.innerHeight - rect.bottom - 14)) })
+    setOpen(true)
+  }
+  useEffect(() => {
+    if (!open) return
+    const close = (event: MouseEvent) => {
+      const target = event.target as Node
+      if (!buttonRef.current?.parentElement?.contains(target) && !document.getElementById('app-select-menu')?.contains(target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', close)
+    return () => document.removeEventListener('mousedown', close)
+  }, [open])
+  const choose = (next: string) => {
+    onChange?.({ target: { value: next } } as React.ChangeEvent<HTMLSelectElement>)
+    setOpen(false)
+  }
+  return <div style={{ position: 'relative', width: style?.width ?? '100%', maxWidth: style?.maxWidth, flexShrink: 0 }}>
+    <button ref={buttonRef} type="button" className={`${className} app-select-trigger`} style={{ ...style, width: style?.width ?? '100%', textAlign: 'left', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }} onClick={() => open ? setOpen(false) : openMenu()} disabled={disabled} aria-haspopup="listbox" aria-expanded={open} {...props as React.ButtonHTMLAttributes<HTMLButtonElement>}>
+      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{selected?.props.children ?? 'เลือกข้อมูล'}</span><span aria-hidden="true" style={{ marginLeft: 10, color: '#766C90', fontSize: 15 }}>⌄</span>
+    </button>
+    {open && menu && createPortal(<div id="app-select-menu" role="listbox" style={{ position: 'fixed', zIndex: 1000, left: menu.left, top: menu.top, width: menu.width, maxHeight: menu.maxHeight, overflowY: 'auto', background: '#FFF', border: '1px solid #D8D2E6', borderRadius: 10, boxShadow: '0 10px 26px rgba(32, 21, 68, .20)', padding: 5 }}>
+      {options.map(option => { const optionValue = optionValueOf(option); const active = optionValue === String(value ?? ''); return <button key={optionValue} type="button" role="option" aria-selected={active} onClick={() => choose(optionValue)} style={{ display: 'block', width: '100%', border: 0, borderRadius: 7, background: active ? '#EEE7FF' : 'transparent', color: '#292334', textAlign: 'left', padding: '9px 10px', cursor: 'pointer', fontSize: 14 }}>{option.props.children}</button> })}
+    </div>, document.body)}
+  </div>
+}
+
+/**
+ * Renders a Thai Buddhist-era date while the value retained by the API stays
+ * ISO/Gregorian (YYYY-MM-DD).  This keeps existing payroll data and database
+ * date columns compatible without making users convert years themselves.
+ */
+function BuddhistDateInput({ value, onChange, required = false }: { value: string; onChange: (value: string) => void; required?: boolean }) {
+  const fromIso = (iso: string) => {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+    return match ? { day: String(Number(match[3])), month: String(Number(match[2])), year: String(Number(match[1]) + 543) } : { day: '', month: '', year: '' }
+  }
+  const [parts, setParts] = useState(() => fromIso(value))
+  useEffect(() => { setParts(fromIso(value)) }, [value])
+  const update = (key: 'day' | 'month' | 'year', nextValue: string) => {
+    const next = { ...parts, [key]: nextValue }
+    setParts(next)
+    if (!next.day || !next.month || !next.year) { onChange(''); return }
+    const gregorianYear = Number(next.year) - 543
+    const lastDay = new Date(gregorianYear, Number(next.month), 0).getDate()
+    const day = Math.min(Number(next.day), lastDay)
+    onChange(`${gregorianYear}-${String(next.month).padStart(2, '0')}-${String(day).padStart(2, '0')}`)
+  }
+  const currentBuddhistYear = new Date().getFullYear() + 543
+  const years = Array.from({ length: 101 }, (_, index) => currentBuddhistYear + 10 - index)
+  return <div style={{ display: 'grid', gridTemplateColumns: '0.8fr 1.45fr 1.1fr', gap: 8 }}>
+    <AppSelect className="inp" required={required} value={parts.day} onChange={event => update('day', event.target.value)} aria-label="วัน">
+      <option value="">วัน</option>{Array.from({ length: 31 }, (_, index) => <option key={index + 1} value={index + 1}>{index + 1}</option>)}
+    </AppSelect>
+    <AppSelect className="inp" required={required} value={parts.month} onChange={event => update('month', event.target.value)} aria-label="เดือน">
+      <option value="">เดือน</option>{MONTH_TH.slice(1).map((month, index) => <option key={month} value={index + 1}>{month}</option>)}
+    </AppSelect>
+    <AppSelect className="inp" required={required} value={parts.year} onChange={event => update('year', event.target.value)} aria-label="ปี พ.ศ.">
+      <option value="">ปี พ.ศ.</option>{years.map(year => <option key={year} value={year}>{year}</option>)}
+    </AppSelect>
+  </div>
 }
 
 // ─── Payslip Status ───────────────────────────────────────────────────────────
@@ -2920,7 +3079,7 @@ function PayslipStatus({ periods, onReload, showToast, onManageEmployees }: {
               <div>
                 <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--purple-600)', letterSpacing: '.04em', marginBottom: 3 }}>รอบเงินเดือน</div>
                 <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 19 }}>{periodLabel(p)}</div>
-                <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 3 }}>วันที่จ่าย {new Date(p.payDate).toLocaleDateString('th-TH')} · {depts.length} ฝ่ายที่อนุมัติแล้ว</div>
+                <div style={{ fontSize: 12.5, color: 'var(--text-secondary)', marginTop: 3 }}>วันที่จ่าย {formatBuddhistDate(p.payDate)} · {depts.length} ฝ่ายที่อนุมัติแล้ว</div>
               </div>
               <button className="btn btn-primary" disabled={bulkSendRows.length === 0 || bulkSending} onClick={() => {
                 setBulkTarget({ periodLabel: periodLabel(p), rows: bulkSendRows, missingEmailCount: missingEmailRows.length })
@@ -2939,7 +3098,7 @@ function PayslipStatus({ periods, onReload, showToast, onManageEmployees }: {
             <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: '1px solid rgba(0,0,0,0.07)', background: '#F0FDF4' }}>
               <div>
                 <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>{d.department}</div>
-                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>อนุมัติโดย {d.approvedBy ?? '–'} · {d.approvedAt ? new Date(d.approvedAt).toLocaleDateString('th-TH') : '–'}</div>
+                <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginTop: 2 }}>อนุมัติโดย {d.approvedBy ?? '–'} · {d.approvedAt ? formatBuddhistDate(d.approvedAt) : '–'}</div>
               </div>
               <div className="flex items-center gap-4"><div style={{ textAlign: 'right' }}><div style={{ fontSize: 11, color: 'var(--text-muted)' }}>ส่งสำเร็จ</div><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 18, color: '#15803D' }}>{sentCount}/{emps.length}</div></div><span className="badge badge-approved">✓ อนุมัติแล้ว</span></div>
             </div>
@@ -3001,7 +3160,7 @@ function PayslipStatus({ periods, onReload, showToast, onManageEmployees }: {
                       <td style={{ fontSize: 12, color: e.email?.trim() ? 'var(--text-secondary)' : '#B45309', fontWeight: e.email?.trim() ? 400 : 600 }}>{e.email?.trim() || '⚠️ ยังไม่มีอีเมล'}</td>
                       <td><span className="badge badge-approved">✓ สร้างแล้ว</span></td>
                       <td><span className={`badge ${es === 'sent' ? 'badge-approved' : es === 'failed' ? 'badge-rejected' : 'badge-pending'}`}>{es === 'sent' ? '✓ ส่งสำเร็จ' : es === 'failed' ? '✕ ส่งไม่สำเร็จ' : '◔ รอส่ง'}</span></td>
-                      <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{sentAt ? new Date(sentAt).toLocaleString('th-TH') : '–'}</td>
+                      <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{sentAt ? formatBuddhistDateTime(sentAt) : '–'}</td>
                       <td>
                         <div className="flex gap-1">
                           {payrollItemId && <button className="btn btn-ghost btn-xs" onClick={() => openPayslip()}>ดูสลิป</button>}
@@ -3053,13 +3212,13 @@ function ReportsPage({ periods }: { periods: PayrollPeriod[] }) {
       <PageHeader title="รายงาน" subtitle="สรุปข้อมูลเงินเดือนและส่งออกรายงาน" />
       <div className="card" style={{ padding: '14px 18px', marginBottom: 16 }}>
         <div className="flex items-center gap-3">
-          <select className="inp" style={{ maxWidth: 220 }} value={filterPeriod} onChange={e => setFilterPeriod(e.target.value)}>
+          <AppSelect className="inp" style={{ maxWidth: 220 }} value={filterPeriod} onChange={e => setFilterPeriod(e.target.value)}>
             {periods.map(p => <option key={p.id} value={p.id}>{periodLabel(p)}</option>)}
-          </select>
+          </AppSelect>
           <button className="btn btn-secondary btn-sm">แสดงผล</button>
           <div className="flex gap-2 ml-auto">
-            <button className="btn btn-secondary btn-sm">⬇ Export Excel</button>
-            <button className="btn btn-secondary btn-sm">⬇ Export PDF</button>
+            <button className="btn btn-secondary btn-sm">⬇ ส่งออก Excel</button>
+            <button className="btn btn-secondary btn-sm">⬇ ส่งออก PDF</button>
           </div>
         </div>
       </div>
@@ -3115,49 +3274,85 @@ function ReportsPage({ periods }: { periods: PayrollPeriod[] }) {
 // ─── Admin Users ──────────────────────────────────────────────────────────────
 
 function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; showToast: (msg: string, type?: 'success' | 'error') => void }) {
-  const roleLabel: Record<Role, string> = { hr: 'HR Officer', director: 'Director', admin: 'Administrator' }
+  const roleLabel: Record<Role, string> = { hr: 'พนักงานฝ่ายธุรการ', director: 'ผู้อำนวยการ', admin: 'แอดมิน' }
   const [users, setUsers] = useState<SystemUser[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [username, setUsername] = useState('')
   const [temporaryPassword, setTemporaryPassword] = useState('')
   const [employeeId, setEmployeeId] = useState('')
   const [newRole, setNewRole] = useState<Role>('hr')
+  const [showInvite, setShowInvite] = useState(false)
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState<Role>('hr')
+  const [inviteUrl, setInviteUrl] = useState('')
+  const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([])
+  const [revealedPasswords, setRevealedPasswords] = useState<Record<number, string>>({})
+  const [approvalRequest, setApprovalRequest] = useState<AccessRequest | null>(null)
+  const [approvalRole, setApprovalRole] = useState<Role>('hr')
+  const [rejectMode, setRejectMode] = useState(false)
+  const [rejectionReason, setRejectionReason] = useState('')
+  const [deleteTarget, setDeleteTarget] = useState<SystemUser | null>(null)
+  const [deleting, setDeleting] = useState(false)
   const load = useCallback(async () => { try { setUsers(await getUsers()) } catch (error) { showToast(error instanceof Error ? error.message : 'โหลดบัญชีไม่สำเร็จ', 'error') } }, [showToast])
-  useEffect(() => { void load() }, [load])
+  const loadRequests = useCallback(async () => { try { setAccessRequests(await getAccessRequests()) } catch (error) { showToast(error instanceof Error ? error.message : 'โหลดคำขอไม่สำเร็จ', 'error') } }, [showToast])
+  useEffect(() => { void load(); void loadRequests() }, [load, loadRequests])
   const create = async () => { try { await createSystemUser({ username, temporary_password: temporaryPassword, employee_id: Number(employeeId), role: newRole }); showToast('สร้างบัญชีผู้ใช้งานแล้ว', 'success'); setShowCreate(false); setUsername(''); setTemporaryPassword(''); setEmployeeId(''); await load() } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างบัญชีไม่สำเร็จ', 'error') } }
   const reset = async (user: SystemUser) => { const password = window.prompt(`กำหนดรหัสผ่านชั่วคราวใหม่สำหรับ ${user.username} (อย่างน้อย 8 ตัวอักษร)`); if (!password) return; try { await resetSystemUserPassword(user.id, password); showToast('รีเซ็ตรหัสผ่านแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'รีเซ็ตรหัสผ่านไม่สำเร็จ', 'error') } }
+  const createInvite = async () => { try { const result = await createUserInvite(inviteEmail, inviteRole); setInviteUrl(result.data.invite_url); showToast('สร้างลิงก์คำเชิญแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างคำเชิญไม่สำเร็จ', 'error') } }
+  const approveRequest = async () => { if (!approvalRequest) return; try { await approveAccessRequest(approvalRequest.id, approvalRole); showToast('อนุมัติและเปิดใช้งานบัญชีแล้ว', 'success'); setApprovalRequest(null); await Promise.all([load(), loadRequests()]) } catch (error) { showToast(error instanceof Error ? error.message : 'อนุมัติไม่สำเร็จ', 'error') } }
+  const rejectRequest = async () => { if (!approvalRequest) return; try { await rejectAccessRequest(approvalRequest.id, rejectionReason); showToast('ไม่อนุมัติสิทธิ์และปิดคำขอแล้ว', 'success'); setApprovalRequest(null); setRejectMode(false); setRejectionReason(''); await loadRequests() } catch (error) { showToast(error instanceof Error ? error.message : 'ไม่สามารถปิดคำขอได้', 'error') } }
+  const openApproval = (request: AccessRequest) => { setApprovalRequest(request); setApprovalRole(request.requested_role); setRejectMode(false); setRejectionReason('') }
+  const revealPassword = async (requestId: number) => { try { const password = await revealAccessRequestPassword(requestId); setRevealedPasswords(current => ({ ...current, [requestId]: password })) } catch (error) { showToast(error instanceof Error ? error.message : 'ไม่สามารถแสดงรหัสผ่านได้', 'error') } }
+  const hidePassword = (requestId: number) => setRevealedPasswords(current => { const next = { ...current }; delete next[requestId]; return next })
+  const deleteAccount = async () => {
+    if (!deleteTarget) return
+    setDeleting(true)
+    try { await deleteSystemUser(deleteTarget.id); showToast(`ลบบัญชี ${deleteTarget.username} และข้อมูลพนักงานแล้ว`, 'success'); setDeleteTarget(null); await load() }
+    catch (error) { showToast(error instanceof Error ? error.message : 'ลบบัญชีไม่สำเร็จ', 'error') }
+    finally { setDeleting(false) }
+  }
+  const deactivateAccount = async (target: SystemUser) => {
+    try { await deactivateSystemUser(target.id); showToast(`ปิดการใช้งานบัญชี ${target.username} แล้ว`, 'success'); await load() }
+    catch (error) { showToast(error instanceof Error ? error.message : 'ปิดการใช้งานบัญชีไม่สำเร็จ', 'error') }
+  }
   const linkedEmployeeIds = new Set(users.map(user => user.employee_id).filter((id): id is number => id !== null))
   return (
     <div className="anim">
-      <PageHeader title="จัดการผู้ใช้งาน" subtitle="สร้างบัญชีโดยผูกกับข้อมูลพนักงานจริง" actions={<button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ เพิ่มผู้ใช้งาน</button>} />
+      <PageHeader title="จัดการผู้ใช้งาน" subtitle="สร้างบัญชีโดยผูกกับข้อมูลพนักงานจริง" actions={<div className="flex gap-2"><button className="btn btn-secondary" onClick={() => setShowInvite(true)}>✉ สร้างคำเชิญ</button><button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ เพิ่มผู้ใช้งาน</button></div>} />
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         <table className="tbl">
-          <thead><tr><th>Username</th><th>ชื่อ</th><th>Role</th><th>สถานะ</th><th>ดำเนินการ</th></tr></thead>
+          <thead><tr><th>ชื่อผู้ใช้</th><th>ชื่อ</th><th>รหัสผ่าน</th><th>สิทธิ์การใช้งาน</th><th>สถานะ</th><th>ดำเนินการ</th><th>ลบบัญชี</th></tr></thead>
           <tbody>
             {users.map(u => (
               <tr key={u.id}>
                 <td style={{ fontFamily: 'monospace', fontSize: 13 }}>{u.username}</td>
-                <td style={{ fontWeight: 500 }}>{u.name}</td>
+                <td style={{ fontWeight: 500 }}>{u.full_name}</td>
+                <td><span style={{ fontFamily: 'monospace' }}>{u.has_initial_password && u.access_request_id ? (revealedPasswords[u.access_request_id] ?? '••••••••') : '••••••••'}</span><button aria-label={u.has_initial_password && u.access_request_id ? 'กดค้างเพื่อดูรหัสผ่าน' : 'บัญชีเก่าไม่สามารถเปิดดูรหัสเดิมได้ กรุณารีเซ็ตรหัสผ่าน'} title={u.has_initial_password && u.access_request_id ? 'กดค้างเพื่อดูรหัสผ่าน' : 'บัญชีเก่า: กรุณารีเซ็ตรหัสผ่านหากต้องการกำหนดรหัสใหม่'} className="btn btn-ghost btn-xs" disabled={!u.has_initial_password || !u.access_request_id} style={{ marginLeft: 5, padding: '3px 5px', color: u.has_initial_password && u.access_request_id ? '#625B72' : '#B8B3C1', cursor: u.has_initial_password && u.access_request_id ? 'pointer' : 'not-allowed' }} onMouseDown={() => u.access_request_id && void revealPassword(u.access_request_id)} onMouseUp={() => u.access_request_id && hidePassword(u.access_request_id)} onMouseLeave={() => u.access_request_id && hidePassword(u.access_request_id)}><EyeIcon /></button></td>
                 <td><span style={{ background: 'var(--purple-100)', color: 'var(--purple-600)', borderRadius: 99, padding: '2px 10px', fontSize: 12, fontWeight: 600 }}>{roleLabel[u.role]}</span></td>
-                <td><span className={`badge ${u.active ? 'badge-approved' : 'badge-rejected'}`}>{u.active ? '● ใช้งานอยู่' : '● ปิดการใช้งาน'}</span></td>
+                <td><span className={`badge ${u.is_active ? 'badge-approved' : 'badge-rejected'}`}>{u.is_active ? '● ใช้งานอยู่' : '● ปิดการใช้งาน'}</span></td>
                 <td>
                   <div className="flex gap-1">
                     <button className="btn btn-ghost btn-xs" onClick={() => void reset(u)}>รีเซ็ตรหัสผ่าน</button>
                   </div>
                 </td>
+                <td><div className="flex gap-1"><button className="btn btn-secondary btn-xs" disabled={!u.is_active} onClick={() => void deactivateAccount(u)}>ปิดการใช้งาน</button><button className="btn btn-danger btn-xs" onClick={() => setDeleteTarget(u)}>ลบบัญชี</button></div></td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+      {deleteTarget && <Modal title="ยืนยันการลบบัญชี" onClose={() => !deleting && setDeleteTarget(null)}><div className="flex flex-col gap-4"><div style={{ background: '#FFF1F0', border: '1px solid #F7B6B2', borderRadius: 10, padding: '14px 16px', color: '#9F1D17', lineHeight: 1.65 }}><strong>คำเตือน: การดำเนินการนี้ไม่สามารถย้อนกลับได้</strong><br />ระบบจะลบข้อมูลล็อกอินของ <strong>{deleteTarget.username}</strong>, ข้อมูลพนักงาน <strong>{deleteTarget.full_name}</strong>, รายการเงินเดือน, สลิป และสถานะการส่งอีเมลที่เกี่ยวข้อง ออกจากฐานข้อมูลโดยถาวร</div><div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>เมื่อยืนยันแล้ว ระบบจะถือว่าไม่เคยมีบัญชีนี้อยู่ในระบบ</div><div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={deleting} onClick={() => setDeleteTarget(null)}>ยกเลิก</button><button className="btn btn-danger" disabled={deleting} onClick={() => void deleteAccount()}>{deleting ? 'กำลังลบ…' : 'ยืนยันลบถาวร'}</button></div></div></Modal>}
+      {accessRequests.filter(request => request.status === 'PENDING').length > 0 && <div className="card" style={{ padding: 0, overflow: 'hidden', marginTop: 20 }}><div style={{ padding: '15px 18px', fontWeight: 700 }}>คำขอเข้าใช้งานที่รอตรวจสอบ</div><table className="tbl"><thead><tr><th>ผู้ขอ</th><th>ชื่อผู้ใช้</th><th>รหัสผ่านที่ตั้งตอนสมัคร</th><th>สิทธิ์ที่ขอ</th><th>ดำเนินการ</th></tr></thead><tbody>{accessRequests.filter(request => request.status === 'PENDING').map(request => <tr key={request.id}><td><strong>{String(request.employee_data.prefix ?? '')}{String(request.employee_data.first_name ?? '')} {String(request.employee_data.last_name ?? '')}</strong><div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{request.invited_email}</div></td><td style={{ fontFamily: 'monospace' }}>{request.username}</td><td><span style={{ fontFamily: 'monospace' }}>{revealedPasswords[request.id] ?? '••••••••'}</span><button aria-label="กดค้างเพื่อดูรหัสผ่าน" title="กดค้างเพื่อดูรหัสผ่าน" className="btn btn-ghost btn-xs" style={{ marginLeft: 5, padding: '3px 5px', color: '#625B72' }} onMouseDown={() => void revealPassword(request.id)} onMouseUp={() => hidePassword(request.id)} onMouseLeave={() => hidePassword(request.id)} onTouchStart={() => void revealPassword(request.id)} onTouchEnd={() => hidePassword(request.id)}><EyeIcon /></button></td><td>{roleLabel[request.requested_role]}</td><td><button className="btn btn-primary btn-xs" onClick={() => openApproval(request)}>ตรวจสอบและอนุมัติ</button></td></tr>)}</tbody></table></div>}
+      {approvalRequest && <Modal title={rejectMode ? 'ไม่อนุมัติสิทธิ์' : 'ตรวจสอบและอนุมัติ'} onClose={() => setApprovalRequest(null)}><div className="flex flex-col gap-4"><div style={{ padding: '10px 12px', background: rejectMode ? '#FFF4F2' : '#F7F4FF', borderRadius: 10, fontSize: 13 }}><strong>{String(approvalRequest.employee_data.prefix ?? '')}{String(approvalRequest.employee_data.first_name ?? '')} {String(approvalRequest.employee_data.last_name ?? '')}</strong><br /><span style={{ color: 'var(--text-secondary)' }}>{approvalRequest.username} · {approvalRequest.invited_email}</span></div>{rejectMode ? <><FormField label="เหตุผล (ไม่บังคับ)"><textarea className="inp" value={rejectionReason} onChange={event => setRejectionReason(event.target.value)} rows={3} placeholder="ระบุเหตุผลที่ไม่อนุมัติ" /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setRejectMode(false)}>กลับ</button><button className="btn btn-danger" onClick={() => void rejectRequest()}>ไม่อนุมัติและปิดคำขอ</button></div></> : <><FormField label="กำหนดสิทธิ์เป็น :" required><select className="inp" value={approvalRole} onChange={event => setApprovalRole(event.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้อำนวยการ</option><option value="admin">แอดมิน</option></select></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setApprovalRequest(null)}>ยกเลิก</button><button className="btn btn-danger" onClick={() => setRejectMode(true)}>ไม่อนุมัติสิทธิ์</button><button className="btn btn-primary" onClick={() => void approveRequest()}>อนุมัติและเปิดใช้งาน</button></div></>}</div></Modal>}
       {showCreate && <Modal title="เพิ่มผู้ใช้งาน" onClose={() => setShowCreate(false)}><div className="flex flex-col gap-4">
         <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>เลือกพนักงานที่มีข้อมูลจริงแล้ว ระบบจะใช้ชื่อและอีเมลจากข้อมูลพนักงานโดยอัตโนมัติ</div>
         <FormField label="พนักงาน" required><select className="inp" value={employeeId} onChange={e => setEmployeeId(e.target.value)}><option value="">เลือกพนักงาน</option>{employees.filter(e => !linkedEmployeeIds.has(e.id)).map(e => <option key={e.id} value={e.id}>{e.employee_code} · {e.prefix}{e.first_name} {e.last_name}</option>)}</select></FormField>
-        <FormField label="Username" required><input className="inp" value={username} onChange={e => setUsername(e.target.value)} /></FormField>
+        <FormField label="ชื่อผู้ใช้" required><input className="inp" value={username} onChange={e => setUsername(e.target.value)} /></FormField>
         <FormField label="รหัสผ่านชั่วคราว (อย่างน้อย 8 ตัวอักษร)" required><input className="inp" type="password" value={temporaryPassword} onChange={e => setTemporaryPassword(e.target.value)} /></FormField>
-        <FormField label="สิทธิ์" required><select className="inp" value={newRole} onChange={e => setNewRole(e.target.value as Role)}><option value="hr">HR Officer</option><option value="director">Director</option><option value="admin">Administrator</option></select></FormField>
+        <FormField label="สิทธิ์" required><select className="inp" value={newRole} onChange={e => setNewRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้อำนวยการ</option><option value="admin">แอดมิน</option></select></FormField>
         <div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setShowCreate(false)}>ยกเลิก</button><button className="btn btn-primary" disabled={!employeeId || username.trim().length < 3 || temporaryPassword.length < 8} onClick={() => void create()}>บันทึกบัญชี</button></div>
       </div></Modal>}
+      {showInvite && <Modal title="สร้างคำเชิญเข้าใช้" onClose={() => setShowInvite(false)}><div className="flex flex-col gap-4"><div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>ผู้รับคำเชิญจะกรอกข้อมูลพนักงานและสร้างบัญชีเอง จากนั้นรอให้แอดมินอนุมัติ</div><FormField label="อีเมล" required><input className="inp" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} /></FormField><FormField label="สิทธิ์การใช้งานที่ต้องการ" required><select className="inp" value={inviteRole} onChange={e => setInviteRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้อำนวยการ</option><option value="admin">แอดมิน</option></select></FormField>{inviteUrl && <div style={{ background: '#F4F0FF', borderRadius: 10, padding: 12, wordBreak: 'break-all', fontSize: 12 }}><strong>ลิงก์คำเชิญ (ใช้ได้ 7 วัน)</strong><br />{inviteUrl}<br /><button className="btn btn-ghost btn-xs" style={{ marginTop: 7 }} onClick={() => navigator.clipboard.writeText(inviteUrl)}>คัดลอกลิงก์</button></div>}<div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setShowInvite(false)}>ปิด</button><button className="btn btn-primary" disabled={!inviteEmail} onClick={() => void createInvite()}>สร้างลิงก์คำเชิญ</button></div></div></Modal>}
     </div>
   )
 }
@@ -3322,7 +3517,57 @@ function DatabaseDepartmentsPanel() {
 
 
 
+function InvitePage({ token }: { token: string }) {
+  const [invite, setInvite] = useState<InviteData | null>(null)
+  const [error, setError] = useState('')
+  const [submitted, setSubmitted] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [form, setForm] = useState<Record<string, string>>({ employee_code: '', national_id: '', prefix: '', custom_prefix: '', first_name: '', last_name: '', department_id: '', position_name: '', employee_type: 'CIVIL_SERVANT', employee_type_other: '', birth_date: '', start_date: '', end_date: '', email: '', phone: '', bank_name: '', bank_account_no: '', base_salary: '', username: '', password: '', confirm_password: '' })
+  useEffect(() => { getInvite(token).then(data => { setInvite(data); setForm(current => ({ ...current, email: data.email })) }).catch(e => setError(e.message)) }, [token])
+  const set = (key: string, value: string) => setForm(current => ({ ...current, [key]: value }))
+  const uniqueDepartments = invite?.departments.filter((department, index, items) => items.findIndex(item => item.name.trim() === department.name.trim()) === index) ?? []
+  const save = async (event: React.FormEvent) => {
+    event.preventDefault(); setError('')
+    if (!form.birth_date) { setError('กรุณากรอกวันเดือนปีเกิดให้ครบถ้วน'); return }
+    if (form.password !== form.confirm_password) { setError('รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน'); return }
+    setSaving(true)
+    try {
+      await submitInvite(token, { username: form.username, password: form.password, employee: {
+        employee_code: form.employee_code, national_id: form.national_id, prefix: form.prefix === 'OTHER' ? form.custom_prefix : form.prefix || null, first_name: form.first_name, last_name: form.last_name,
+        department_id: Number(form.department_id) || null, position_id: null, employee_type: form.employee_type, status: 'ACTIVE',
+        birth_date: form.birth_date || null, start_date: form.start_date || null, end_date: form.end_date || null, email: form.email, phone: form.phone || null,
+        bank_name: form.bank_name || null, bank_account_no: form.bank_account_no || null, base_salary: Number(form.base_salary || 0), employee_type_other: form.employee_type === 'OTHER' ? form.employee_type_other : null
+      }, position_name: form.position_name })
+      setSubmitted(true)
+    } catch (e) { setError(e instanceof Error ? e.message : 'ส่งคำขอไม่สำเร็จ') } finally { setSaving(false) }
+  }
+  const field = (key: string, label: string, type = 'text', required = false, extra?: React.InputHTMLAttributes<HTMLInputElement>) => <FormField label={required ? label : `${label} (ไม่บังคับ)`} required={required}><input required={required} className="inp" type={type} value={form[key]} onChange={e => set(key, e.target.value)} {...extra} /></FormField>
+  const passwordField = (key: 'password' | 'confirm_password', label: string, visible: boolean, setVisible: (visible: boolean) => void) => <FormField label={label} required><div style={{ position: 'relative' }}><input required minLength={8} className="inp" type={visible ? 'text' : 'password'} value={form[key]} onChange={e => set(key, e.target.value)} style={{ paddingRight: 44 }} /><button type="button" onClick={() => setVisible(!visible)} aria-label={visible ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'} title={visible ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', border: 0, background: 'transparent', cursor: 'pointer', color: '#6B6480', display: 'grid', placeItems: 'center', padding: 5 }}><EyeIcon off={visible} /></button></div></FormField>
+  const roleLabel = (role?: string) => role === 'hr' ? 'พนักงานฝ่ายธุรการ' : role === 'director' ? 'ผู้อำนวยการ' : 'แอดมิน'
+  return <div style={{ minHeight: '100vh', background: '#F7F6FC', padding: '48px 20px', color: '#202124' }}><div style={{ maxWidth: 860, margin: 'auto', background: 'white', borderRadius: 20, padding: 32, boxShadow: '0 12px 36px rgba(78,57,138,.10)' }}>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 22 }}><img src={takhliLogo} style={{ width: 46, height: 46, borderRadius: '50%' }} /><div><strong style={{ fontSize: 22 }}>PayFlow</strong><div style={{ color: '#746D84', fontSize: 13 }}>ลงทะเบียนขอเข้าใช้งานระบบ</div></div></div>
+    {error && <div style={{ background: '#FFF0F0', color: '#C23B3B', padding: 12, borderRadius: 9, marginBottom: 16 }}>{error}</div>}
+    {!invite && !error && <div>กำลังตรวจสอบลิงก์คำเชิญ…</div>}
+    {submitted ? <div style={{ textAlign: 'center', padding: '40px 0' }}><div style={{ fontSize: 42 }}>✓</div><h2>ส่งคำขอเรียบร้อย</h2><p style={{ color: '#6B7280' }}>แอดมินจะตรวจสอบข้อมูลพนักงานและกำหนดสิทธิ์ก่อนเปิดใช้งานบัญชี</p></div> : invite && <form onSubmit={save}>
+      <div style={{ background: '#F0ECFF', padding: '12px 14px', borderRadius: 10, marginBottom: 22, fontSize: 14 }}>อีเมลคำเชิญ: <strong>{invite.email}</strong> · สิทธิ์การใช้งานที่ต้องการ: <strong>{roleLabel(invite.requested_role)}</strong></div>
+      <p style={{ color: '#737080', fontSize: 13, marginBottom: 20 }}><span style={{ color: '#EF4444' }}>*</span> จำเป็นต้องกรอก · ช่องที่ระบุ “ไม่บังคับ” สามารถเว้นได้</p>
+      <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลส่วนตัว</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16, marginBottom: 24 }}>{field('employee_code','รหัสพนักงาน','text',true,{ placeholder: 'EMP000', onChange: e => set('employee_code', e.target.value.toUpperCase()) })}{field('national_id','เลขประจำตัวประชาชน','text',true,{ inputMode: 'numeric', maxLength: 13, onChange: e => set('national_id', e.target.value.replace(/\D/g, '')) })}<FormField label="คำนำหน้า (ไม่บังคับ)"><select className="inp" value={form.prefix} onChange={e => set('prefix', e.target.value)}><option value="">ไม่ระบุ</option>{EMPLOYEE_PREFIXES.map(option => <option key={option} value={option}>{option}</option>)}<option value="OTHER">อื่นๆ (โปรดระบุ)</option></select></FormField>{form.prefix === 'OTHER' && field('custom_prefix','คำนำหน้าอื่นๆ','text',true,{ maxLength: 20 })}{field('first_name','ชื่อ','text',true)}{field('last_name','นามสกุล','text',true)}<FormField label="วันเดือนปีเกิด (พ.ศ.)" required><BuddhistDateInput value={form.birth_date} onChange={value => set('birth_date', value)} required /></FormField><FormField label="อีเมล" required><input className="inp" type="email" value={form.email} readOnly style={{ background: '#F6F5F9' }} /></FormField>{field('phone','โทรศัพท์','tel')}</div>
+      <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลการทำงาน</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16, marginBottom: 24 }}><FormField label="ฝ่าย" required><select className="inp" required value={form.department_id} onChange={e => set('department_id', e.target.value)}><option value="">ไม่ระบุ</option>{uniqueDepartments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></FormField><FormField label="ตำแหน่ง (ไม่บังคับ)"><input className="inp" list="invite-position-options" value={form.position_name} onChange={e => set('position_name', e.target.value)} /><datalist id="invite-position-options">{invite.positions.map(position => <option key={position.id} value={position.name} />)}</datalist></FormField><FormField label="ประเภทพนักงาน" required><select className="inp" value={form.employee_type} onChange={e => set('employee_type', e.target.value)}>{EMPLOYEE_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></FormField>{form.employee_type === 'OTHER' && field('employee_type_other','ประเภทพนักงานอื่นๆ','text',true,{ maxLength: 150 })}<FormField label="วันที่เริ่มงาน (พ.ศ.) (ไม่บังคับ)"><BuddhistDateInput value={form.start_date} onChange={value => set('start_date', value)} /></FormField><FormField label="วันที่สิ้นสุด (พ.ศ.) (ไม่บังคับ)"><BuddhistDateInput value={form.end_date} onChange={value => set('end_date', value)} /></FormField></div>
+      <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลเงินเดือน</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16 }}>{field('base_salary','ฐานเงินเดือน (บาท)','number',true,{ min: 0, step: '0.01' })}{field('bank_name','ธนาคาร')}{field('bank_account_no','เลขบัญชีธนาคาร')}</div>
+      <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>สร้างบัญชี</div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16 }}>{field('username','ชื่อผู้ใช้','text',true)}{passwordField('password','รหัสผ่าน',showPassword,setShowPassword)}{passwordField('confirm_password','ยืนยันรหัสผ่าน',showConfirmPassword,setShowConfirmPassword)}</div>
+      <button disabled={saving} type="submit" style={{ marginTop: 26, width: '100%', border: 0, borderRadius: 10, padding: 13, background: '#7C4DDB', color: 'white', fontWeight: 700, fontSize: 15 }}>{saving ? 'กำลังส่งคำขอ…' : 'ส่งคำขอให้แอดมินตรวจสอบ'}</button>
+    </form>}
+  </div></div>
+}
+
 export default function App() {
+  const inviteMatch = window.location.pathname.match(/^\/invite\/([^/]+)$/)
+  if (inviteMatch) return <InvitePage token={decodeURIComponent(inviteMatch[1])} />
   const [departments, setDepartments] = useState<Department[]>([])
   const [databaseEmployees, setDatabaseEmployees] = useState<DatabaseEmployee[]>([])
   const [positions, setPositions] = useState<Position[]>([])
@@ -3332,10 +3577,17 @@ export default function App() {
   const [loggedIn, setLoggedIn] = useState(false)
   const [role, setRole] = useState<Role>('hr')
   const [userName, setUserName] = useState('')
+  const [accountUsername, setAccountUsername] = useState('')
   const [userDepartment, setUserDepartment] = useState<string | null>(null)
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const [showMyInfo, setShowMyInfo] = useState(false)
+  const [showPasswordReset, setShowPasswordReset] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmNewPassword, setConfirmNewPassword] = useState('')
+  const [passwordSaving, setPasswordSaving] = useState(false)
   const [page, setPage] = useState<Page>('dashboard')
   const [periods, setPeriods] = useState<PayrollPeriod[]>([])
-  const [users] = useState<UserAccount[]>(SEED_USERS)
   const [activePeriodId, setActivePeriodId] = useState<string>('')
   const [activeDeptId, setActiveDeptId] = useState<string>('')
   const [editEmpId, setEditEmpId] = useState<number | null>(null)
@@ -3360,29 +3612,19 @@ export default function App() {
       try {
         setEmployeeLoading(true)
         setEmployeeError('')
-        // Both endpoints are independent.  Loading them together removes one
-        // full network round-trip from the post-login dashboard wait.
-        const [bootstrapResult, payrollResult] = await Promise.allSettled([
-          getBootstrap(),
-          getPayrollPeriods(),
-        ])
-        if (bootstrapResult.status === 'rejected') throw bootstrapResult.reason
-        const { employees: employeeData, departments: departmentData, positions: positionData } = bootstrapResult.value
+        // One authenticated request avoids duplicate token checks and a second
+        // browser round-trip on every login or full refresh.
+        const { employees: employeeData, departments: departmentData, positions: positionData, payroll_periods: payrollData } = await getAppData()
         setDatabaseEmployees(employeeData)
         setDepartments(departmentData)
         setPositions(positionData)
         setEmployeeLoading(false)
 
-        if (payrollResult.status === 'fulfilled') {
-          const mappedPeriods = mapPayrollPeriods(payrollResult.value, employeeData, departmentData, positionData)
-          setPeriods(mappedPeriods)
-          setPayrollError('')
-          setActivePeriodId(current => current && mappedPeriods.some(period => period.id === current) ? current : mappedPeriods[0]?.id ?? '')
-          setActiveDeptId(current => current && mappedPeriods.some(period => period.depts.some(department => department.id === current)) ? current : mappedPeriods[0]?.depts[0]?.id ?? '')
-        } else {
-          setPeriods([])
-          setPayrollError(payrollResult.reason instanceof Error ? payrollResult.reason.message : 'เกิดข้อผิดพลาดในการเชื่อมต่อข้อมูลรอบเงินเดือน')
-        }
+        const mappedPeriods = mapPayrollPeriods(payrollData, employeeData, departmentData, positionData)
+        setPeriods(mappedPeriods)
+        setPayrollError('')
+        setActivePeriodId(current => current && mappedPeriods.some(period => period.id === current) ? current : mappedPeriods[0]?.id ?? '')
+        setActiveDeptId(current => current && mappedPeriods.some(period => period.depts.some(department => department.id === current)) ? current : mappedPeriods[0]?.depts[0]?.id ?? '')
       } catch (loadError) {
         setEmployeeError(loadError instanceof Error ? loadError.message : 'เกิดข้อผิดพลาดในการโหลดข้อมูล')
       } finally {
@@ -3399,10 +3641,16 @@ export default function App() {
   }, [])
 
   const handleLogin = (username: string, name: string, r: Role, department: string | null) => {
-    setUserName(name); setRole(r); setUserDepartment(department); setLoggedIn(true); setPage('dashboard')
+    setUserName(name); setAccountUsername(username); setRole(r); setUserDepartment(department); setLoggedIn(true); setPage('dashboard')
   }
 
-  const handleLogout = () => { clearAccessToken(); setLoggedIn(false); setPage('login' as Page) }
+  const handleLogout = () => { clearAccessToken(); setProfileMenuOpen(false); setLoggedIn(false); setPage('login' as Page) }
+  const roleLabel: Record<Role, string> = { hr: 'พนักงานฝ่ายธุรการ', director: 'ผู้อำนวยการ', admin: 'แอดมิน' }
+  const saveMyPassword = async () => {
+    if (newPassword.length < 8) { showToast('รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร', 'error'); return }
+    if (newPassword !== confirmNewPassword) { showToast('รหัสผ่านใหม่และยืนยันรหัสผ่านไม่ตรงกัน', 'error'); return }
+    try { setPasswordSaving(true); await changeMyPassword(currentPassword, newPassword); setShowPasswordReset(false); setCurrentPassword(''); setNewPassword(''); setConfirmNewPassword(''); showToast('เปลี่ยนรหัสผ่านเรียบร้อยแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'เปลี่ยนรหัสผ่านไม่สำเร็จ', 'error') } finally { setPasswordSaving(false) }
+  }
 
   if (!loggedIn) return <LoginPage onLogin={handleLogin} />
 
@@ -3429,17 +3677,21 @@ export default function App() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       <Background />
-      <Sidebar role={role} name={userName} department={userDepartment} page={page} setPage={setPage} />
+      <Sidebar role={role} page={page} setPage={setPage} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
         {/* Topbar */}
         <header style={{ background: 'rgba(255,255,255,0.80)', backdropFilter: 'blur(16px)', borderBottom: '1px solid rgba(0,0,0,0.06)', padding: '0 28px', height: 56, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, position: 'sticky', top: 0, zIndex: 10 }}>
           <div style={{ fontSize: 14, fontWeight: 600, color: '#1A1A1A' }}>{pageTitle[page] ?? ''}</div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3" style={{ position: 'relative' }}>
             <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>รอบปัจจุบัน: <strong style={{ color: '#1A1A1A' }}>{visiblePeriods[0] ? periodLabel(visiblePeriods[0]) : 'ยังไม่มีรอบเงินเดือน'}</strong></div>
-            <button className="btn btn-ghost btn-sm" style={{ color: 'var(--text-secondary)', fontSize: 13 }} onClick={handleLogout}>ออกจากระบบ</button>
+            <button type="button" aria-label="เมนูผู้ใช้งาน" title="เมนูผู้ใช้งาน" onClick={() => setProfileMenuOpen(open => !open)} style={{ width: 34, height: 34, borderRadius: '50%', border: '1px solid #DCD7EC', background: '#FFFFFF', color: '#6C52D9', display: 'grid', placeItems: 'center', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.05)' }}><PersonIcon /></button>
+            {profileMenuOpen && <div style={{ position: 'absolute', top: 43, right: 0, width: 218, background: '#FFFFFF', border: '1px solid rgba(89,68,140,.14)', borderRadius: 12, boxShadow: '0 12px 28px rgba(39,28,66,.16)', padding: 6, zIndex: 30 }}><div style={{ padding: '9px 11px 10px', borderBottom: '1px solid rgba(0,0,0,.06)', marginBottom: 4 }}><div style={{ fontWeight: 700, fontSize: 13 }}>{userName}</div><div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>{roleLabel[role]}</div></div><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setShowMyInfo(true) }}>ข้อมูลของฉัน</button><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setShowPasswordReset(true) }}>รีเซ็ตรหัสผ่าน</button><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', color: '#C2413A', fontSize: 13 }} onClick={handleLogout}>ออกจากระบบ</button></div>}
           </div>
         </header>
+
+        {showMyInfo && <Modal title="ข้อมูลของฉัน" onClose={() => setShowMyInfo(false)}><div className="flex flex-col gap-3"><div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: '10px 16px', fontSize: 14 }}><span style={{ color: 'var(--text-secondary)' }}>ชื่อ</span><strong>{userName}</strong><span style={{ color: 'var(--text-secondary)' }}>ชื่อผู้ใช้</span><strong style={{ fontFamily: 'monospace' }}>{accountUsername}</strong><span style={{ color: 'var(--text-secondary)' }}>สิทธิ์</span><strong>{roleLabel[role]}</strong>{userDepartment && <><span style={{ color: 'var(--text-secondary)' }}>ฝ่าย</span><strong>{userDepartment}</strong></>}</div><div className="flex justify-end"><button className="btn btn-secondary" onClick={() => setShowMyInfo(false)}>ปิด</button></div></div></Modal>}
+        {showPasswordReset && <Modal title="รีเซ็ตรหัสผ่าน" onClose={() => setShowPasswordReset(false)}><div className="flex flex-col gap-4"><FormField label="รหัสผ่านปัจจุบัน" required><input className="inp" type="password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} /></FormField><FormField label="รหัสผ่านใหม่" required><input className="inp" type="password" minLength={8} value={newPassword} onChange={event => setNewPassword(event.target.value)} /></FormField><FormField label="ยืนยันรหัสผ่านใหม่" required><input className="inp" type="password" minLength={8} value={confirmNewPassword} onChange={event => setConfirmNewPassword(event.target.value)} /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setShowPasswordReset(false)}>ยกเลิก</button><button className="btn btn-primary" disabled={passwordSaving || !currentPassword || !newPassword || !confirmNewPassword} onClick={() => void saveMyPassword()}>{passwordSaving ? 'กำลังบันทึก…' : 'บันทึกรหัสผ่านใหม่'}</button></div></div></Modal>}
 
         {/* Content */}
         <main style={{ flex: 1, padding: '28px 32px', overflowY: 'auto' }}>

@@ -135,6 +135,62 @@ class Payroll_periods:
 
         return list(periods.values())
 
+    def batch_history(self, batch_id):
+        """Return every immutable revision for one department payroll batch."""
+        batch_query = """
+            SELECT batch.id, batch.payroll_period_id, batch.department_id,
+                   department.code AS department_code, department.name AS department_name,
+                   batch.status, batch.submitted_by_id, submitter.full_name AS submitted_by_name,
+                   batch.submitted_at, batch.approved_by_id, approver.full_name AS approved_by_name,
+                   batch.approved_at, batch.reject_reason, batch.created_at, batch.revision_number,
+                   batch.parent_batch_id, batch.revision_type, batch.revision_reason,
+                   reviser.full_name AS revision_created_by_name, batch.is_current
+            FROM public.payroll_department_batches batch
+            JOIN public.departments department ON department.id = batch.department_id
+            LEFT JOIN public.users submitter ON submitter.id = batch.submitted_by_id
+            LEFT JOIN public.users approver ON approver.id = batch.approved_by_id
+            LEFT JOIN public.users reviser ON reviser.id = batch.revision_created_by_id
+            WHERE batch.payroll_period_id = (SELECT payroll_period_id FROM public.payroll_department_batches WHERE id = %s)
+              AND batch.department_id = (SELECT department_id FROM public.payroll_department_batches WHERE id = %s)
+            ORDER BY batch.revision_number DESC, batch.id DESC
+        """
+        item_query = """
+            SELECT item.id, item.department_batch_id, item.employee_id, employee.employee_code,
+                   employee.prefix, employee.first_name, employee.last_name,
+                   position.name AS position_name, item.base_salary,
+                   line.pay_item_type_id, item_type.code AS pay_item_code, line.amount
+            FROM public.payroll_items item
+            JOIN public.payroll_department_batches batch ON batch.id = item.department_batch_id
+            JOIN public.employees employee ON employee.id = item.employee_id
+            LEFT JOIN public.positions position ON position.id = employee.position_id
+            LEFT JOIN public.payroll_item_lines line ON line.payroll_item_id = item.id
+            LEFT JOIN public.pay_item_types item_type ON item_type.id = line.pay_item_type_id
+            WHERE batch.payroll_period_id = (SELECT payroll_period_id FROM public.payroll_department_batches WHERE id = %s)
+              AND batch.department_id = (SELECT department_id FROM public.payroll_department_batches WHERE id = %s)
+            ORDER BY item.department_batch_id, employee.employee_code, line.id
+        """
+        (batch_rows, batch_columns), (item_rows, item_columns) = self.db.fetch_many([
+            (batch_query, (batch_id, batch_id)),
+            (item_query, (batch_id, batch_id)),
+        ])
+        batches = {
+            row[0]: {**dict(zip(batch_columns, row)), "payroll_items": []}
+            for row in batch_rows
+        }
+        items = {}
+        line_keys = {"pay_item_type_id", "pay_item_code", "amount"}
+        for row in item_rows:
+            record = dict(zip(item_columns, row))
+            item = items.get(record["id"])
+            if item is None:
+                item = {key: value for key, value in record.items() if key not in line_keys}
+                item["lines"] = []
+                items[item["id"]] = item
+                batches[item["department_batch_id"]]["payroll_items"].append(item)
+            if record["pay_item_type_id"] is not None:
+                item["lines"].append({"code": record["pay_item_code"], "amount": record["amount"]})
+        return list(batches.values())
+
     def read(self, payroll_period_id):
         data, columns = self.db.fetch(
             """

@@ -101,4 +101,13 @@ export async function deactivateEmployee(employeeId: number): Promise<void> {
   if (!response.ok) throw new Error(await parseApiError(response))
 }
 
+export async function updateEmployeeEmail(employeeId: number, email: string): Promise<void> {
+  const response = await fetch(`${API_URL}/employees/${employeeId}/email`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authorizationHeaders() },
+    body: JSON.stringify({ email }),
+  })
+  if (!response.ok) throw new Error(await parseApiError(response))
+}
+
 import { authorizationHeaders } from './auth'

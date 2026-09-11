@@ -1,6 +1,7 @@
 import os
 import smtplib
 import hashlib
+import html
 from datetime import datetime
 from email.message import EmailMessage
 from io import BytesIO
@@ -19,15 +20,49 @@ class PayslipEmailService:
     def __init__(self):
         self.db = DBHelper()
         self.host = os.getenv("SMTP_HOST", "")
-        self.port = int(os.getenv("SMTP_PORT", "465"))
+        self.port = int(os.getenv("SMTP_PORT", "587"))
         self.username = os.getenv("SMTP_USERNAME", "")
         self.password = os.getenv("SMTP_APP_PASSWORD", "")
         self.from_email = os.getenv("SMTP_FROM_EMAIL", self.username)
         self.from_name = os.getenv("SMTP_FROM_NAME", "ระบบจัดทำเงินเดือน")
+        self.encryption = os.getenv("MAIL_ENCRYPTION", "tls").lower()
 
     def _ensure_configured(self):
         if not all([self.host, self.username, self.password, self.from_email]):
             raise ValueError("ยังตั้งค่า SMTP ในไฟล์ .env ไม่ครบ")
+
+    def send_payslip_email(self, to_email, subject, body, pdf_data, filename):
+        self._ensure_configured()
+
+        # สร้างกล่องข้อความอีเมล
+        msg = EmailMessage()
+        msg["Subject"] = subject
+        msg["From"] = f"{self.from_name} <{self.from_email}>"
+        msg["To"] = to_email
+        msg.set_content(body)
+
+        # แนบไฟล์ PDF สลิปเงินเดือน
+        msg.add_attachment(
+            pdf_data,
+            maintype="application",
+            subtype="pdf",
+            filename=filename
+        )
+
+        # 💡 ท่อนสำคัญ: การเชื่อมต่อ SMTP แบบสลับพอร์ตอัตโนมัติตาม .env
+        if self.port == 465 or self.encryption == "ssl":
+            # สำหรับรันบนเครื่องตัวเอง (Localhost) ถ้ายังอยากใช้ 465
+            server = smtplib.SMTP_SSL(self.host, self.port)
+        else:
+            # สำหรับรันบน Railway (Port 587 + TLS) ปลอดภัย ไม่โดนบล็อกแน่นอน
+            server = smtplib.SMTP(self.host, self.port)
+            server.starttls() # สั่งเข้ารหัสความปลอดภัยแบบ TLS
+
+        try:
+            server.login(self.username, self.password)
+            server.send_message(msg)
+        finally:
+            server.quit()
 
     def _load_item(self, payroll_item_id):
         data, columns = self.db.fetch(
@@ -262,17 +297,41 @@ class PayslipEmailService:
             self._set_status(payroll_item_id, "FAILED", "พนักงานไม่มีอีเมล")
             raise ValueError("พนักงานไม่มีอีเมล")
 
-        message = EmailMessage()
-        message["Subject"] = f"สลิปเงินเดือน {item['month']}/{item['year'] + 543}"
-        message["From"] = f"{self.from_name} <{self.from_email}>"
-        message["To"] = item["email"]
-        message.set_content(
-            f"เรียน {item['prefix'] or ''}{item['first_name']} {item['last_name']}\n\n"
-            f"โปรดตรวจสอบสลิปเงินเดือนประจำเดือน {item['month']}/{item['year'] + 543} ที่แนบมาพร้อมอีเมลนี้\n"
-            "รหัสเปิดไฟล์: วันเดือนปีเกิด ค.ศ. 8 หลัก (เช่น 15/03/1992 ใช้ 15031992)\n"
-            "หากพบข้อมูลไม่ถูกต้อง กรุณาติดต่อฝ่ายทรัพยากรบุคคล\n\n"
+        month_names = ["", "มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
+        month_label = f"{month_names[item['month']]} {item['year'] + 543}"
+        employee_name = f"{item['prefix'] or ''}{item['first_name']} {item['last_name']}"
+        plain_body = (
+            f"เรียน {employee_name}\n\n"
+            f"ระบบได้จัดส่งใบแจ้งยอดเงินเดือน (Payslip) ประจำเดือน{month_label} ของท่านเรียบร้อยแล้ว\n"
+            "รายละเอียดปรากฏตามเอกสาร PDF ที่แนบมาพร้อมกับอีเมลฉบับนี้\n\n"
+            "หมายเหตุ: ไฟล์เอกสารได้รับการเข้ารหัสลับเพื่อความปลอดภัย โปรดใช้รหัสผ่าน "
+            "(วันเดือนปี ค.ศ. เกิดของท่าน DDMMYYYY เช่น 01 มี.ค. 1992 ใช้ 01031992) "
+            "ในการเปิดอ่านไฟล์\n\n"
+            "หากมีข้อสงสัยประการใด หรือพบข้อมูลไม่ถูกต้อง กรุณาติดต่อเจ้าหน้าที่ธุรการ\n\n"
+            "จึงเรียนมาเพื่อทราบ\n"
+            "ระบบจัดทำเงินเดือนอัตโนมัติ\n\n"
             "อีเมลนี้ส่งโดยระบบอัตโนมัติ กรุณาอย่าตอบกลับ"
         )
+        html_body = f"""<!doctype html>
+<html lang=\"th\"><body style=\"margin:0;background:#f6f5fa;padding:28px 16px;font-family:Tahoma,'Noto Sans Thai',sans-serif;color:#222;line-height:1.7\">
+  <div style=\"max-width:620px;margin:auto;background:#fff;border:1px solid #e6e2ef;border-radius:12px;overflow:hidden\">
+    <div style=\"padding:18px 24px;background:#f2edff;color:#4a337f;font-weight:700;font-size:18px\">ใบแจ้งยอดเงินเดือน (Payslip)</div>
+    <div style=\"padding:24px\">
+      <p style=\"margin:0 0 18px\">เรียน {html.escape(employee_name)}</p>
+      <p>ระบบได้จัดส่ง<strong>ใบแจ้งยอดเงินเดือน (Payslip) ประจำเดือน{html.escape(month_label)}</strong> ของท่านเรียบร้อยแล้ว<br>รายละเอียดปรากฏตามเอกสาร PDF ที่แนบมาพร้อมกับอีเมลฉบับนี้</p>
+      <div style=\"margin:20px 0;padding:14px 16px;background:#fff9e9;border:1px solid #efd99b;border-radius:9px\"><strong>หมายเหตุ</strong><br>ไฟล์เอกสารได้รับการเข้ารหัสลับเพื่อความปลอดภัย โปรดใช้รหัสผ่าน <strong>วันเดือนปี ค.ศ. เกิดของท่าน (DDMMYYYY)</strong><br>ตัวอย่าง: 01 มี.ค. 1992 ใช้รหัสผ่าน <strong>01031992</strong> ในการเปิดอ่านไฟล์</div>
+      <p>หากมีข้อสงสัยประการใด หรือพบข้อมูลไม่ถูกต้อง กรุณาติดต่อเจ้าหน้าที่ธุรการ</p>
+      <p style=\"margin:24px 0 0\">จึงเรียนมาเพื่อทราบ<br><strong>ระบบจัดทำเงินเดือนอัตโนมัติ</strong></p>
+    </div>
+    <div style=\"padding:12px 24px;background:#faf9fc;color:#777;font-size:12px\">อีเมลนี้ส่งโดยระบบอัตโนมัติ กรุณาอย่าตอบกลับ</div>
+  </div>
+</body></html>"""
+        message = EmailMessage()
+        message["Subject"] = f"ใบแจ้งยอดเงินเดือน (Payslip) ประจำเดือน{month_label} - เทศบาลเมืองตาคลี"
+        message["From"] = f"{self.from_name} <{self.from_email}>"
+        message["To"] = item["email"]
+        message.set_content(plain_body)
+        message.add_alternative(html_body, subtype="html")
         pdf_data, filename = self.build_payslip_pdf(payroll_item_id, lock_for_email=True)
         message.add_attachment(
             pdf_data, maintype="application", subtype="pdf", filename=filename,

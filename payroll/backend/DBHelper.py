@@ -34,10 +34,12 @@ class DBHelper:
                         host=self.host, port=self.port, user=self.user,
                         password=self.password, dbname=self.db,
                     )
+                    max_size = int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10"))
+                    min_size = min(int(os.getenv("POSTGRES_POOL_MIN_SIZE", "4")), max_size)
                     self.__class__._pool = ConnectionPool(
                         conninfo=conninfo,
-                        min_size=1,
-                        max_size=int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10")),
+                        min_size=max(1, min_size),
+                        max_size=max_size,
                         timeout=int(os.getenv("POSTGRES_POOL_TIMEOUT_SECONDS", "10")),
                         kwargs={
                             "connect_timeout": int(os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS", "5")),
@@ -45,6 +47,18 @@ class DBHelper:
                         },
                     )
         return self.__class__._pool
+
+    def warm_pool(self):
+        """Establish the small reusable pool before the first employee logs in."""
+        pool = self._get_pool()
+        if pool is not None:
+            pool.wait(timeout=int(os.getenv("POSTGRES_POOL_WARMUP_TIMEOUT_SECONDS", "10")))
+
+    @classmethod
+    def close_pool(cls):
+        if cls._pool is not None:
+            cls._pool.close()
+            cls._pool = None
 
     @contextmanager
     def _connection(self):

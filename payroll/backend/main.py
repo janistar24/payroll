@@ -59,6 +59,22 @@ app.add_middleware(
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
 
 
+@app.on_event("startup")
+def warm_database_connections():
+    """Move connection setup out of the first login request."""
+    try:
+        db.warm_pool()
+    except Exception:
+        # Keep local development bootable when the database is temporarily
+        # offline; healthcheck and the request handlers still report the error.
+        logging.warning("Database pool warm-up was not ready at startup", exc_info=True)
+
+
+@app.on_event("shutdown")
+def close_database_connections():
+    DBHelper.close_pool()
+
+
 @app.exception_handler(HTTPException)
 async def secure_http_errors(request: Request, error: HTTPException):
     detail = error.detail
@@ -286,6 +302,18 @@ class EmployeeStatusUpdate(BaseModel):
     def validate_status(cls, value):
         if value not in EMPLOYEE_STATUSES:
             raise ValueError("สถานะพนักงานไม่ถูกต้อง")
+        return value
+
+
+class EmployeeEmailUpdate(BaseModel):
+    email: str = Field(min_length=5, max_length=255)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, value):
+        value = value.strip()
+        if "@" not in value or value.startswith("@") or value.endswith("@"):
+            raise ValueError("กรุณากรอกอีเมลให้ถูกต้อง")
         return value
 
 
@@ -716,6 +744,20 @@ def update_employee_status(employee_id: int, request: EmployeeStatusUpdate, user
     audit_logger.log(user["id"], "UPDATE_STATUS", "employee", employee_id, {"status": request.status})
     return {"success": True}
 
+
+@app.patch("/api/employees/{employee_id}/email")
+def update_employee_email(employee_id: int, request: EmployeeEmailUpdate, user=Depends(get_current_user)):
+    department_id = _department_scope(user)
+    error, employee = employees_service.read(employee_id)
+    if error["Is Error"]:
+        raise HTTPException(status_code=404, detail=error["Error Message"])
+    if department_id is not None and employee["department_id"] != department_id:
+        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์แก้ไขพนักงานฝ่ายอื่น")
+    if not employees_service.update_email(employee_id, request.email):
+        raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
+    audit_logger.log(user["id"], "UPDATE_EMAIL", "employee", employee_id, {"email": request.email})
+    return {"success": True, "data": {"email": request.email}}
+
 @app.get("/api/positions")
 def get_positions(user=Depends(get_current_user)):
     try:
@@ -811,6 +853,15 @@ def create_payroll_revision(batch_id: int, request: PayrollRevisionCreate, user=
         # Return a normal API response so CORS middleware can add its headers;
         # the browser should never mask a server-side revision error as CORS.
         raise HTTPException(status_code=500, detail="สร้างฉบับแก้ไขไม่สำเร็จ กรุณาลองใหม่อีกครั้ง")
+
+
+@app.get("/api/payroll_department_batches/{batch_id}/history")
+def get_payroll_batch_history(batch_id: int, user=Depends(get_current_user)):
+    _ensure_batch_access(batch_id, user, allow_approval=True)
+    try:
+        return {"success": True, "data": payroll_periods_service.batch_history(batch_id)}
+    except Exception:
+        raise HTTPException(status_code=500, detail="ไม่สามารถโหลดประวัติฉบับเงินเดือนได้")
 
 
 @app.put("/api/payroll_department_batches/{batch_id}/items")

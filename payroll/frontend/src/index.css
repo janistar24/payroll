@@ -373,6 +373,14 @@ select.inp {
 
 .btn-sm { font-size: 12px; padding: 6px 13px; border-radius: 8px; }
 .btn-xs { font-size: 11px; padding: 4px 10px; border-radius: 7px; }
+.btn[aria-busy="true"] { cursor: progress; }
+.btn-spinner {
+  width: 13px; height: 13px; flex: 0 0 13px; display: inline-block;
+  border: 2px solid currentColor; border-right-color: transparent;
+  border-radius: 50%; animation: button-spin .7s linear infinite;
+}
+@keyframes button-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .btn-spinner { animation: none; } }
 
 /* ── Status Badges ─────────────────────────────────────────── */
 .badge {

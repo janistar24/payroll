@@ -32,6 +32,7 @@ export interface PayrollBatchRecord {
   revision_type?: string | null
   revision_reason?: string | null
   revision_created_by_name?: string | null
+  is_current?: boolean
   payroll_items: PayrollItemRecord[]
   excluded_employee_codes?: string[]
 }
@@ -76,6 +77,12 @@ export async function createPayrollRevision(batchId: number, revision_type: stri
   const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/revisions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ revision_type, reason }) })
   if (!response.ok) return parseError(response, `สร้างฉบับแก้ไขไม่สำเร็จ: ${response.status}`)
   return (await response.json()).data as { batch_id: number }
+}
+
+export async function getPayrollBatchHistory(batchId: number): Promise<PayrollBatchRecord[]> {
+  const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/history`, { headers: authorizationHeaders() })
+  if (!response.ok) return parseError(response, `โหลดประวัติฉบับเงินเดือนไม่สำเร็จ: ${response.status}`)
+  return (await response.json()).data as PayrollBatchRecord[]
 }
 
 export async function payrollBatchAction(batchId: number, action: 'submit' | 'approve' | 'reject', reject_reason?: string): Promise<void> {

@@ -208,3 +208,17 @@ class Employees:
                 (status, employee_id)
             )
             return cursor.fetchone() is not None
+
+    def update_email(self, employee_id, email):
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                """
+                UPDATE public.employees
+                SET email = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING id
+                """,
+                (email.strip(), employee_id)
+            )
+            return cursor.fetchone() is not None

@@ -10,6 +10,7 @@ import {
   deactivateEmployee,
   getEmployees,
   updateEmployee,
+  updateEmployeeEmail,
   type Employee as DatabaseEmployee,
   type EmployeeSaveInput,
 } from './api/employees'
@@ -18,7 +19,7 @@ import { getAppData } from './api/bootstrap'
 import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
 import { approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, revealAccessRequestPassword, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
-import { createPayrollPeriod, createPayrollRevision, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollPeriodRecord } from './api/payroll'
+import { createPayrollPeriod, createPayrollRevision, getPayrollBatchHistory, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollPeriodRecord } from './api/payroll'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Role = 'hr' | 'director' | 'admin'
@@ -43,6 +44,18 @@ function PersonIcon() {
   return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.3" /><path d="M5.5 20c.8-3.3 3-5.1 6.5-5.1s5.7 1.8 6.5 5.1" /></svg>
 }
 
+function PencilIcon() {
+  return <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 20h9" /><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z" /></svg>
+}
+
+/** Keeps every write action visually consistent while an API request is running. */
+function BusyLabel({ busy, label, children }: { busy: boolean; label: string; children: React.ReactNode }) {
+  return <>
+    {busy && <span className="btn-spinner" aria-hidden="true" />}
+    <span>{busy ? label : children}</span>
+  </>
+}
+
 type Page =
   | 'login'
   | 'dashboard'
@@ -58,6 +71,7 @@ type Page =
 
 interface Employee {
   id: string
+  databaseId?: number
   title: string
   firstName: string
   lastName: string
@@ -255,7 +269,7 @@ const batchStatus = (status: string): DeptStatus => ({
 }[status] ?? 'draft')
 
 const databaseEmployeeToPayrollEmployee = (employee: DatabaseEmployee, departments: Department[], positions: Position[]): Employee => ({
-  id: employee.employee_code,
+  id: employee.employee_code, databaseId: employee.id,
   title: employee.prefix ?? '',
   firstName: employee.first_name,
   lastName: employee.last_name,
@@ -344,6 +358,32 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
       }
     }),
   }))
+}
+
+const mapPayrollHistoryBatch = (batch: PayrollBatchRecord, period: PayrollPeriod): DeptPayroll => {
+  const rows: Record<string, PayrollRow> = {}
+  const employees = batch.payroll_items.map(item => {
+    const lines = Object.fromEntries(item.lines.map(line => [line.code, Number(line.amount)]))
+    rows[item.employee_code] = {
+      empId: item.employee_code, extra: lines.EXTRA_PAY ?? 0, posAllowance: lines.POS_ALLOW ?? 0,
+      debtKTB: lines.KTB_LOAN ?? 0, tax: lines.TAX ?? 0, social: lines.SSF ?? 0,
+      funeral: lines.FUNERAL_FUND ?? 0, ktb: 0, gsb: lines.SAVINGS_BANK_LOAN ?? 0,
+    }
+    return {
+      id: item.employee_code, title: item.prefix ?? '', firstName: item.first_name, lastName: item.last_name,
+      position: item.position_name ?? '–', department: batch.department_name, baseSalary: Number(item.base_salary),
+      email: '', status: 'inactive' as const, startDate: '', taxId: '', socialSecId: '',
+    }
+  })
+  return {
+    id: String(batch.id), databaseId: batch.id, periodId: period.id, department: batch.department_name,
+    status: batchStatus(batch.status), rows, submittedBy: batch.submitted_by_name ?? undefined,
+    submittedAt: batch.submitted_at ?? undefined, approvedBy: batch.approved_by_name ?? undefined,
+    approvedAt: batch.approved_at ?? undefined, rejectionReason: batch.reject_reason ?? undefined,
+    updatedAt: batch.approved_at ?? batch.submitted_at ?? batch.created_at, employees,
+    revisionNumber: batch.revision_number ?? 0, revisionType: batch.revision_type ?? undefined,
+    revisionReason: batch.revision_reason ?? undefined, revisionCreatedBy: batch.revision_created_by_name ?? undefined,
+  }
 }
 
 const escapeMarkup = (value: unknown) => String(value ?? '')
@@ -904,8 +944,8 @@ function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Ro
             </div>
           </div>
           {error && <div style={{ background: 'var(--status-rejected-bg)', border: '1px solid var(--status-rejected-border)', borderRadius: 10, padding: '9px 14px', fontSize: 13, color: 'var(--status-rejected-text)' }}>✕ {error}</div>}
-          <button className="btn btn-primary" type="submit" disabled={loading} style={{ width: '100%', marginTop: 4, height: 44, fontSize: 15 }}>
-            {loading ? 'กำลังเข้าสู่ระบบ...' : 'เข้าสู่ระบบ'}
+          <button className="btn btn-primary" aria-busy={loading} type="submit" disabled={loading} style={{ width: '100%', marginTop: 4, height: 44, fontSize: 15 }}>
+            <BusyLabel busy={loading} label="กำลังเข้าสู่ระบบ…">เข้าสู่ระบบ</BusyLabel>
           </button>
         </form>
         <div style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-muted)', marginTop: 20 }}>
@@ -1331,15 +1371,22 @@ function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, rol
   const [createYear, setCreateYear] = useState(String(new Date().getFullYear() + 543))
   const [createPayDate, setCreatePayDate] = useState('')
   const [createNote, setCreateNote] = useState('')
+  const [creating, setCreating] = useState(false)
 
   const handleCreate = async () => {
-    const gregorianYear = parseInt(createYear) - 543
-    const periodId = await createPayrollPeriod({ year: gregorianYear, month: parseInt(createMonth), pay_date: createPayDate, note: createNote })
-    await reloadPayroll()
-    setActivePeriodId(String(periodId))
-    setActiveDeptId('')
-    setShowCreate(false)
-    setPage(role === 'hr' ? 'dept-table' : 'period-detail')
+    if (creating) return
+    setCreating(true)
+    try {
+      const gregorianYear = parseInt(createYear) - 543
+      const periodId = await createPayrollPeriod({ year: gregorianYear, month: parseInt(createMonth), pay_date: createPayDate, note: createNote })
+      await reloadPayroll()
+      setActivePeriodId(String(periodId))
+      setActiveDeptId('')
+      setShowCreate(false)
+      setPage(role === 'hr' ? 'dept-table' : 'period-detail')
+    } finally {
+      setCreating(false)
+    }
   }
 
   return (
@@ -1430,8 +1477,8 @@ function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, rol
               <textarea className="inp" rows={2} value={createNote} onChange={e => setCreateNote(e.target.value)} style={{ resize: 'none' }} />
             </div>
             <div className="flex gap-3 justify-end mt-2">
-              <button className="btn btn-secondary" onClick={() => setShowCreate(false)}>ยกเลิก</button>
-            <button className="btn btn-primary" onClick={() => void handleCreate()} disabled={!createPayDate}>สร้างรอบเงินเดือน</button>
+              <button className="btn btn-secondary" onClick={() => setShowCreate(false)} disabled={creating}>ยกเลิก</button>
+            <button className="btn btn-primary" aria-busy={creating} onClick={() => void handleCreate()} disabled={!createPayDate || creating}><BusyLabel busy={creating} label="กำลังสร้าง…">สร้างรอบเงินเดือน</BusyLabel></button>
             </div>
           </div>
         </Modal>
@@ -1612,6 +1659,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const [revisionType, setRevisionType] = useState('')
   const [revisionReason, setRevisionReason] = useState('')
   const [creatingRevision, setCreatingRevision] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
   const [focusRow, setFocusRow] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const [search, setSearch] = useState('')
@@ -1824,17 +1872,25 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   }
 
   const submitForApproval = async () => {
+    if (submitting) return
+    setSubmitting(true)
     try {
       if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
       await persistRows()
       await payrollBatchAction(dept.databaseId, 'submit')
-      await reloadPayroll()
+      setPeriods(current => current.map(savedPeriod => savedPeriod.id !== period.id ? savedPeriod : {
+        ...savedPeriod,
+        depts: savedPeriod.depts.map(savedDept => savedDept.id === dept.id ? { ...savedDept, status: 'pending' } : savedDept),
+      }))
       setDirty(false)
       setShowSubmitModal(false)
       showToast('ส่งข้อมูลให้ผู้อำนวยการอนุมัติแล้ว', 'success')
       setPage('dept-table')
+      void reloadPayroll().catch(() => undefined)
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'ส่งอนุมัติไม่สำเร็จ', 'error')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -1942,7 +1998,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
         ]} />}
         actions={!isReadonly ? (
           <>
-            {dept.status !== 'pending' && <button className="btn btn-primary" onClick={() => void save().then(saved => { if (saved) setShowSubmitModal(true) })} disabled={saving}>ส่งให้ผู้อำนวยการอนุมัติ →</button>}
+            {dept.status !== 'pending' && <button className="btn btn-primary" aria-busy={saving} onClick={() => void save().then(saved => { if (saved) setShowSubmitModal(true) })} disabled={saving}><BusyLabel busy={saving} label="กำลังบันทึก…">ส่งให้ผู้อำนวยการอนุมัติ →</BusyLabel></button>}
           </>
         ) : <StatusBadge s={dept.status} />}
       />
@@ -1996,7 +2052,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                 ? `✏️ ปิดการแก้ไข${hasPendingChanges ? ` · ${pendingChangeCount} รายการแก้ไข` : ''}`
                 : '✏️ แก้ไขข้อมูล'}
             </button>
-            <button className="btn btn-primary" onClick={() => void save()} disabled={isReadonly || !hasPendingChanges || saving} title={isReadonly ? 'รอบนี้ถูกล็อก ไม่สามารถบันทึกข้อมูลได้' : undefined}>{saving ? 'กำลังบันทึก…' : '💾 บันทึก'}</button>
+            <button className="btn btn-primary" aria-busy={saving} onClick={() => void save()} disabled={isReadonly || !hasPendingChanges || saving} title={isReadonly ? 'รอบนี้ถูกล็อก ไม่สามารถบันทึกข้อมูลได้' : undefined}><BusyLabel busy={saving} label="กำลังบันทึก…">💾 บันทึก</BusyLabel></button>
           </div>
         </div>
       </div>
@@ -2154,7 +2210,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             <div className="flex gap-3 justify-end flex-wrap">
               <button className="btn btn-secondary" onClick={() => setShowDiscardModal(false)}>กลับไปแก้ไข</button>
               <button className="btn btn-secondary" onClick={discardUnsavedChanges}>ไม่บันทึก</button>
-              <button className="btn btn-primary" onClick={() => void saveAndCloseEditor()}>💾 บันทึกและออก</button>
+              <button className="btn btn-primary" aria-busy={saving} disabled={saving} onClick={() => void saveAndCloseEditor()}><BusyLabel busy={saving} label="กำลังบันทึก…">💾 บันทึกและออก</BusyLabel></button>
             </div>
           </div>
         </Modal>
@@ -2175,7 +2231,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
         </Modal>
       )}
 
-      {showRevisionModal && <Modal title="แก้ไขเพิ่มเติมหลังอนุมัติ" onClose={() => !creatingRevision && setShowRevisionModal(false)}><div className="flex flex-col gap-4"><div style={{ background: '#F6F3FF', borderRadius: 10, padding: 13, fontSize: 13, lineHeight: 1.65 }}>ระบบจะสร้างฉบับแก้ไขใหม่เฉพาะ <strong>{dept.department}</strong> ของรอบ <strong>{periodLabel(period)}</strong> โดยเก็บฉบับเดิมไว้เป็นประวัติ</div><FormField label="ประเภทการแก้ไข" required><AppSelect className="inp" value={revisionType} onChange={e => setRevisionType(e.target.value)}><option value="">เลือกประเภทการแก้ไข</option><option>เพิ่มพนักงานกลางเดือน</option><option>แก้ไขรายการรับหรือรายการหัก</option><option>พนักงานลาออกหรือปรับยอดสุดท้าย</option><option>อื่น ๆ</option></AppSelect></FormField><FormField label="เหตุผลการแก้ไข" required><textarea className="inp" rows={3} value={revisionReason} onChange={e => setRevisionReason(e.target.value)} placeholder="ระบุเหตุผลอย่างน้อย 5 ตัวอักษร" /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingRevision} onClick={() => setShowRevisionModal(false)}>ยกเลิก</button><button className="btn btn-primary" disabled={creatingRevision} onClick={() => void createRevision()}>{creatingRevision ? 'กำลังสร้าง…' : 'สร้างฉบับแก้ไข'}</button></div></div></Modal>}
+      {showRevisionModal && <Modal title="แก้ไขเพิ่มเติมหลังอนุมัติ" onClose={() => !creatingRevision && setShowRevisionModal(false)}><div className="flex flex-col gap-4"><div style={{ background: '#F6F3FF', borderRadius: 10, padding: 13, fontSize: 13, lineHeight: 1.65 }}>ระบบจะสร้างฉบับแก้ไขใหม่เฉพาะ <strong>{dept.department}</strong> ของรอบ <strong>{periodLabel(period)}</strong> โดยเก็บฉบับเดิมไว้เป็นประวัติ</div><FormField label="ประเภทการแก้ไข" required><AppSelect className="inp" value={revisionType} onChange={e => setRevisionType(e.target.value)}><option value="">เลือกประเภทการแก้ไข</option><option>เพิ่มพนักงานกลางเดือน</option><option>แก้ไขรายการรับหรือรายการหัก</option><option>พนักงานลาออกหรือปรับยอดสุดท้าย</option><option>อื่น ๆ</option></AppSelect></FormField><FormField label="เหตุผลการแก้ไข" required><textarea className="inp" rows={3} value={revisionReason} onChange={e => setRevisionReason(e.target.value)} placeholder="ระบุเหตุผลอย่างน้อย 5 ตัวอักษร" /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingRevision} onClick={() => setShowRevisionModal(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={creatingRevision} disabled={creatingRevision} onClick={() => void createRevision()}><BusyLabel busy={creatingRevision} label="กำลังสร้าง…">สร้างฉบับแก้ไข</BusyLabel></button></div></div></Modal>}
 
       {/* Submit modal */}
       {showSubmitModal && (
@@ -2200,8 +2256,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               หลังจากส่งอนุมัติแล้ว ท่านจะไม่สามารถแก้ไขข้อมูลได้ จนกว่าผู้อำนวยการจะไม่อนุมัติหรือส่งกลับมาแก้ไข
             </div>
             <div className="flex gap-3 justify-end">
-              <button className="btn btn-secondary" onClick={() => setShowSubmitModal(false)}>ยกเลิก</button>
-              <button className="btn btn-primary" onClick={submitForApproval}>ยืนยันส่งอนุมัติ</button>
+              <button className="btn btn-secondary" disabled={submitting} onClick={() => setShowSubmitModal(false)}>ยกเลิก</button>
+              <button className="btn btn-primary" aria-busy={submitting} disabled={submitting} onClick={submitForApproval}><BusyLabel busy={submitting} label="กำลังส่ง…">ยืนยันส่งอนุมัติ</BusyLabel></button>
             </div>
           </div>
         </Modal>
@@ -2315,6 +2371,12 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
   const [showRejectModal, setShowRejectModal] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
   const [search, setSearch] = useState('')
+  const [processingDecision, setProcessingDecision] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState('')
+  const [historyBatches, setHistoryBatches] = useState<DeptPayroll[]>([])
+  const [historicBatch, setHistoricBatch] = useState<DeptPayroll | null>(null)
 
   const t = useMemo(() => deptTotals(dept), [dept])
   const visibleEmployees = useMemo(() => {
@@ -2365,30 +2427,65 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
   }
 
   const handleApprove = async () => {
+    if (processingDecision) return
+    setProcessingDecision(true)
     try {
       if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
       await payrollBatchAction(dept.databaseId, 'approve')
-      await reloadPayroll()
+      setPeriods(current => current.map(savedPeriod => savedPeriod.id !== period.id ? savedPeriod : {
+        ...savedPeriod,
+        depts: savedPeriod.depts.map(savedDept => savedDept.id === dept.id ? { ...savedDept, status: 'approved' } : savedDept),
+      }))
       setShowApproveModal(false)
       showToast('อนุมัติเรียบร้อยแล้ว และบันทึกสถานะอีเมลลงฐานข้อมูลแล้ว', 'success')
       setPage('dashboard')
+      void reloadPayroll().catch(() => undefined)
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'อนุมัติไม่สำเร็จ', 'error')
+    } finally {
+      setProcessingDecision(false)
     }
   }
 
   const handleReject = async () => {
     if (!rejectReason.trim()) return
+    if (processingDecision) return
+    setProcessingDecision(true)
     try {
       if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
       await payrollBatchAction(dept.databaseId, 'reject', rejectReason)
-      await reloadPayroll()
+      setPeriods(current => current.map(savedPeriod => savedPeriod.id !== period.id ? savedPeriod : {
+        ...savedPeriod,
+        depts: savedPeriod.depts.map(savedDept => savedDept.id === dept.id ? { ...savedDept, status: 'rejected', rejectionReason: rejectReason } : savedDept),
+      }))
       setShowRejectModal(false)
       showToast('ส่งกลับไปให้ HR แก้ไขแล้ว', 'error')
       setPage('dashboard')
+      void reloadPayroll().catch(() => undefined)
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'ส่งกลับแก้ไขไม่สำเร็จ', 'error')
+    } finally {
+      setProcessingDecision(false)
     }
+  }
+
+  const openHistory = async () => {
+    if (!dept.databaseId) return
+    setHistoryOpen(true)
+    setHistoryError('')
+    setHistoryLoading(true)
+    try {
+      const records = await getPayrollBatchHistory(dept.databaseId)
+      setHistoryBatches(records.map(record => mapPayrollHistoryBatch(record, period)))
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'ไม่สามารถโหลดประวัติฉบับเงินเดือนได้')
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  if (historicBatch) {
+    return <HistoricPayrollView period={period} dept={historicBatch} onBack={() => setHistoricBatch(null)} />
   }
 
   return (
@@ -2406,11 +2503,13 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
       />
 
       {(dept.revisionNumber ?? 0) > 0 && (
-        <div style={{ background: '#F6F3FF', border: '1px solid #D9CBFF', borderRadius: 'var(--radius-sm)', padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#4D3A78' }}>
-          <strong>ฉบับแก้ไขเพิ่มเติม ครั้งที่ {dept.revisionNumber}</strong>
-          {dept.revisionType ? <> · {dept.revisionType}</> : null}
-          {dept.revisionReason ? <><br />เหตุผล: {dept.revisionReason}</> : null}
-          {dept.revisionCreatedBy ? <> · สร้างโดย {dept.revisionCreatedBy}</> : null}
+        <div style={{ background: '#F6F3FF', border: '1px solid #D9CBFF', borderRadius: 'var(--radius-sm)', padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#4D3A78', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+          <div><strong>ฉบับแก้ไขเพิ่มเติม ครั้งที่ {dept.revisionNumber}</strong>
+            {dept.revisionType ? <> · {dept.revisionType}</> : null}
+            {dept.revisionReason ? <><br />เหตุผล: {dept.revisionReason}</> : null}
+            {dept.revisionCreatedBy ? <> · สร้างโดย {dept.revisionCreatedBy}</> : null}
+          </div>
+          <button className="btn btn-secondary btn-sm" aria-busy={historyLoading} disabled={historyLoading} onClick={() => void openHistory()}><BusyLabel busy={historyLoading} label="กำลังโหลด…">🗂️ ดูประวัติฉบับก่อน</BusyLabel></button>
         </div>
       )}
 
@@ -2524,8 +2623,8 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
             </div>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>ยืนยันการอนุมัติข้อมูลเงินเดือนของฝ่ายนี้หรือไม่? ระบบจะสร้าง PDF และส่งอีเมลให้พนักงานทุกคนทันที</div>
             <div className="flex gap-3 justify-end">
-              <button className="btn btn-secondary" onClick={() => setShowApproveModal(false)}>ยกเลิก</button>
-              <button className="btn btn-approve" onClick={handleApprove}>✓ ยืนยันอนุมัติ</button>
+              <button className="btn btn-secondary" disabled={processingDecision} onClick={() => setShowApproveModal(false)}>ยกเลิก</button>
+              <button className="btn btn-approve" aria-busy={processingDecision} disabled={processingDecision} onClick={handleApprove}><BusyLabel busy={processingDecision} label="กำลังอนุมัติ…">✓ ยืนยันอนุมัติ</BusyLabel></button>
             </div>
           </div>
         </Modal>
@@ -2544,14 +2643,60 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
               <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>{rejectReason.length} ตัวอักษร · เหตุผลจะถูกส่งกลับไปให้ HR แก้ไข</div>
             </div>
             <div className="flex gap-3 justify-end">
-              <button className="btn btn-secondary" onClick={() => setShowRejectModal(false)}>ยกเลิก</button>
-              <button className="btn btn-danger" onClick={handleReject} disabled={!rejectReason.trim()}>✕ ยืนยันไม่อนุมัติ</button>
+              <button className="btn btn-secondary" disabled={processingDecision} onClick={() => setShowRejectModal(false)}>ยกเลิก</button>
+              <button className="btn btn-danger" aria-busy={processingDecision} onClick={handleReject} disabled={!rejectReason.trim() || processingDecision}><BusyLabel busy={processingDecision} label="กำลังส่งกลับ…">✕ ยืนยันไม่อนุมัติ</BusyLabel></button>
             </div>
           </div>
         </Modal>
       )}
+
+      {historyOpen && createPortal(
+        <div style={{ position: 'fixed', inset: 0, zIndex: 70, display: 'flex', justifyContent: 'flex-end', background: 'rgba(28, 21, 46, 0.22)' }} onMouseDown={() => setHistoryOpen(false)}>
+          <aside role="dialog" aria-modal="true" aria-label="ประวัติฉบับเงินเดือน" onMouseDown={event => event.stopPropagation()} style={{ width: 'min(390px, 100%)', height: '100%', background: '#FFFFFF', boxShadow: '-14px 0 36px rgba(36, 25, 66, 0.18)', padding: 22, overflowY: 'auto' }}>
+            <div className="flex justify-between items-start gap-3" style={{ paddingBottom: 15, borderBottom: '1px solid var(--border)' }}>
+              <div><div style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 700 }}>ประวัติฉบับเงินเดือน</div><div style={{ marginTop: 3, color: 'var(--text-secondary)', fontSize: 12.5 }}>{dept.department} · {periodLabel(period)}</div></div>
+              <button className="btn btn-ghost btn-sm" aria-label="ปิด" onClick={() => setHistoryOpen(false)}>✕</button>
+            </div>
+            {historyLoading ? <div className="flex items-center gap-2" style={{ padding: '26px 0', color: 'var(--purple-600)', fontSize: 13, fontWeight: 600 }}><span className="btn-spinner" />กำลังโหลดประวัติ…</div>
+              : historyError ? <div style={{ padding: '22px 0', color: '#B42318', fontSize: 13 }}>{historyError}</div>
+              : <div style={{ position: 'relative', marginTop: 20, paddingLeft: 25 }}>
+                <div style={{ position: 'absolute', left: 6, top: 7, bottom: 23, width: 2, background: '#E3DDF7' }} />
+                {historyBatches.map(batch => {
+                  const isCurrent = batch.databaseId === dept.databaseId
+                  const isOldVersion = !isCurrent
+                  return <div key={batch.id} style={{ position: 'relative', paddingBottom: 18 }}>
+                    <span style={{ position: 'absolute', left: -23, top: 6, width: 12, height: 12, borderRadius: '50%', border: `3px solid ${isCurrent ? '#7651DC' : '#A8A5B3'}`, background: '#FFF' }} />
+                    <div style={{ border: `1px solid ${isCurrent ? '#D6C7FF' : '#E5E3EB'}`, background: isCurrent ? '#F7F4FF' : '#FFF', borderRadius: 10, padding: 12 }}>
+                      <div className="flex justify-between gap-2"><strong style={{ fontSize: 13 }}>{isCurrent ? `ฉบับปัจจุบัน · ครั้งที่ ${batch.revisionNumber ?? 0}` : batch.revisionNumber ? `ฉบับแก้ไข ครั้งที่ ${batch.revisionNumber}` : 'ฉบับเดิม · รอบปกติ'}</strong><StatusBadge s={batch.status} /></div>
+                      {batch.revisionType && <div style={{ marginTop: 7, fontSize: 12, color: 'var(--text-secondary)' }}>{batch.revisionType}</div>}
+                      {batch.revisionReason && <div style={{ marginTop: 3, fontSize: 12, color: 'var(--text-secondary)' }}>เหตุผล: {batch.revisionReason}</div>}
+                      <div style={{ marginTop: 7, fontSize: 11.5, color: 'var(--text-muted)' }}>{batch.approvedAt ? `อนุมัติ ${formatBuddhistDateTime(batch.approvedAt)}` : `สร้าง ${formatBuddhistDateTime(batch.updatedAt)}`}</div>
+                      {isOldVersion && <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 10 }} onClick={() => { setHistoricBatch(batch); setHistoryOpen(false) }}>ดูตารางฉบับนี้</button>}
+                    </div>
+                  </div>
+                })}
+              </div>}
+          </aside>
+        </div>, document.body
+      )}
     </div>
   )
+}
+
+function HistoricPayrollView({ period, dept, onBack }: { period: PayrollPeriod; dept: DeptPayroll; onBack: () => void }) {
+  const employees = useMemo(() => deptEmps(dept), [dept])
+  const totals = useMemo(() => deptTotals(dept), [dept])
+  const entries = employees.map(employee => ({ employee, row: dept.rows[employee.id] ?? makeDefaultRow(employee) }))
+  const print = () => {
+    if (!printPayrollTemplateExact({ period, department: dept.department, status: dept.status, entries })) window.alert('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up')
+  }
+  return <div className="anim">
+    <button type="button" onClick={onBack} style={{ border: 0, background: 'transparent', color: '#4A3A78', cursor: 'pointer', fontSize: 14, fontWeight: 700, padding: '2px 0', display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 14 }}><span style={{ fontSize: 20, lineHeight: 1 }}>←</span>กลับไปฉบับปัจจุบัน</button>
+    <PageHeader title={`${dept.department} · ฉบับเดิม`} subtitle={`${periodLabel(period)} · ${dept.approvedAt ? `อนุมัติเมื่อ ${formatBuddhistDateTime(dept.approvedAt)}` : `สร้างเมื่อ ${formatBuddhistDateTime(dept.updatedAt)}`}`} breadcrumb={<Crumb items={[{ label: 'อนุมัติเงินเดือน' }, { label: 'ประวัติฉบับเงินเดือน' }]} />} actions={<StatusBadge s={dept.status} />} />
+    <div style={{ background: '#F6F3FF', border: '1px solid #D9CBFF', borderRadius: 'var(--radius-sm)', padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#4D3A78' }}><strong>{(dept.revisionNumber ?? 0) === 0 ? 'รอบปกติ (ฉบับเดิม)' : `ฉบับแก้ไขเพิ่มเติม ครั้งที่ ${dept.revisionNumber}`}</strong><br />ข้อมูลฉบับนี้เป็นประวัติ เปิดดู พิมพ์ และส่งออกได้เท่านั้น ไม่สามารถแก้ไขได้</div>
+    <div className="card" style={{ padding: '12px 14px', marginBottom: 16 }}><div className="flex justify-between items-center gap-3 flex-wrap"><span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>👥 {employees.length} คน · ข้อมูล ณ เวลาของฉบับนี้</span><div className="flex gap-2"><button className="btn btn-secondary" onClick={print}>🖨️ พิมพ์ตาราง</button><button className="btn btn-secondary" onClick={() => exportPayrollWorkbook({ period, department: dept.department, entries })}>📥 ส่งออก Excel</button></div></div></div>
+    <div className="card" style={{ padding: 0, overflow: 'auto', maxHeight: 'calc(100vh - 310px)' }}><table className="tbl payroll-detail-table" style={{ minWidth: 1200 }}><thead><tr><th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th><th colSpan={3} className="th-group th-group-income">รายการรับ</th><th colSpan={7} className="th-group th-group-deduct">รายการหัก</th><th className="th-group th-group-net">ยอดรับสุทธิ</th></tr><tr><th className="th-emp">#</th><th className="th-emp">รหัส</th><th className="th-emp">ชื่อ–นามสกุล</th><th className="th-emp">ตำแหน่ง</th><th className="th-emp" style={{ textAlign: 'right' }}>ฐานเงินเดือน</th><th className="th-income" style={{ textAlign: 'right' }}>เงินเพิ่ม</th><th className="th-income" style={{ textAlign: 'right' }}>เงินประจำตำแหน่ง</th><th className="th-income" style={{ textAlign: 'right' }}>รวมรายการรับ</th><th className="th-deduct" style={{ textAlign: 'right' }}>ชำระหนี้ KTB</th><th className="th-deduct" style={{ textAlign: 'right' }}>ภาษีหัก ณ ที่จ่าย</th><th className="th-deduct" style={{ textAlign: 'right' }}>ประกันสังคม</th><th className="th-deduct" style={{ textAlign: 'right' }}>ฌาปนกิจ</th><th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารกรุงไทย</th><th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารออมสิน</th><th className="th-deduct" style={{ textAlign: 'right' }}>รวมรายการหัก</th><th className="th-net" style={{ textAlign: 'right' }}>ยอดรับสุทธิ</th></tr></thead><tbody>{employees.map((employee, index) => { const row = dept.rows[employee.id] ?? makeDefaultRow(employee); return <tr key={employee.id}><td className="readonly" style={{ textAlign: 'center' }}>{index + 1}</td><td className="readonly">{employee.id}</td><td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{employee.title}{employee.firstName} {employee.lastName}</td><td className="readonly">{employee.position}</td><td className="num readonly">{thb(employee.baseSalary)}</td><td className="num readonly">{thb(row.extra)}</td><td className="num readonly">{thb(row.posAllowance)}</td><td className="num total" style={{ background: '#F0FDF4', color: '#15803D' }}>{thb(rowGross(employee, row))}</td><td className="num readonly">{thb(row.debtKTB)}</td><td className="num readonly">{thb(row.tax)}</td><td className="num readonly">{thb(row.social)}</td><td className="num readonly">{thb(row.funeral)}</td><td className="num readonly">{thb(row.ktb)}</td><td className="num readonly">{thb(row.gsb)}</td><td className="num total" style={{ background: '#FFF8F6', color: '#B91C1C' }}>{thb(rowDeduct(row))}</td><td className="num total" style={{ background: '#F5F3FF', color: 'var(--purple-600)' }}>{thb(rowNet(employee, row))}</td></tr> })}</tbody><tfoot><tr><td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td><td className="num">{thb(totals.totalBase)}</td><td className="num">{thb(totals.totalExtra)}</td><td className="num">{thb(totals.totalPos)}</td><td className="num" style={{ color: '#15803D' }}>{thb(totals.totalGross)}</td><td className="num">{thb(totals.totalDebtKTB)}</td><td className="num">{thb(totals.totalTax)}</td><td className="num">{thb(totals.totalSocial)}</td><td className="num">{thb(totals.totalFuneral)}</td><td className="num">{thb(totals.totalKTB)}</td><td className="num">{thb(totals.totalGSB)}</td><td className="num" style={{ color: '#B91C1C' }}>{thb(totals.totalDeduct)}</td><td className="num" style={{ color: 'var(--purple-600)' }}>{thb(totals.totalNet)}</td></tr></tfoot></table></div>
+  </div>
 }
 
 // ─── Employees ────────────────────────────────────────────────────────────────
@@ -2565,7 +2710,7 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
   role: Role
   setPage: (page: Page) => void
   setEditEmpId: (id: number | null) => void
-  onChanged: () => Promise<void>
+  onChanged: (employeeId: number) => void
   showToast: (message: string, type?: 'success' | 'error') => void
 }) {
   const [search, setSearch] = useState('')
@@ -2612,7 +2757,9 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
       setDeactivating(true)
       setDeactivateError('')
       await deactivateEmployee(employeeToDeactivate.id)
-      await onChanged()
+      // The API has committed at this point.  Update the visible directory
+      // immediately instead of making the user wait for another full GET.
+      onChanged(employeeToDeactivate.id)
       showToast(`ลบ ${employeeToDeactivate.first_name} ${employeeToDeactivate.last_name} ออกจากรายการพนักงานแล้ว`, 'success')
       setEmployeeToDeactivate(null)
     } catch (deactivateFailure) {
@@ -2724,7 +2871,7 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
             {deactivateError && <div style={{ color: '#B42318', fontSize: 13 }}>{deactivateError}</div>}
             <div className="flex justify-end gap-3">
               <button className="btn btn-secondary" disabled={deactivating} onClick={() => setEmployeeToDeactivate(null)}>ยกเลิก</button>
-              <button className="btn btn-danger" disabled={deactivating} onClick={handleDeactivate}>{deactivating ? 'กำลังลบ...' : 'ลบข้อมูลพนักงาน'}</button>
+              <button className="btn btn-danger" aria-busy={deactivating} disabled={deactivating} onClick={handleDeactivate}><BusyLabel busy={deactivating} label="กำลังลบ…">ลบข้อมูลพนักงาน</BusyLabel></button>
             </div>
           </div>
         </Modal>
@@ -2743,7 +2890,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
   positions: Position[]
   setPage: (p: Page) => void
   showToast: (msg: string, t?: 'success' | 'error') => void
-  onSaved: (optimisticEmployee?: DatabaseEmployee) => Promise<void>
+  onSaved: (optimisticEmployee: DatabaseEmployee, createdPosition?: Position) => void
 }) {
   const emp = empId ? employees.find(employee => employee.id === empId) : null
   const initialPrefix = emp?.prefix ?? ''
@@ -2824,7 +2971,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
         created_at: emp?.created_at ?? savedAt,
         updated_at: savedAt,
       }
-      void onSaved(optimisticEmployee)
+      onSaved(optimisticEmployee, resolvedPosition && !existingPosition ? resolvedPosition : undefined)
       showToast(empId ? 'อัปเดตข้อมูลพนักงานแล้ว' : 'เพิ่มพนักงานใหม่แล้ว', 'success')
       setPage('employees')
     } catch (error) {
@@ -2909,7 +3056,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
         {saveError && <div style={{ marginTop: 16, padding: 12, borderRadius: 10, background: '#FEF3F2', color: '#B42318', fontSize: 13 }}>{saveError}</div>}
         <div className="flex gap-3 justify-end mt-8">
           <button className="btn btn-secondary" onClick={() => setPage('employees')}>ยกเลิก</button>
-          <button className="btn btn-primary" onClick={handleSave} disabled={saving}>{saving ? 'กำลังบันทึก...' : 'บันทึก'}</button>
+          <button className="btn btn-primary" aria-busy={saving} onClick={handleSave} disabled={saving}><BusyLabel busy={saving} label="กำลังบันทึก…">บันทึก</BusyLabel></button>
         </div>
       </div>
     </div>
@@ -3006,9 +3153,10 @@ function BuddhistDateInput({ value, onChange, required = false }: { value: strin
 
 // ─── Payslip Status ───────────────────────────────────────────────────────────
 
-function PayslipStatus({ periods, onReload, showToast, onManageEmployees }: {
+function PayslipStatus({ periods, onReload, onEmployeeEmailUpdated, showToast, onManageEmployees }: {
   periods: PayrollPeriod[]
   onReload: () => Promise<void>
+  onEmployeeEmailUpdated: (employeeId: number, email: string) => void
   showToast: (message: string, type?: 'success' | 'error' | 'info') => void
   onManageEmployees: () => void
 }) {
@@ -3017,6 +3165,9 @@ function PayslipStatus({ periods, onReload, showToast, onManageEmployees }: {
   const [bulkSending, setBulkSending] = useState(false)
   const [bulkProgress, setBulkProgress] = useState(0)
   const [bulkTarget, setBulkTarget] = useState<{ periodLabel: string; rows: PayslipDeliveryRow[]; missingEmailCount: number } | null>(null)
+  const [editingEmailCode, setEditingEmailCode] = useState<string | null>(null)
+  const [emailDraft, setEmailDraft] = useState('')
+  const [savingEmailCode, setSavingEmailCode] = useState<string | null>(null)
   const approvedDepts = useMemo(() =>
     periods.flatMap(p => p.depts.filter(d => d.status === 'approved').map(d => ({ period: p, dept: d }))),
     [periods]
@@ -3054,12 +3205,15 @@ function PayslipStatus({ periods, onReload, showToast, onManageEmployees }: {
         }
         setBulkProgress(index + 1)
       }
-      await onReload()
       setShowBulkSendModal(false)
       setBulkTarget(null)
       showToast(failed > 0
         ? `ส่งสำเร็จ ${sent} ราย และส่งไม่สำเร็จ ${failed} ราย`
         : `ส่งสลิปสำเร็จ ${sent} ราย`, failed > 0 ? 'error' : 'success')
+      // SMTP has already completed.  Refresh delivery badges in the background
+      // so the success message and controls do not feel stalled by a second
+      // full bootstrap request.
+      void onReload().catch(() => undefined)
     } finally {
       setBulkSending(false)
     }
@@ -3125,10 +3279,10 @@ function PayslipStatus({ periods, onReload, showToast, onManageEmployees }: {
                     try {
                       const { recipient } = await sendPayslipEmail(payrollItemId)
                       showToast(`ส่งสลิปไปที่ ${recipient} แล้ว`, 'success')
-                      await onReload()
+                      void onReload().catch(() => undefined)
                     } catch (error) {
                       showToast(error instanceof Error ? error.message : 'ส่งอีเมลไม่สำเร็จ', 'error')
-                      await onReload()
+                      void onReload().catch(() => undefined)
                     } finally {
                       setSendingId(null)
                     }
@@ -3153,11 +3307,32 @@ function PayslipStatus({ periods, onReload, showToast, onManageEmployees }: {
                       showToast(error instanceof Error ? error.message : 'โหลดสลิปไม่สำเร็จ', 'error')
                     }
                   }
+                  const editingEmail = editingEmailCode === e.id
+                  const saveEmail = async () => {
+                    const nextEmail = emailDraft.trim()
+                    if (!e.databaseId) { showToast('ไม่พบรหัสพนักงานสำหรับบันทึกอีเมล', 'error'); return }
+                    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) { showToast('กรุณากรอกอีเมลให้ถูกต้องก่อนบันทึก', 'error'); return }
+                    setSavingEmailCode(e.id)
+                    try {
+                      await updateEmployeeEmail(e.databaseId, nextEmail)
+                      onEmployeeEmailUpdated(e.databaseId, nextEmail)
+                      setEditingEmailCode(null)
+                      setEmailDraft('')
+                      showToast('บันทึกอีเมลพนักงานแล้ว', 'success')
+                    } catch (error) {
+                      showToast(error instanceof Error ? error.message : 'บันทึกอีเมลไม่สำเร็จ', 'error')
+                    } finally {
+                      setSavingEmailCode(null)
+                    }
+                  }
                   return (
                     <tr key={e.id}>
                       <td style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{e.id}</td>
                       <td>{e.title}{e.firstName} {e.lastName}</td>
-                      <td style={{ fontSize: 12, color: e.email?.trim() ? 'var(--text-secondary)' : '#B45309', fontWeight: e.email?.trim() ? 400 : 600 }}>{e.email?.trim() || '⚠️ ยังไม่มีอีเมล'}</td>
+                      <td style={{ fontSize: 12, color: e.email?.trim() ? 'var(--text-secondary)' : '#B45309', fontWeight: e.email?.trim() ? 400 : 600, minWidth: 250 }}>
+                        {editingEmail ? <div className="flex items-center gap-1" style={{ minWidth: 228 }}><input className="inp" autoFocus type="email" value={emailDraft} onChange={event => setEmailDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void saveEmail(); if (event.key === 'Escape') { setEditingEmailCode(null); setEmailDraft('') } }} style={{ height: 32, minWidth: 0, padding: '6px 9px', fontSize: 12 }} /><button className="btn btn-primary btn-xs" aria-busy={savingEmailCode === e.id} disabled={savingEmailCode === e.id} onClick={() => void saveEmail()}><BusyLabel busy={savingEmailCode === e.id} label="กำลังบันทึก…">บันทึก</BusyLabel></button></div>
+                          : <div className="flex items-center gap-1"><span>{e.email?.trim() || '⚠️ ยังไม่มีอีเมล'}</span><button type="button" aria-label={`แก้ไขอีเมล ${e.firstName} ${e.lastName}`} title="แก้ไขอีเมล" onClick={() => { setEditingEmailCode(e.id); setEmailDraft(e.email ?? '') }} style={{ border: 0, background: 'transparent', color: '#161616', cursor: 'pointer', padding: 3, display: 'inline-grid', placeItems: 'center' }}><PencilIcon /></button></div>}
+                      </td>
                       <td><span className="badge badge-approved">✓ สร้างแล้ว</span></td>
                       <td><span className={`badge ${es === 'sent' ? 'badge-approved' : es === 'failed' ? 'badge-rejected' : 'badge-pending'}`}>{es === 'sent' ? '✓ ส่งสำเร็จ' : es === 'failed' ? '✕ ส่งไม่สำเร็จ' : '◔ รอส่ง'}</span></td>
                       <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{sentAt ? formatBuddhistDateTime(sentAt) : '–'}</td>
@@ -3165,7 +3340,7 @@ function PayslipStatus({ periods, onReload, showToast, onManageEmployees }: {
                         <div className="flex gap-1">
                           {payrollItemId && <button className="btn btn-ghost btn-xs" onClick={() => openPayslip()}>ดูสลิป</button>}
                           {payrollItemId && <button className="btn btn-ghost btn-xs" onClick={() => openPayslip(true)}>⬇ PDF</button>}
-                          {e.email?.trim() && payrollItemId && <button className="btn btn-secondary btn-xs" disabled={sendingId === payrollItemId} onClick={sendEmail}>{sendingId === payrollItemId ? 'กำลังส่ง…' : es === 'sent' ? 'ส่งอีกครั้ง' : es === 'failed' ? 'ส่งซ้ำ' : 'ส่งอีเมล'}</button>}
+                          {e.email?.trim() && payrollItemId && <button className="btn btn-secondary btn-xs" aria-busy={sendingId === payrollItemId} disabled={sendingId === payrollItemId} onClick={sendEmail}><BusyLabel busy={sendingId === payrollItemId} label="กำลังส่ง…">{es === 'sent' ? 'ส่งอีกครั้ง' : es === 'failed' ? 'ส่งซ้ำ' : 'ส่งอีเมล'}</BusyLabel></button>}
                           {!e.email?.trim() && <button className="btn btn-secondary btn-xs" onClick={onManageEmployees}>เพิ่มอีเมล</button>}
                         </div>
                       </td>
@@ -3191,7 +3366,7 @@ function PayslipStatus({ periods, onReload, showToast, onManageEmployees }: {
             {bulkSending && <div style={{ fontSize: 13, color: 'var(--purple-600)', fontWeight: 600 }}>กำลังส่ง {bulkProgress}/{bulkTarget?.rows.length ?? 0} ราย…</div>}
             <div className="flex gap-3 justify-end">
               <button className="btn btn-secondary" disabled={bulkSending} onClick={() => { setShowBulkSendModal(false); setBulkTarget(null) }}>ยกเลิก</button>
-              <button className="btn btn-primary" disabled={bulkSending} onClick={() => void sendAllPending()}>{bulkSending ? 'กำลังส่ง…' : 'ยืนยันส่งอีเมล'}</button>
+              <button className="btn btn-primary" aria-busy={bulkSending} disabled={bulkSending} onClick={() => void sendAllPending()}><BusyLabel busy={bulkSending} label="กำลังส่ง…">ยืนยันส่งอีเมล</BusyLabel></button>
             </div>
           </div>
         </Modal>
@@ -3293,27 +3468,34 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
   const [rejectionReason, setRejectionReason] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<SystemUser | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [creatingUser, setCreatingUser] = useState(false)
+  const [creatingInvite, setCreatingInvite] = useState(false)
+  const [reviewingRequest, setReviewingRequest] = useState(false)
+  const [deactivatingAccountId, setDeactivatingAccountId] = useState<number | null>(null)
   const load = useCallback(async () => { try { setUsers(await getUsers()) } catch (error) { showToast(error instanceof Error ? error.message : 'โหลดบัญชีไม่สำเร็จ', 'error') } }, [showToast])
   const loadRequests = useCallback(async () => { try { setAccessRequests(await getAccessRequests()) } catch (error) { showToast(error instanceof Error ? error.message : 'โหลดคำขอไม่สำเร็จ', 'error') } }, [showToast])
   useEffect(() => { void load(); void loadRequests() }, [load, loadRequests])
-  const create = async () => { try { await createSystemUser({ username, temporary_password: temporaryPassword, employee_id: Number(employeeId), role: newRole }); showToast('สร้างบัญชีผู้ใช้งานแล้ว', 'success'); setShowCreate(false); setUsername(''); setTemporaryPassword(''); setEmployeeId(''); await load() } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างบัญชีไม่สำเร็จ', 'error') } }
+  const create = async () => { if (creatingUser) return; setCreatingUser(true); try { await createSystemUser({ username, temporary_password: temporaryPassword, employee_id: Number(employeeId), role: newRole }); showToast('สร้างบัญชีผู้ใช้งานแล้ว', 'success'); setShowCreate(false); setUsername(''); setTemporaryPassword(''); setEmployeeId(''); void load() } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างบัญชีไม่สำเร็จ', 'error') } finally { setCreatingUser(false) } }
   const reset = async (user: SystemUser) => { const password = window.prompt(`กำหนดรหัสผ่านชั่วคราวใหม่สำหรับ ${user.username} (อย่างน้อย 8 ตัวอักษร)`); if (!password) return; try { await resetSystemUserPassword(user.id, password); showToast('รีเซ็ตรหัสผ่านแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'รีเซ็ตรหัสผ่านไม่สำเร็จ', 'error') } }
-  const createInvite = async () => { try { const result = await createUserInvite(inviteEmail, inviteRole); setInviteUrl(result.data.invite_url); showToast('สร้างลิงก์คำเชิญแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างคำเชิญไม่สำเร็จ', 'error') } }
-  const approveRequest = async () => { if (!approvalRequest) return; try { await approveAccessRequest(approvalRequest.id, approvalRole); showToast('อนุมัติและเปิดใช้งานบัญชีแล้ว', 'success'); setApprovalRequest(null); await Promise.all([load(), loadRequests()]) } catch (error) { showToast(error instanceof Error ? error.message : 'อนุมัติไม่สำเร็จ', 'error') } }
-  const rejectRequest = async () => { if (!approvalRequest) return; try { await rejectAccessRequest(approvalRequest.id, rejectionReason); showToast('ไม่อนุมัติสิทธิ์และปิดคำขอแล้ว', 'success'); setApprovalRequest(null); setRejectMode(false); setRejectionReason(''); await loadRequests() } catch (error) { showToast(error instanceof Error ? error.message : 'ไม่สามารถปิดคำขอได้', 'error') } }
+  const createInvite = async () => { if (creatingInvite) return; setCreatingInvite(true); try { const result = await createUserInvite(inviteEmail, inviteRole); setInviteUrl(result.data.invite_url); showToast('สร้างลิงก์คำเชิญแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างคำเชิญไม่สำเร็จ', 'error') } finally { setCreatingInvite(false) } }
+  const approveRequest = async () => { if (!approvalRequest || reviewingRequest) return; setReviewingRequest(true); try { await approveAccessRequest(approvalRequest.id, approvalRole); showToast('อนุมัติและเปิดใช้งานบัญชีแล้ว', 'success'); setApprovalRequest(null); void Promise.all([load(), loadRequests()]) } catch (error) { showToast(error instanceof Error ? error.message : 'อนุมัติไม่สำเร็จ', 'error') } finally { setReviewingRequest(false) } }
+  const rejectRequest = async () => { if (!approvalRequest || reviewingRequest) return; setReviewingRequest(true); try { await rejectAccessRequest(approvalRequest.id, rejectionReason); setAccessRequests(current => current.filter(request => request.id !== approvalRequest.id)); showToast('ไม่อนุมัติสิทธิ์และปิดคำขอแล้ว', 'success'); setApprovalRequest(null); setRejectMode(false); setRejectionReason('') } catch (error) { showToast(error instanceof Error ? error.message : 'ไม่สามารถปิดคำขอได้', 'error') } finally { setReviewingRequest(false) } }
   const openApproval = (request: AccessRequest) => { setApprovalRequest(request); setApprovalRole(request.requested_role); setRejectMode(false); setRejectionReason('') }
   const revealPassword = async (requestId: number) => { try { const password = await revealAccessRequestPassword(requestId); setRevealedPasswords(current => ({ ...current, [requestId]: password })) } catch (error) { showToast(error instanceof Error ? error.message : 'ไม่สามารถแสดงรหัสผ่านได้', 'error') } }
   const hidePassword = (requestId: number) => setRevealedPasswords(current => { const next = { ...current }; delete next[requestId]; return next })
   const deleteAccount = async () => {
     if (!deleteTarget) return
     setDeleting(true)
-    try { await deleteSystemUser(deleteTarget.id); showToast(`ลบบัญชี ${deleteTarget.username} และข้อมูลพนักงานแล้ว`, 'success'); setDeleteTarget(null); await load() }
+    try { await deleteSystemUser(deleteTarget.id); setUsers(current => current.filter(user => user.id !== deleteTarget.id)); showToast(`ลบบัญชี ${deleteTarget.username} และข้อมูลพนักงานแล้ว`, 'success'); setDeleteTarget(null) }
     catch (error) { showToast(error instanceof Error ? error.message : 'ลบบัญชีไม่สำเร็จ', 'error') }
     finally { setDeleting(false) }
   }
   const deactivateAccount = async (target: SystemUser) => {
-    try { await deactivateSystemUser(target.id); showToast(`ปิดการใช้งานบัญชี ${target.username} แล้ว`, 'success'); await load() }
+    if (deactivatingAccountId) return
+    setDeactivatingAccountId(target.id)
+    try { await deactivateSystemUser(target.id); setUsers(current => current.map(user => user.id === target.id ? { ...user, is_active: false } : user)); showToast(`ปิดการใช้งานบัญชี ${target.username} แล้ว`, 'success') }
     catch (error) { showToast(error instanceof Error ? error.message : 'ปิดการใช้งานบัญชีไม่สำเร็จ', 'error') }
+    finally { setDeactivatingAccountId(null) }
   }
   const linkedEmployeeIds = new Set(users.map(user => user.employee_id).filter((id): id is number => id !== null))
   return (
@@ -3335,13 +3517,13 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
                     <button className="btn btn-ghost btn-xs" onClick={() => void reset(u)}>รีเซ็ตรหัสผ่าน</button>
                   </div>
                 </td>
-                <td><div className="flex gap-1"><button className="btn btn-secondary btn-xs" disabled={!u.is_active} onClick={() => void deactivateAccount(u)}>ปิดการใช้งาน</button><button className="btn btn-danger btn-xs" onClick={() => setDeleteTarget(u)}>ลบบัญชี</button></div></td>
+                <td><div className="flex gap-1"><button className="btn btn-secondary btn-xs" aria-busy={deactivatingAccountId === u.id} disabled={!u.is_active || deactivatingAccountId !== null} onClick={() => void deactivateAccount(u)}><BusyLabel busy={deactivatingAccountId === u.id} label="กำลังปิด…">ปิดการใช้งาน</BusyLabel></button><button className="btn btn-danger btn-xs" disabled={deactivatingAccountId !== null} onClick={() => setDeleteTarget(u)}>ลบบัญชี</button></div></td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      {deleteTarget && <Modal title="ยืนยันการลบบัญชี" onClose={() => !deleting && setDeleteTarget(null)}><div className="flex flex-col gap-4"><div style={{ background: '#FFF1F0', border: '1px solid #F7B6B2', borderRadius: 10, padding: '14px 16px', color: '#9F1D17', lineHeight: 1.65 }}><strong>คำเตือน: การดำเนินการนี้ไม่สามารถย้อนกลับได้</strong><br />ระบบจะลบข้อมูลล็อกอินของ <strong>{deleteTarget.username}</strong>, ข้อมูลพนักงาน <strong>{deleteTarget.full_name}</strong>, รายการเงินเดือน, สลิป และสถานะการส่งอีเมลที่เกี่ยวข้อง ออกจากฐานข้อมูลโดยถาวร</div><div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>เมื่อยืนยันแล้ว ระบบจะถือว่าไม่เคยมีบัญชีนี้อยู่ในระบบ</div><div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={deleting} onClick={() => setDeleteTarget(null)}>ยกเลิก</button><button className="btn btn-danger" disabled={deleting} onClick={() => void deleteAccount()}>{deleting ? 'กำลังลบ…' : 'ยืนยันลบถาวร'}</button></div></div></Modal>}
+      {deleteTarget && <Modal title="ยืนยันการลบบัญชี" onClose={() => !deleting && setDeleteTarget(null)}><div className="flex flex-col gap-4"><div style={{ background: '#FFF1F0', border: '1px solid #F7B6B2', borderRadius: 10, padding: '14px 16px', color: '#9F1D17', lineHeight: 1.65 }}><strong>คำเตือน: การดำเนินการนี้ไม่สามารถย้อนกลับได้</strong><br />ระบบจะลบข้อมูลล็อกอินของ <strong>{deleteTarget.username}</strong>, ข้อมูลพนักงาน <strong>{deleteTarget.full_name}</strong>, รายการเงินเดือน, สลิป และสถานะการส่งอีเมลที่เกี่ยวข้อง ออกจากฐานข้อมูลโดยถาวร</div><div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>เมื่อยืนยันแล้ว ระบบจะถือว่าไม่เคยมีบัญชีนี้อยู่ในระบบ</div><div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={deleting} onClick={() => setDeleteTarget(null)}>ยกเลิก</button><button className="btn btn-danger" aria-busy={deleting} disabled={deleting} onClick={() => void deleteAccount()}><BusyLabel busy={deleting} label="กำลังลบ…">ยืนยันลบถาวร</BusyLabel></button></div></div></Modal>}
       {accessRequests.filter(request => request.status === 'PENDING').length > 0 && <div className="card" style={{ padding: 0, overflow: 'hidden', marginTop: 20 }}><div style={{ padding: '15px 18px', fontWeight: 700 }}>คำขอเข้าใช้งานที่รอตรวจสอบ</div><table className="tbl"><thead><tr><th>ผู้ขอ</th><th>ชื่อผู้ใช้</th><th>รหัสผ่านที่ตั้งตอนสมัคร</th><th>สิทธิ์ที่ขอ</th><th>ดำเนินการ</th></tr></thead><tbody>{accessRequests.filter(request => request.status === 'PENDING').map(request => <tr key={request.id}><td><strong>{String(request.employee_data.prefix ?? '')}{String(request.employee_data.first_name ?? '')} {String(request.employee_data.last_name ?? '')}</strong><div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{request.invited_email}</div></td><td style={{ fontFamily: 'monospace' }}>{request.username}</td><td><span style={{ fontFamily: 'monospace' }}>{revealedPasswords[request.id] ?? '••••••••'}</span><button aria-label="กดค้างเพื่อดูรหัสผ่าน" title="กดค้างเพื่อดูรหัสผ่าน" className="btn btn-ghost btn-xs" style={{ marginLeft: 5, padding: '3px 5px', color: '#625B72' }} onMouseDown={() => void revealPassword(request.id)} onMouseUp={() => hidePassword(request.id)} onMouseLeave={() => hidePassword(request.id)} onTouchStart={() => void revealPassword(request.id)} onTouchEnd={() => hidePassword(request.id)}><EyeIcon /></button></td><td>{roleLabel[request.requested_role]}</td><td><button className="btn btn-primary btn-xs" onClick={() => openApproval(request)}>ตรวจสอบและอนุมัติ</button></td></tr>)}</tbody></table></div>}
       {approvalRequest && <Modal title={rejectMode ? 'ไม่อนุมัติสิทธิ์' : 'ตรวจสอบและอนุมัติ'} onClose={() => setApprovalRequest(null)}><div className="flex flex-col gap-4"><div style={{ padding: '10px 12px', background: rejectMode ? '#FFF4F2' : '#F7F4FF', borderRadius: 10, fontSize: 13 }}><strong>{String(approvalRequest.employee_data.prefix ?? '')}{String(approvalRequest.employee_data.first_name ?? '')} {String(approvalRequest.employee_data.last_name ?? '')}</strong><br /><span style={{ color: 'var(--text-secondary)' }}>{approvalRequest.username} · {approvalRequest.invited_email}</span></div>{rejectMode ? <><FormField label="เหตุผล (ไม่บังคับ)"><textarea className="inp" value={rejectionReason} onChange={event => setRejectionReason(event.target.value)} rows={3} placeholder="ระบุเหตุผลที่ไม่อนุมัติ" /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setRejectMode(false)}>กลับ</button><button className="btn btn-danger" onClick={() => void rejectRequest()}>ไม่อนุมัติและปิดคำขอ</button></div></> : <><FormField label="กำหนดสิทธิ์เป็น :" required><select className="inp" value={approvalRole} onChange={event => setApprovalRole(event.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้อำนวยการ</option><option value="admin">แอดมิน</option></select></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setApprovalRequest(null)}>ยกเลิก</button><button className="btn btn-danger" onClick={() => setRejectMode(true)}>ไม่อนุมัติสิทธิ์</button><button className="btn btn-primary" onClick={() => void approveRequest()}>อนุมัติและเปิดใช้งาน</button></div></>}</div></Modal>}
       {showCreate && <Modal title="เพิ่มผู้ใช้งาน" onClose={() => setShowCreate(false)}><div className="flex flex-col gap-4">
@@ -3350,9 +3532,9 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
         <FormField label="ชื่อผู้ใช้" required><input className="inp" value={username} onChange={e => setUsername(e.target.value)} /></FormField>
         <FormField label="รหัสผ่านชั่วคราว (อย่างน้อย 8 ตัวอักษร)" required><input className="inp" type="password" value={temporaryPassword} onChange={e => setTemporaryPassword(e.target.value)} /></FormField>
         <FormField label="สิทธิ์" required><select className="inp" value={newRole} onChange={e => setNewRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้อำนวยการ</option><option value="admin">แอดมิน</option></select></FormField>
-        <div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setShowCreate(false)}>ยกเลิก</button><button className="btn btn-primary" disabled={!employeeId || username.trim().length < 3 || temporaryPassword.length < 8} onClick={() => void create()}>บันทึกบัญชี</button></div>
+        <div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingUser} onClick={() => setShowCreate(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={creatingUser} disabled={!employeeId || username.trim().length < 3 || temporaryPassword.length < 8 || creatingUser} onClick={() => void create()}><BusyLabel busy={creatingUser} label="กำลังบันทึก…">บันทึกบัญชี</BusyLabel></button></div>
       </div></Modal>}
-      {showInvite && <Modal title="สร้างคำเชิญเข้าใช้" onClose={() => setShowInvite(false)}><div className="flex flex-col gap-4"><div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>ผู้รับคำเชิญจะกรอกข้อมูลพนักงานและสร้างบัญชีเอง จากนั้นรอให้แอดมินอนุมัติ</div><FormField label="อีเมล" required><input className="inp" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} /></FormField><FormField label="สิทธิ์การใช้งานที่ต้องการ" required><select className="inp" value={inviteRole} onChange={e => setInviteRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้อำนวยการ</option><option value="admin">แอดมิน</option></select></FormField>{inviteUrl && <div style={{ background: '#F4F0FF', borderRadius: 10, padding: 12, wordBreak: 'break-all', fontSize: 12 }}><strong>ลิงก์คำเชิญ (ใช้ได้ 7 วัน)</strong><br />{inviteUrl}<br /><button className="btn btn-ghost btn-xs" style={{ marginTop: 7 }} onClick={() => navigator.clipboard.writeText(inviteUrl)}>คัดลอกลิงก์</button></div>}<div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setShowInvite(false)}>ปิด</button><button className="btn btn-primary" disabled={!inviteEmail} onClick={() => void createInvite()}>สร้างลิงก์คำเชิญ</button></div></div></Modal>}
+      {showInvite && <Modal title="สร้างคำเชิญเข้าใช้" onClose={() => !creatingInvite && setShowInvite(false)}><div className="flex flex-col gap-4"><div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>ผู้รับคำเชิญจะกรอกข้อมูลพนักงานและสร้างบัญชีเอง จากนั้นรอให้แอดมินอนุมัติ</div><FormField label="อีเมล" required><input className="inp" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} /></FormField><FormField label="สิทธิ์การใช้งานที่ต้องการ" required><select className="inp" value={inviteRole} onChange={e => setInviteRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้อำนวยการ</option><option value="admin">แอดมิน</option></select></FormField>{inviteUrl && <div style={{ background: '#F4F0FF', borderRadius: 10, padding: 12, wordBreak: 'break-all', fontSize: 12 }}><strong>ลิงก์คำเชิญ (ใช้ได้ 7 วัน)</strong><br />{inviteUrl}<br /><button className="btn btn-ghost btn-xs" style={{ marginTop: 7 }} onClick={() => navigator.clipboard.writeText(inviteUrl)}>คัดลอกลิงก์</button></div>}<div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingInvite} onClick={() => setShowInvite(false)}>ปิด</button><button className="btn btn-primary" aria-busy={creatingInvite} disabled={!inviteEmail || creatingInvite} onClick={() => void createInvite()}><BusyLabel busy={creatingInvite} label="กำลังสร้าง…">สร้างลิงก์คำเชิญ</BusyLabel></button></div></div></Modal>}
     </div>
   )
 }
@@ -3560,7 +3742,7 @@ function InvitePage({ token }: { token: string }) {
       <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลเงินเดือน</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16 }}>{field('base_salary','ฐานเงินเดือน (บาท)','number',true,{ min: 0, step: '0.01' })}{field('bank_name','ธนาคาร')}{field('bank_account_no','เลขบัญชีธนาคาร')}</div>
       <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>สร้างบัญชี</div><div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16 }}>{field('username','ชื่อผู้ใช้','text',true)}{passwordField('password','รหัสผ่าน',showPassword,setShowPassword)}{passwordField('confirm_password','ยืนยันรหัสผ่าน',showConfirmPassword,setShowConfirmPassword)}</div>
-      <button disabled={saving} type="submit" style={{ marginTop: 26, width: '100%', border: 0, borderRadius: 10, padding: 13, background: '#7C4DDB', color: 'white', fontWeight: 700, fontSize: 15 }}>{saving ? 'กำลังส่งคำขอ…' : 'ส่งคำขอให้แอดมินตรวจสอบ'}</button>
+      <button aria-busy={saving} disabled={saving} type="submit" style={{ marginTop: 26, width: '100%', border: 0, borderRadius: 10, padding: 13, background: '#7C4DDB', color: 'white', fontWeight: 700, fontSize: 15, display: 'inline-flex', justifyContent: 'center', alignItems: 'center', gap: 6, cursor: saving ? 'progress' : 'pointer' }}><BusyLabel busy={saving} label="กำลังส่งคำขอ…">ส่งคำขอให้แอดมินตรวจสอบ</BusyLabel></button>
     </form>}
   </div></div>
 }
@@ -3594,6 +3776,17 @@ export default function App() {
   const [toast, setToast] = useState<{ msg: string; type?: 'success' | 'error'; key: number } | null>(null)
   const toastKey = useRef(0)
 
+  const syncPayrollEmployeeEmails = useCallback((employees: DatabaseEmployee[]) => {
+    const emailByCode = new Map(employees.map(employee => [employee.employee_code, employee.email ?? '']))
+    setPeriods(current => current.map(period => ({
+      ...period,
+      depts: period.depts.map(department => ({
+        ...department,
+        employees: department.employees?.map(employee => ({ ...employee, email: emailByCode.get(employee.id) ?? employee.email })),
+      })),
+    })))
+  }, [])
+
   const reloadEmployeeDirectory = useCallback(async (optimisticEmployee?: DatabaseEmployee) => {
     if (optimisticEmployee) {
       setDatabaseEmployees(current => {
@@ -3606,6 +3799,42 @@ export default function App() {
     const [employeeData, positionData] = await Promise.all([getEmployees(), getPositions()])
     setDatabaseEmployees(employeeData)
     setPositions(positionData)
+    syncPayrollEmployeeEmails(employeeData)
+  }, [syncPayrollEmployeeEmails])
+
+  const updateEmailLocally = useCallback((employeeId: number, email: string) => {
+    setDatabaseEmployees(current => current.map(employee => employee.id === employeeId ? { ...employee, email } : employee))
+    setPeriods(current => current.map(period => ({
+      ...period,
+      depts: period.depts.map(department => ({
+        ...department,
+        employees: department.employees?.map(employee => employee.databaseId === employeeId ? { ...employee, email } : employee),
+      })),
+    })))
+  }, [])
+
+  const applyEmployeeSaved = useCallback((savedEmployee: DatabaseEmployee, createdPosition?: Position) => {
+    setDatabaseEmployees(current => {
+      const existingIndex = current.findIndex(employee => employee.id === savedEmployee.id)
+      return existingIndex >= 0
+        ? current.map(employee => employee.id === savedEmployee.id ? savedEmployee : employee)
+        : [...current, savedEmployee]
+    })
+    if (createdPosition) {
+      setPositions(current => current.some(position => position.id === createdPosition.id)
+        ? current
+        : [...current, createdPosition])
+    }
+    // Payroll figures are a historical snapshot, but a payslip must always use
+    // the employee's latest email address.  Keep that small part in sync
+    // locally rather than reloading the complete application payload.
+    updateEmailLocally(savedEmployee.id, savedEmployee.email ?? '')
+  }, [updateEmailLocally])
+
+  const applyEmployeeDeactivated = useCallback((employeeId: number) => {
+    setDatabaseEmployees(current => current.map(employee =>
+      employee.id === employeeId ? { ...employee, status: 'TERMINATED' } : employee
+    ))
   }, [])
 
   const loadEmployeeData = useCallback(async () => {
@@ -3671,8 +3900,17 @@ export default function App() {
   const pageTitle: Partial<Record<Page, string>> = {
     dashboard: 'หน้าหลัก', periods: 'รอบเงินเดือน', employees: 'พนักงาน',
     'payslip-status': 'สถานะการส่งอีเมล', 'director-approvals': 'อนุมัติเงินเดือน',
-    'admin-users': 'จัดการผู้ใช้งาน',
+    'admin-users': 'จัดการผู้ใช้งาน', 'period-detail': 'รายละเอียดรอบเงินเดือน',
+    'dept-table': 'รายละเอียดรอบเงินเดือน', 'director-detail': 'รายละเอียดการอนุมัติ',
+    'employee-form': 'ข้อมูลพนักงาน',
   }
+  const backTarget: Partial<Record<Page, Page>> = {
+    'period-detail': 'periods',
+    'dept-table': role === 'hr' ? 'periods' : 'period-detail',
+    'director-detail': 'director-approvals',
+    'employee-form': 'employees',
+  }
+  const canGoBack = Boolean(backTarget[page])
 
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
@@ -3682,7 +3920,20 @@ export default function App() {
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
         {/* Topbar */}
         <header style={{ background: 'rgba(255,255,255,0.80)', backdropFilter: 'blur(16px)', borderBottom: '1px solid rgba(0,0,0,0.06)', padding: '0 28px', height: 56, display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexShrink: 0, position: 'sticky', top: 0, zIndex: 10 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: '#1A1A1A' }}>{pageTitle[page] ?? ''}</div>
+          {canGoBack ? (
+            <button
+              type="button"
+              onClick={() => setPage(backTarget[page] as Page)}
+              aria-label="ย้อนกลับ"
+              title="ย้อนกลับ"
+              style={{ border: 0, background: 'transparent', color: '#4A3A78', cursor: 'pointer', fontSize: 14, fontWeight: 700, padding: '6px 0', display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <span aria-hidden="true" style={{ fontSize: 20, lineHeight: 1 }}>←</span>
+              <span>ย้อนกลับ</span>
+            </button>
+          ) : (
+            <div style={{ fontSize: 14, fontWeight: 600, color: '#1A1A1A' }}>{pageTitle[page] ?? ''}</div>
+          )}
           <div className="flex items-center gap-3" style={{ position: 'relative' }}>
             <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>รอบปัจจุบัน: <strong style={{ color: '#1A1A1A' }}>{visiblePeriods[0] ? periodLabel(visiblePeriods[0]) : 'ยังไม่มีรอบเงินเดือน'}</strong></div>
             <button type="button" aria-label="เมนูผู้ใช้งาน" title="เมนูผู้ใช้งาน" onClick={() => setProfileMenuOpen(open => !open)} style={{ width: 34, height: 34, borderRadius: '50%', border: '1px solid #DCD7EC', background: '#FFFFFF', color: '#6C52D9', display: 'grid', placeItems: 'center', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.05)' }}><PersonIcon /></button>
@@ -3691,7 +3942,7 @@ export default function App() {
         </header>
 
         {showMyInfo && <Modal title="ข้อมูลของฉัน" onClose={() => setShowMyInfo(false)}><div className="flex flex-col gap-3"><div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: '10px 16px', fontSize: 14 }}><span style={{ color: 'var(--text-secondary)' }}>ชื่อ</span><strong>{userName}</strong><span style={{ color: 'var(--text-secondary)' }}>ชื่อผู้ใช้</span><strong style={{ fontFamily: 'monospace' }}>{accountUsername}</strong><span style={{ color: 'var(--text-secondary)' }}>สิทธิ์</span><strong>{roleLabel[role]}</strong>{userDepartment && <><span style={{ color: 'var(--text-secondary)' }}>ฝ่าย</span><strong>{userDepartment}</strong></>}</div><div className="flex justify-end"><button className="btn btn-secondary" onClick={() => setShowMyInfo(false)}>ปิด</button></div></div></Modal>}
-        {showPasswordReset && <Modal title="รีเซ็ตรหัสผ่าน" onClose={() => setShowPasswordReset(false)}><div className="flex flex-col gap-4"><FormField label="รหัสผ่านปัจจุบัน" required><input className="inp" type="password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} /></FormField><FormField label="รหัสผ่านใหม่" required><input className="inp" type="password" minLength={8} value={newPassword} onChange={event => setNewPassword(event.target.value)} /></FormField><FormField label="ยืนยันรหัสผ่านใหม่" required><input className="inp" type="password" minLength={8} value={confirmNewPassword} onChange={event => setConfirmNewPassword(event.target.value)} /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setShowPasswordReset(false)}>ยกเลิก</button><button className="btn btn-primary" disabled={passwordSaving || !currentPassword || !newPassword || !confirmNewPassword} onClick={() => void saveMyPassword()}>{passwordSaving ? 'กำลังบันทึก…' : 'บันทึกรหัสผ่านใหม่'}</button></div></div></Modal>}
+        {showPasswordReset && <Modal title="รีเซ็ตรหัสผ่าน" onClose={() => setShowPasswordReset(false)}><div className="flex flex-col gap-4"><FormField label="รหัสผ่านปัจจุบัน" required><input className="inp" type="password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} /></FormField><FormField label="รหัสผ่านใหม่" required><input className="inp" type="password" minLength={8} value={newPassword} onChange={event => setNewPassword(event.target.value)} /></FormField><FormField label="ยืนยันรหัสผ่านใหม่" required><input className="inp" type="password" minLength={8} value={confirmNewPassword} onChange={event => setConfirmNewPassword(event.target.value)} /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={passwordSaving} onClick={() => setShowPasswordReset(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={passwordSaving} disabled={passwordSaving || !currentPassword || !newPassword || !confirmNewPassword} onClick={() => void saveMyPassword()}><BusyLabel busy={passwordSaving} label="กำลังบันทึก…">บันทึกรหัสผ่านใหม่</BusyLabel></button></div></div></Modal>}
 
         {/* Content */}
         <main style={{ flex: 1, padding: '28px 32px', overflowY: 'auto' }}>
@@ -3726,15 +3977,15 @@ export default function App() {
               role={role}
               setPage={setPage}
               setEditEmpId={setEditEmpId}
-              onChanged={reloadEmployeeDirectory}
+              onChanged={applyEmployeeDeactivated}
               showToast={showToast}
             />
           )}
           {page === 'employee-form' && (
             <EmployeeForm empId={editEmpId} employees={visibleEmployees} departments={departments} positions={positions}
-              setPage={setPage} showToast={showToast} onSaved={reloadEmployeeDirectory} />
+              setPage={setPage} showToast={showToast} onSaved={applyEmployeeSaved} />
           )}
-          {page === 'payslip-status' && <PayslipStatus periods={visiblePeriods} onReload={loadEmployeeData} showToast={showToast}
+          {page === 'payslip-status' && <PayslipStatus periods={visiblePeriods} onReload={loadEmployeeData} onEmployeeEmailUpdated={updateEmailLocally} showToast={showToast}
             onManageEmployees={() => setPage('employees')} />}
           {page === 'admin-users' && <AdminUsers employees={databaseEmployees} showToast={showToast} />}
         </main>

@@ -1,0 +1,26 @@
+{
+  "id": "/",
+  "name": "PayFlow Takhli",
+  "short_name": "PayFlow",
+  "description": "ระบบจัดทำและบริหารเงินเดือน เทศบาลเมืองตาคลี",
+  "lang": "th",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f8f7ff",
+  "theme_color": "#6c52d9",
+  "icons": [
+    {
+      "src": "/icons/payflow-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/payflow-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

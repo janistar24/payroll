@@ -46,6 +46,21 @@ environment = os.getenv("APP_ENV", "development").lower()
 allowed_origins = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if origin.strip()]
 trusted_hosts = [host.strip() for host in os.getenv("TRUSTED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
 
+# Railway calls the health endpoint through the service's generated internal
+# hostname. Add only this deployment's exact generated hostnames; do not open
+# TrustedHostMiddleware to every host.
+railway_public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN", "").strip()
+railway_private_domain = os.getenv("RAILWAY_PRIVATE_DOMAIN", "").strip()
+railway_service_name = os.getenv("RAILWAY_SERVICE_NAME", "").strip()
+for railway_host in (
+    "healthcheck.railway.app",
+    railway_public_domain,
+    railway_private_domain,
+    f"{railway_service_name}.railway.internal" if railway_service_name else "",
+):
+    if railway_host and railway_host not in trusted_hosts:
+        trusted_hosts.append(railway_host)
+
 if environment == "production" and (not os.getenv("JWT_SECRET") or not os.getenv("ALLOWED_ORIGINS") or not os.getenv("TRUSTED_HOSTS")):
     raise RuntimeError("production ต้องกำหนด JWT_SECRET, ALLOWED_ORIGINS และ TRUSTED_HOSTS")
 

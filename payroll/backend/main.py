@@ -587,6 +587,17 @@ def deactivate_user(user_id: int, user=Depends(get_current_user)):
         raise HTTPException(status_code=400, detail=str(error))
 
 
+@app.post("/api/users/{user_id}/activate")
+def activate_user(user_id: int, user=Depends(get_current_user)):
+    try:
+        _require_admin(user)
+        username = auth_service.activate_user(user_id)
+        audit_logger.log(user["id"], "ACTIVATE_USER", "user", user_id, {"username": username})
+        return {"success": True}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
 @app.post("/api/auth/change-password")
 def change_my_password(request: PasswordChangeRequest, user=Depends(get_current_user)):
     try:

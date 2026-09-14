@@ -215,6 +215,14 @@ class AuthService:
                 raise ValueError("ไม่พบบัญชีผู้ใช้")
             return record[0]
 
+    def activate_user(self, user_id):
+        with self.db.transaction() as cursor:
+            cursor.execute("UPDATE public.users SET is_active = TRUE WHERE id = %s RETURNING username", (user_id,))
+            record = cursor.fetchone()
+            if record is None:
+                raise ValueError("ไม่พบบัญชีผู้ใช้")
+            return record[0]
+
     def change_password(self, user_id, current_password, new_password):
         with self.db.transaction() as cursor:
             cursor.execute("SELECT password_hash FROM public.users WHERE id = %s AND is_active = TRUE", (user_id,))

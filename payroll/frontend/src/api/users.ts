@@ -20,6 +20,7 @@ export async function createSystemUser(input: { username: string; temporary_pass
 export async function resetSystemUserPassword(id: number, temporary_password: string) { return request(`/users/${id}/reset-password`, { method: 'POST', body: JSON.stringify({ temporary_password }) }) }
 export async function deleteSystemUser(id: number) { return request(`/users/${id}`, { method: 'DELETE' }) }
 export async function deactivateSystemUser(id: number) { return request(`/users/${id}/deactivate`, { method: 'POST' }) }
+export async function activateSystemUser(id: number) { return request(`/users/${id}/activate`, { method: 'POST' }) }
 export async function changeMyPassword(current_password: string, new_password: string) { return request('/auth/change-password', { method: 'POST', body: JSON.stringify({ current_password, new_password }) }) }
 export async function createUserInvite(email: string, requested_role: SystemUser['role']) { return request('/admin/invites', { method: 'POST', body: JSON.stringify({ email, requested_role }) }) }
 export interface AccessRequest { id: number; username: string; requested_role: SystemUser['role']; status: 'PENDING' | 'APPROVED' | 'REJECTED'; employee_data: Record<string, unknown>; created_at: string; invited_email: string }

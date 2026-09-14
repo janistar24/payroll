@@ -17,7 +17,7 @@ import {
 import { createPosition, getPositions, type Position } from './api/positions'
 import { getAppData } from './api/bootstrap'
 import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
-import { approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, revealAccessRequestPassword, type AccessRequest, type SystemUser } from './api/users'
+import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, revealAccessRequestPassword, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, getPayrollBatchHistory, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollPeriodRecord } from './api/payroll'
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -3471,7 +3471,7 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
   const [creatingUser, setCreatingUser] = useState(false)
   const [creatingInvite, setCreatingInvite] = useState(false)
   const [reviewingRequest, setReviewingRequest] = useState(false)
-  const [deactivatingAccountId, setDeactivatingAccountId] = useState<number | null>(null)
+  const [changingAccountStatusId, setChangingAccountStatusId] = useState<number | null>(null)
   const load = useCallback(async () => { try { setUsers(await getUsers()) } catch (error) { showToast(error instanceof Error ? error.message : 'โหลดบัญชีไม่สำเร็จ', 'error') } }, [showToast])
   const loadRequests = useCallback(async () => { try { setAccessRequests(await getAccessRequests()) } catch (error) { showToast(error instanceof Error ? error.message : 'โหลดคำขอไม่สำเร็จ', 'error') } }, [showToast])
   useEffect(() => { void load(); void loadRequests() }, [load, loadRequests])
@@ -3490,12 +3490,18 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
     catch (error) { showToast(error instanceof Error ? error.message : 'ลบบัญชีไม่สำเร็จ', 'error') }
     finally { setDeleting(false) }
   }
-  const deactivateAccount = async (target: SystemUser) => {
-    if (deactivatingAccountId) return
-    setDeactivatingAccountId(target.id)
-    try { await deactivateSystemUser(target.id); setUsers(current => current.map(user => user.id === target.id ? { ...user, is_active: false } : user)); showToast(`ปิดการใช้งานบัญชี ${target.username} แล้ว`, 'success') }
-    catch (error) { showToast(error instanceof Error ? error.message : 'ปิดการใช้งานบัญชีไม่สำเร็จ', 'error') }
-    finally { setDeactivatingAccountId(null) }
+  const changeAccountStatus = async (target: SystemUser) => {
+    if (changingAccountStatusId) return
+    setChangingAccountStatusId(target.id)
+    const nextActive = !target.is_active
+    try {
+      if (nextActive) await activateSystemUser(target.id)
+      else await deactivateSystemUser(target.id)
+      setUsers(current => current.map(user => user.id === target.id ? { ...user, is_active: nextActive } : user))
+      showToast(`${nextActive ? 'เปิด' : 'ปิด'}การใช้งานบัญชี ${target.username} แล้ว`, 'success')
+    }
+    catch (error) { showToast(error instanceof Error ? error.message : `${nextActive ? 'เปิด' : 'ปิด'}การใช้งานบัญชีไม่สำเร็จ`, 'error') }
+    finally { setChangingAccountStatusId(null) }
   }
   const linkedEmployeeIds = new Set(users.map(user => user.employee_id).filter((id): id is number => id !== null))
   return (
@@ -3517,7 +3523,7 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
                     <button className="btn btn-ghost btn-xs" onClick={() => void reset(u)}>รีเซ็ตรหัสผ่าน</button>
                   </div>
                 </td>
-                <td><div className="flex gap-1"><button className="btn btn-secondary btn-xs" aria-busy={deactivatingAccountId === u.id} disabled={!u.is_active || deactivatingAccountId !== null} onClick={() => void deactivateAccount(u)}><BusyLabel busy={deactivatingAccountId === u.id} label="กำลังปิด…">ปิดการใช้งาน</BusyLabel></button><button className="btn btn-danger btn-xs" disabled={deactivatingAccountId !== null} onClick={() => setDeleteTarget(u)}>ลบบัญชี</button></div></td>
+                <td><div className="flex gap-1"><button className="btn btn-secondary btn-xs" aria-busy={changingAccountStatusId === u.id} disabled={changingAccountStatusId !== null} onClick={() => void changeAccountStatus(u)}><BusyLabel busy={changingAccountStatusId === u.id} label="กำลังบันทึก…">{u.is_active ? 'ปิดการใช้งาน' : 'เปิดการใช้งาน'}</BusyLabel></button><button className="btn btn-danger btn-xs" disabled={changingAccountStatusId !== null} onClick={() => setDeleteTarget(u)}>ลบบัญชี</button></div></td>
               </tr>
             ))}
           </tbody>

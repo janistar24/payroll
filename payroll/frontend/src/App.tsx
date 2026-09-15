@@ -1105,9 +1105,14 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
     { step: '②', icon: '🧾', label: 'จัดทำข้อมูลเงินเดือน', action: () => setPage('periods') },
     { step: '③', icon: '✅', label: 'ตรวจและส่งอนุมัติ', action: openCurrentDepartment },
     { step: '④', icon: '📨', label: 'ติดตามสลิปเงินเดือน', action: () => setPage('payslip-status') },
-  ] : role === 'director' || role === 'admin' ? [
+  ] : role === 'admin' ? [
+    { step: '①', icon: '👥', label: 'ตรวจรายชื่อพนักงาน', action: () => setPage('employees') },
+    { step: '②', icon: '🧾', label: 'จัดทำข้อมูลเงินเดือน', action: () => setPage('periods') },
+    { step: '③', icon: '✅', label: 'ตรวจสอบสถานะอนุมัติ', action: focusApprovalStatus },
+    { step: '④', icon: '👤', label: 'จัดการผู้ใช้งาน', action: () => setPage('admin-users') },
+  ] : role === 'director' ? [
     { step: '①', icon: '📋', label: 'ตรวจสอบรอบเงินเดือน', action: () => setPage('periods') },
-    { step: '②', icon: '✅', label: 'ตรวจสอบสถานะอนุมัติ', action: role === 'director' ? focusApprovalStatus : () => setPage('dashboard') },
+    { step: '②', icon: '✅', label: 'ตรวจสอบสถานะอนุมัติ', action: focusApprovalStatus },
     { step: '③', icon: '👥', label: 'ดูข้อมูลพนักงาน', action: () => setPage('employees') },
     { step: '④', icon: '🗂️', label: 'ดูประวัติรอบเงินเดือน', action: () => setPage('periods') },
   ] : []
@@ -1394,7 +1399,7 @@ function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, rol
       <PageHeader
         title="รอบเงินเดือน"
         subtitle="จัดการและติดตามรอบเงินเดือนทั้งหมด"
-        actions={role === 'hr' ? <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ สร้างรอบเงินเดือน</button> : undefined}
+        actions={role === 'hr' || role === 'admin' ? <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ สร้างรอบเงินเดือน</button> : undefined}
       />
       <div className="flex flex-col gap-4">
         {error ? (
@@ -1539,7 +1544,7 @@ function PeriodDetail({ period, setPage, setActiveDeptId, role }: {
                   <td style={{ fontSize: 12, color: 'var(--text-muted)' }}>{formatBuddhistDate(d.updatedAt)}</td>
                   <td>
                     <div className="flex items-center gap-1">
-                      {role === 'hr' && (d.status === 'draft' || d.status === 'rejected') && (
+                      {(role === 'hr' || role === 'admin') && (d.status === 'draft' || d.status === 'rejected') && (
                         <button className="btn btn-primary btn-xs" onClick={() => { setActiveDeptId(d.id); setPage('dept-table') }}>
                           {d.status === 'rejected' ? 'แก้ไข' : 'เริ่มกรอก'}
                         </button>

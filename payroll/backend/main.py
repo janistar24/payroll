@@ -469,7 +469,7 @@ def _require_employee_creation_role(user):
 
 def _ensure_batch_access(batch_id, user, allow_approval=False):
     data, columns = db.fetch(
-        "SELECT id, department_id FROM public.payroll_department_batches WHERE id = %s",
+        "SELECT id, department_id, submitted_by_id FROM public.payroll_department_batches WHERE id = %s",
         (batch_id,)
     )
     if not data:
@@ -911,6 +911,8 @@ def save_payroll_batch_items(batch_id: int, request: PayrollBatchSave, user=Depe
 def change_payroll_batch_status(batch_id: int, request: PayrollBatchAction, user=Depends(get_current_user)):
     try:
         batch = _ensure_batch_access(batch_id, user, allow_approval=request.action in {"approve", "reject"})
+        if request.action in {"approve", "reject"} and batch.get("submitted_by_id") == user["id"]:
+            raise HTTPException(status_code=403, detail="ไม่สามารถอนุมัติหรือส่งกลับแก้ไขรายการที่ตนเองส่งอนุมัติได้")
         payroll_workflow_service.change_batch_status(
             batch_id, request.action, user["id"], request.reject_reason.strip() if request.reject_reason else None
         )

@@ -452,7 +452,7 @@ def _department_scope(user):
     _require_payroll_role(user)
     if user["role"] == "hr":
         if user["department_id"] is None:
-            raise HTTPException(status_code=403, detail="บัญชี HR ยังไม่ได้ผูกกับฝ่าย")
+            raise HTTPException(status_code=403, detail="บัญชีพนักงานฝ่ายธุรการยังไม่ได้ผูกกับฝ่าย")
         return user["department_id"]
     return None
 

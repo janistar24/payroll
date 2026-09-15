@@ -217,20 +217,20 @@ const buildDept = (id: string, pid: string, dept: string, status: DeptStatus, su
 const SEED_PERIODS: PayrollPeriod[] = [
   {
     id: 'PP-2025-07', month: 7, year: 2025, payDate: '2025-07-31', note: 'รอบเงินเดือนปกติ เดือนกรกฎาคม 2568',
-    createdAt: '2025-07-20T08:00:00Z', createdBy: 'นางสาวสมใจ เจ้าหน้าที่ HR',
+    createdAt: '2025-07-20T08:00:00Z', createdBy: 'นางสาวสมใจ พนักงานฝ่ายธุรการ',
     depts: [
-      buildDept('DP-01', 'PP-2025-07', 'สำนักปลัดเทศบาล',             'approved', 'นางสาวสมใจ HR', '2025-07-25T10:00:00Z', 'นายวิเชียร ผู้อำนวยการ', '2025-07-26T09:00:00Z'),
-      buildDept('DP-02', 'PP-2025-07', 'กองคลัง',                      'approved', 'นางสาวสมใจ HR', '2025-07-25T11:00:00Z', 'นายวิเชียร ผู้อำนวยการ', '2025-07-26T09:30:00Z'),
-      buildDept('DP-03', 'PP-2025-07', 'กองช่าง',                      'pending',  'นางสาวสมใจ HR', '2025-07-27T14:00:00Z'),
-      buildDept('DP-04', 'PP-2025-07', 'กองสาธารณสุขและสิ่งแวดล้อม',   'rejected', 'นางสาวสมใจ HR', '2025-07-26T16:00:00Z', undefined, undefined, '2025-07-27T08:30:00Z', 'ยอดภาษีหัก ณ ที่จ่ายไม่ถูกต้อง กรุณาตรวจสอบและส่งใหม่'),
+      buildDept('DP-01', 'PP-2025-07', 'สำนักปลัดเทศบาล',             'approved', 'นางสาวสมใจ พนักงานฝ่ายธุรการ', '2025-07-25T10:00:00Z', 'นายวิเชียร ผู้บริหาร', '2025-07-26T09:00:00Z'),
+      buildDept('DP-02', 'PP-2025-07', 'กองคลัง',                      'approved', 'นางสาวสมใจ พนักงานฝ่ายธุรการ', '2025-07-25T11:00:00Z', 'นายวิเชียร ผู้บริหาร', '2025-07-26T09:30:00Z'),
+      buildDept('DP-03', 'PP-2025-07', 'กองช่าง',                      'pending',  'นางสาวสมใจ พนักงานฝ่ายธุรการ', '2025-07-27T14:00:00Z'),
+      buildDept('DP-04', 'PP-2025-07', 'กองสาธารณสุขและสิ่งแวดล้อม',   'rejected', 'นางสาวสมใจ พนักงานฝ่ายธุรการ', '2025-07-26T16:00:00Z', undefined, undefined, '2025-07-27T08:30:00Z', 'ยอดภาษีหัก ณ ที่จ่ายไม่ถูกต้อง กรุณาตรวจสอบและส่งใหม่'),
       buildDept('DP-05', 'PP-2025-07', 'กองการศึกษา',                  'draft'),
       buildDept('DP-06', 'PP-2025-07', 'กองยุทธศาสตร์และงบประมาณ',     'draft'),
     ],
   },
   {
     id: 'PP-2025-06', month: 6, year: 2025, payDate: '2025-06-30', note: '',
-    createdAt: '2025-06-18T08:00:00Z', createdBy: 'นางสาวสมใจ เจ้าหน้าที่ HR',
-    depts: DEPARTMENTS.map((dept, i) => buildDept(`DP-JUN-0${i+1}`, 'PP-2025-06', dept, 'closed', 'นางสาวสมใจ HR', '2025-06-22T10:00:00Z', 'นายวิเชียร ผู้อำนวยการ', '2025-06-23T09:00:00Z')),
+    createdAt: '2025-06-18T08:00:00Z', createdBy: 'นางสาวสมใจ พนักงานฝ่ายธุรการ',
+    depts: DEPARTMENTS.map((dept, i) => buildDept(`DP-JUN-0${i+1}`, 'PP-2025-06', dept, 'closed', 'นางสาวสมใจ พนักงานฝ่ายธุรการ', '2025-06-22T10:00:00Z', 'นายวิเชียร ผู้บริหาร', '2025-06-23T09:00:00Z')),
   },
 ]
 
@@ -1982,7 +1982,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       }))
       setDirty(false)
       setShowSubmitModal(false)
-      showToast('ส่งข้อมูลให้ผู้อำนวยการอนุมัติแล้ว', 'success')
+      showToast('บันทึกและส่งอนุมัติเรียบร้อยแล้ว', 'success')
       setPage('dept-table')
       void reloadPayroll().catch(() => undefined)
     } catch (error) {
@@ -2096,7 +2096,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
         ]} />}
         actions={!isReadonly ? (
           <>
-            {dept.status !== 'pending' && <button className="btn btn-primary" aria-busy={saving} onClick={() => void save().then(saved => { if (saved) setShowSubmitModal(true) })} disabled={saving}><BusyLabel busy={saving} label="กำลังบันทึก…">ส่งให้ผู้อำนวยการอนุมัติ →</BusyLabel></button>}
+            {dept.status !== 'pending' && <button className="btn btn-primary" aria-busy={saving} onClick={() => void save().then(saved => { if (saved) setShowSubmitModal(true) })} disabled={saving}><BusyLabel busy={saving} label="กำลังบันทึก…">บันทึกและส่งอนุมัติ</BusyLabel></button>}
           </>
         ) : <StatusBadge s={dept.status} />}
       />
@@ -2319,7 +2319,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           <div className="flex flex-col gap-4">
             <div style={{ background: 'var(--status-pending-bg)', border: '1px solid var(--status-pending-border)', borderRadius: 10, padding: '14px 16px', fontSize: 13, lineHeight: 1.7, color: 'var(--status-pending-text)' }}>
               {dept.status === 'pending'
-                ? <>รอบเงินเดือนของ <strong>{dept.department}</strong> ถูกส่งให้ผู้อำนวยการพิจารณาแล้ว จึงยังไม่สามารถแก้ไขข้อมูลได้<br />กรุณารอผลการอนุมัติ หรือรอให้ส่งกลับมาแก้ไขก่อน</>
+                ? <>รอบเงินเดือนของ <strong>{dept.department}</strong> ถูกส่งให้ผู้บริหารพิจารณาแล้ว จึงยังไม่สามารถแก้ไขข้อมูลได้<br />กรุณารอผลการอนุมัติ หรือรอให้ส่งกลับมาแก้ไขก่อน</>
                 : <>รอบเงินเดือนนี้อยู่ในสถานะ <strong>{statusLabel[dept.status]}</strong> จึงไม่สามารถแก้ไขข้อมูลได้</>}
             </div>
             <div className="flex justify-end">
@@ -2333,7 +2333,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
 
       {/* Submit modal */}
       {showSubmitModal && (
-        <Modal title="ยืนยันส่งให้ผู้อำนวยการอนุมัติ" onClose={() => setShowSubmitModal(false)}>
+        <Modal title="ยืนยันการส่งอนุมัติ" onClose={() => setShowSubmitModal(false)}>
           <div className="flex flex-col gap-4">
             <div style={{ background: '#F8F9FC', borderRadius: 12, padding: 16 }}>
               {[
@@ -2351,7 +2351,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               ))}
             </div>
             <div style={{ background: 'var(--status-pending-bg)', border: '1px solid var(--status-pending-border)', borderRadius: 10, padding: '10px 14px', fontSize: 12.5, color: 'var(--status-pending-text)' }}>
-              หลังจากส่งอนุมัติแล้ว ท่านจะไม่สามารถแก้ไขข้อมูลได้ จนกว่าผู้อำนวยการจะไม่อนุมัติหรือส่งกลับมาแก้ไข
+              หลังจากส่งอนุมัติแล้ว ท่านจะไม่สามารถแก้ไขข้อมูลได้ จนกว่าผู้บริหารจะไม่อนุมัติหรือส่งกลับมาแก้ไข
             </div>
             <div className="flex gap-3 justify-end">
               <button className="btn btn-secondary" disabled={submitting} onClick={() => setShowSubmitModal(false)}>ยกเลิก</button>
@@ -2557,7 +2557,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
         depts: savedPeriod.depts.map(savedDept => savedDept.id === dept.id ? { ...savedDept, status: 'rejected', rejectionReason: rejectReason } : savedDept),
       }))
       setShowRejectModal(false)
-      showToast('ส่งกลับไปให้ HR แก้ไขแล้ว', 'error')
+      showToast('ส่งกลับไปให้พนักงานฝ่ายธุรการแก้ไขแล้ว', 'error')
       setPage('dashboard')
       void reloadPayroll().catch(() => undefined)
     } catch (error) {
@@ -2738,7 +2738,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
             <div>
               <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>เหตุผลที่ไม่อนุมัติ <span style={{ color: 'red' }}>*</span></label>
               <textarea className="inp" rows={4} style={{ resize: 'none' }} placeholder="กรุณาระบุเหตุผลที่ชัดเจน..." value={rejectReason} onChange={e => setRejectReason(e.target.value)} />
-              <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>{rejectReason.length} ตัวอักษร · เหตุผลจะถูกส่งกลับไปให้ HR แก้ไข</div>
+              <div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 4 }}>{rejectReason.length} ตัวอักษร · เหตุผลจะถูกส่งกลับไปให้พนักงานฝ่ายธุรการแก้ไข</div>
             </div>
             <div className="flex gap-3 justify-end">
               <button className="btn btn-secondary" disabled={processingDecision} onClick={() => setShowRejectModal(false)}>ยกเลิก</button>
@@ -3547,7 +3547,7 @@ function ReportsPage({ periods }: { periods: PayrollPeriod[] }) {
 // ─── Admin Users ──────────────────────────────────────────────────────────────
 
 function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; showToast: (msg: string, type?: 'success' | 'error') => void }) {
-  const roleLabel: Record<Role, string> = { hr: 'พนักงานฝ่ายธุรการ', director: 'ผู้อำนวยการ', admin: 'แอดมิน' }
+  const roleLabel: Record<Role, string> = { hr: 'พนักงานฝ่ายธุรการ', director: 'ผู้บริหาร', admin: 'แอดมิน' }
   const [users, setUsers] = useState<SystemUser[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [username, setUsername] = useState('')
@@ -3629,16 +3629,16 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
       </div>
       {deleteTarget && <Modal title="ยืนยันการลบบัญชี" onClose={() => !deleting && setDeleteTarget(null)}><div className="flex flex-col gap-4"><div style={{ background: '#FFF1F0', border: '1px solid #F7B6B2', borderRadius: 10, padding: '14px 16px', color: '#9F1D17', lineHeight: 1.65 }}><strong>คำเตือน: การดำเนินการนี้ไม่สามารถย้อนกลับได้</strong><br />ระบบจะลบข้อมูลล็อกอินของ <strong>{deleteTarget.username}</strong>, ข้อมูลพนักงาน <strong>{deleteTarget.full_name}</strong>, รายการเงินเดือน, สลิป และสถานะการส่งอีเมลที่เกี่ยวข้อง ออกจากฐานข้อมูลโดยถาวร</div><div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>เมื่อยืนยันแล้ว ระบบจะถือว่าไม่เคยมีบัญชีนี้อยู่ในระบบ</div><div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={deleting} onClick={() => setDeleteTarget(null)}>ยกเลิก</button><button className="btn btn-danger" aria-busy={deleting} disabled={deleting} onClick={() => void deleteAccount()}><BusyLabel busy={deleting} label="กำลังลบ…">ยืนยันลบถาวร</BusyLabel></button></div></div></Modal>}
       {accessRequests.filter(request => request.status === 'PENDING').length > 0 && <div className="card" style={{ padding: 0, overflow: 'hidden', marginTop: 20 }}><div style={{ padding: '15px 18px', fontWeight: 700 }}>คำขอเข้าใช้งานที่รอตรวจสอบ</div><table className="tbl"><thead><tr><th>ผู้ขอ</th><th>ชื่อผู้ใช้</th><th>รหัสผ่านที่ตั้งตอนสมัคร</th><th>สิทธิ์ที่ขอ</th><th>ดำเนินการ</th></tr></thead><tbody>{accessRequests.filter(request => request.status === 'PENDING').map(request => <tr key={request.id}><td><strong>{String(request.employee_data.prefix ?? '')}{String(request.employee_data.first_name ?? '')} {String(request.employee_data.last_name ?? '')}</strong><div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{request.invited_email}</div></td><td style={{ fontFamily: 'monospace' }}>{request.username}</td><td><span style={{ fontFamily: 'monospace' }}>{revealedPasswords[request.id] ?? '••••••••'}</span><button aria-label="กดค้างเพื่อดูรหัสผ่าน" title="กดค้างเพื่อดูรหัสผ่าน" className="btn btn-ghost btn-xs" style={{ marginLeft: 5, padding: '3px 5px', color: '#625B72' }} onMouseDown={() => void revealPassword(request.id)} onMouseUp={() => hidePassword(request.id)} onMouseLeave={() => hidePassword(request.id)} onTouchStart={() => void revealPassword(request.id)} onTouchEnd={() => hidePassword(request.id)}><EyeIcon /></button></td><td>{roleLabel[request.requested_role]}</td><td><button className="btn btn-primary btn-xs" onClick={() => openApproval(request)}>ตรวจสอบและอนุมัติ</button></td></tr>)}</tbody></table></div>}
-      {approvalRequest && <Modal title={rejectMode ? 'ไม่อนุมัติสิทธิ์' : 'ตรวจสอบและอนุมัติ'} onClose={() => setApprovalRequest(null)}><div className="flex flex-col gap-4"><div style={{ padding: '10px 12px', background: rejectMode ? '#FFF4F2' : '#F7F4FF', borderRadius: 10, fontSize: 13 }}><strong>{String(approvalRequest.employee_data.prefix ?? '')}{String(approvalRequest.employee_data.first_name ?? '')} {String(approvalRequest.employee_data.last_name ?? '')}</strong><br /><span style={{ color: 'var(--text-secondary)' }}>{approvalRequest.username} · {approvalRequest.invited_email}</span></div>{rejectMode ? <><FormField label="เหตุผล (ไม่บังคับ)"><textarea className="inp" value={rejectionReason} onChange={event => setRejectionReason(event.target.value)} rows={3} placeholder="ระบุเหตุผลที่ไม่อนุมัติ" /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setRejectMode(false)}>กลับ</button><button className="btn btn-danger" onClick={() => void rejectRequest()}>ไม่อนุมัติและปิดคำขอ</button></div></> : <><FormField label="กำหนดสิทธิ์เป็น :" required><select className="inp" value={approvalRole} onChange={event => setApprovalRole(event.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้อำนวยการ</option><option value="admin">แอดมิน</option></select></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setApprovalRequest(null)}>ยกเลิก</button><button className="btn btn-danger" onClick={() => setRejectMode(true)}>ไม่อนุมัติสิทธิ์</button><button className="btn btn-primary" onClick={() => void approveRequest()}>อนุมัติและเปิดใช้งาน</button></div></>}</div></Modal>}
+      {approvalRequest && <Modal title={rejectMode ? 'ไม่อนุมัติสิทธิ์' : 'ตรวจสอบและอนุมัติ'} onClose={() => setApprovalRequest(null)}><div className="flex flex-col gap-4"><div style={{ padding: '10px 12px', background: rejectMode ? '#FFF4F2' : '#F7F4FF', borderRadius: 10, fontSize: 13 }}><strong>{String(approvalRequest.employee_data.prefix ?? '')}{String(approvalRequest.employee_data.first_name ?? '')} {String(approvalRequest.employee_data.last_name ?? '')}</strong><br /><span style={{ color: 'var(--text-secondary)' }}>{approvalRequest.username} · {approvalRequest.invited_email}</span></div>{rejectMode ? <><FormField label="เหตุผล (ไม่บังคับ)"><textarea className="inp" value={rejectionReason} onChange={event => setRejectionReason(event.target.value)} rows={3} placeholder="ระบุเหตุผลที่ไม่อนุมัติ" /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setRejectMode(false)}>กลับ</button><button className="btn btn-danger" onClick={() => void rejectRequest()}>ไม่อนุมัติและปิดคำขอ</button></div></> : <><FormField label="กำหนดสิทธิ์เป็น :" required><select className="inp" value={approvalRole} onChange={event => setApprovalRole(event.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้บริหาร</option><option value="admin">แอดมิน</option></select></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setApprovalRequest(null)}>ยกเลิก</button><button className="btn btn-danger" onClick={() => setRejectMode(true)}>ไม่อนุมัติสิทธิ์</button><button className="btn btn-primary" onClick={() => void approveRequest()}>อนุมัติและเปิดใช้งาน</button></div></>}</div></Modal>}
       {showCreate && <Modal title="เพิ่มผู้ใช้งาน" onClose={() => setShowCreate(false)}><div className="flex flex-col gap-4">
         <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>เลือกพนักงานที่มีข้อมูลจริงแล้ว ระบบจะใช้ชื่อและอีเมลจากข้อมูลพนักงานโดยอัตโนมัติ</div>
         <FormField label="พนักงาน" required><select className="inp" value={employeeId} onChange={e => setEmployeeId(e.target.value)}><option value="">เลือกพนักงาน</option>{employees.filter(e => !linkedEmployeeIds.has(e.id)).map(e => <option key={e.id} value={e.id}>{e.employee_code} · {e.prefix}{e.first_name} {e.last_name}</option>)}</select></FormField>
         <FormField label="ชื่อผู้ใช้" required><input className="inp" value={username} onChange={e => setUsername(e.target.value)} /></FormField>
         <FormField label="รหัสผ่านชั่วคราว (อย่างน้อย 8 ตัวอักษร)" required><input className="inp" type="password" value={temporaryPassword} onChange={e => setTemporaryPassword(e.target.value)} /></FormField>
-        <FormField label="สิทธิ์" required><select className="inp" value={newRole} onChange={e => setNewRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้อำนวยการ</option><option value="admin">แอดมิน</option></select></FormField>
+        <FormField label="สิทธิ์" required><select className="inp" value={newRole} onChange={e => setNewRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้บริหาร</option><option value="admin">แอดมิน</option></select></FormField>
         <div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingUser} onClick={() => setShowCreate(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={creatingUser} disabled={!employeeId || username.trim().length < 3 || temporaryPassword.length < 8 || creatingUser} onClick={() => void create()}><BusyLabel busy={creatingUser} label="กำลังบันทึก…">บันทึกบัญชี</BusyLabel></button></div>
       </div></Modal>}
-      {showInvite && <Modal title="สร้างคำเชิญเข้าใช้" onClose={() => !creatingInvite && setShowInvite(false)}><div className="flex flex-col gap-4"><div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>ผู้รับคำเชิญจะกรอกข้อมูลพนักงานและสร้างบัญชีเอง จากนั้นรอให้แอดมินอนุมัติ</div><FormField label="อีเมล" required><input className="inp" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} /></FormField><FormField label="สิทธิ์การใช้งานที่ต้องการ" required><select className="inp" value={inviteRole} onChange={e => setInviteRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้อำนวยการ</option><option value="admin">แอดมิน</option></select></FormField>{inviteUrl && <div style={{ background: '#F4F0FF', borderRadius: 10, padding: 12, wordBreak: 'break-all', fontSize: 12 }}><strong>ลิงก์คำเชิญ (ใช้ได้ 7 วัน)</strong><br />{inviteUrl}<br /><button className="btn btn-ghost btn-xs" style={{ marginTop: 7 }} onClick={() => navigator.clipboard.writeText(inviteUrl)}>คัดลอกลิงก์</button></div>}<div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingInvite} onClick={() => setShowInvite(false)}>ปิด</button><button className="btn btn-primary" aria-busy={creatingInvite} disabled={!inviteEmail || creatingInvite} onClick={() => void createInvite()}><BusyLabel busy={creatingInvite} label="กำลังสร้าง…">สร้างลิงก์คำเชิญ</BusyLabel></button></div></div></Modal>}
+      {showInvite && <Modal title="สร้างคำเชิญเข้าใช้" onClose={() => !creatingInvite && setShowInvite(false)}><div className="flex flex-col gap-4"><div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>ผู้รับคำเชิญจะกรอกข้อมูลพนักงานและสร้างบัญชีเอง จากนั้นรอให้แอดมินอนุมัติ</div><FormField label="อีเมล" required><input className="inp" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} /></FormField><FormField label="สิทธิ์การใช้งานที่ต้องการ" required><select className="inp" value={inviteRole} onChange={e => setInviteRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้บริหาร</option><option value="admin">แอดมิน</option></select></FormField>{inviteUrl && <div style={{ background: '#F4F0FF', borderRadius: 10, padding: 12, wordBreak: 'break-all', fontSize: 12 }}><strong>ลิงก์คำเชิญ (ใช้ได้ 7 วัน)</strong><br />{inviteUrl}<br /><button className="btn btn-ghost btn-xs" style={{ marginTop: 7 }} onClick={() => navigator.clipboard.writeText(inviteUrl)}>คัดลอกลิงก์</button></div>}<div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingInvite} onClick={() => setShowInvite(false)}>ปิด</button><button className="btn btn-primary" aria-busy={creatingInvite} disabled={!inviteEmail || creatingInvite} onClick={() => void createInvite()}><BusyLabel busy={creatingInvite} label="กำลังสร้าง…">สร้างลิงก์คำเชิญ</BusyLabel></button></div></div></Modal>}
     </div>
   )
 }
@@ -3831,7 +3831,7 @@ function InvitePage({ token }: { token: string }) {
   }
   const field = (key: string, label: string, type = 'text', required = false, extra?: React.InputHTMLAttributes<HTMLInputElement>) => <FormField label={required ? label : `${label} (ไม่บังคับ)`} required={required}><input required={required} className="inp" type={type} value={form[key]} onChange={e => set(key, e.target.value)} {...extra} /></FormField>
   const passwordField = (key: 'password' | 'confirm_password', label: string, visible: boolean, setVisible: (visible: boolean) => void) => <FormField label={label} required><div style={{ position: 'relative' }}><input required minLength={8} className="inp" type={visible ? 'text' : 'password'} value={form[key]} onChange={e => set(key, e.target.value)} style={{ paddingRight: 44 }} /><button type="button" onClick={() => setVisible(!visible)} aria-label={visible ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'} title={visible ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', border: 0, background: 'transparent', cursor: 'pointer', color: '#6B6480', display: 'grid', placeItems: 'center', padding: 5 }}><EyeIcon off={visible} /></button></div></FormField>
-  const roleLabel = (role?: string) => role === 'hr' ? 'พนักงานฝ่ายธุรการ' : role === 'director' ? 'ผู้อำนวยการ' : 'แอดมิน'
+  const roleLabel = (role?: string) => role === 'hr' ? 'พนักงานฝ่ายธุรการ' : role === 'director' ? 'ผู้บริหาร' : 'แอดมิน'
   return <div style={{ minHeight: '100vh', background: '#F7F6FC', padding: '48px 20px', color: '#202124' }}><div style={{ maxWidth: 860, margin: 'auto', background: 'white', borderRadius: 20, padding: 32, boxShadow: '0 12px 36px rgba(78,57,138,.10)' }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 22 }}><img src={takhliLogo} style={{ width: 46, height: 46, borderRadius: '50%' }} /><div><strong style={{ fontSize: 22 }}>PayFlow</strong><div style={{ color: '#746D84', fontSize: 13 }}>ลงทะเบียนขอเข้าใช้งานระบบ</div></div></div>
     {error && <div style={{ background: '#FFF0F0', color: '#C23B3B', padding: 12, borderRadius: 9, marginBottom: 16 }}>{error}</div>}
@@ -3978,7 +3978,7 @@ export default function App() {
   }
 
   const handleLogout = () => { clearAccessToken(); setProfileMenuOpen(false); setLoggedIn(false); setPage('login' as Page) }
-  const roleLabel: Record<Role, string> = { hr: 'พนักงานฝ่ายธุรการ', director: 'ผู้อำนวยการ', admin: 'แอดมิน' }
+  const roleLabel: Record<Role, string> = { hr: 'พนักงานฝ่ายธุรการ', director: 'ผู้บริหาร', admin: 'แอดมิน' }
   const saveMyPassword = async () => {
     if (newPassword.length < 8) { showToast('รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร', 'error'); return }
     if (newPassword !== confirmNewPassword) { showToast('รหัสผ่านใหม่และยืนยันรหัสผ่านไม่ตรงกัน', 'error'); return }

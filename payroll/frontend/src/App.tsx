@@ -835,6 +835,41 @@ function LineChart({ datasets, labels }: { datasets: { label: string; values: nu
   )
 }
 
+function AnnualTaxBarChart({ values, labels, highlightedMonth }: { values: number[]; labels: string[]; highlightedMonth?: number }) {
+  const W = 680, H = 205, PAD = { t: 22, r: 18, b: 34, l: 54 }
+  const maxValue = Math.max(...values, 1)
+  const plotWidth = W - PAD.l - PAD.r
+  const plotHeight = H - PAD.t - PAD.b
+  const slotWidth = plotWidth / values.length
+  const barWidth = Math.min(28, slotWidth * 0.56)
+  const formatAxis = (value: number) => value >= 1000 ? `${Math.round(value / 1000)}k` : String(Math.round(value))
+
+  return (
+    <div className="dashboard-annual-tax-chart" aria-label="กราฟภาษีหัก ณ ที่จ่ายสะสมรายเดือน">
+      <svg viewBox={`0 0 ${W} ${H}`} role="img">
+        <title>ภาษีหัก ณ ที่จ่ายสะสมรายเดือน</title>
+        {[0, 0.25, 0.5, 0.75, 1].map(progress => {
+          const y = PAD.t + (1 - progress) * plotHeight
+          return <g key={progress}>
+            <line x1={PAD.l} y1={y} x2={W - PAD.r} y2={y} stroke="rgba(45, 32, 73, 0.10)" strokeWidth="1" />
+            <text x={PAD.l - 8} y={y + 3.5} textAnchor="end" className="dashboard-annual-tax-axis">{formatAxis(maxValue * progress)}</text>
+          </g>
+        })}
+        {values.map((value, index) => {
+          const height = value > 0 ? Math.max(2, (value / maxValue) * plotHeight) : 0
+          const x = PAD.l + index * slotWidth + (slotWidth - barWidth) / 2
+          const y = PAD.t + plotHeight - height
+          const isHighlighted = highlightedMonth === index + 1
+          return <g key={labels[index]}>
+            {value > 0 && <rect x={x} y={y} width={barWidth} height={height} rx="4" fill={isHighlighted ? '#6D3FD1' : '#A78BFA'} />}
+            <text x={PAD.l + index * slotWidth + slotWidth / 2} y={H - 10} textAnchor="middle" className="dashboard-annual-tax-axis">{labels[index]}</text>
+          </g>
+        })}
+      </svg>
+    </div>
+  )
+}
+
 function CategoryDonut({ title, total, items, tone }: {
   title: string; total: number; items: { label: string; value: number; color: string }[]; tone: 'income' | 'deduct'
 }) {
@@ -1059,6 +1094,24 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
     { label: 'ฌาปนกิจ', value: dashboardRows.reduce((sum, row) => sum + row.funeral, 0), color: '#F9DEDA' },
     { label: 'ธนาคาร', value: dashboardRows.reduce((sum, row) => sum + row.ktb + row.gsb, 0), color: '#EBC1B9' },
   ]
+  // `periods` is already filtered by the API for the signed-in role.  This
+  // keeps HR within its own department and Director/Admin across all departments.
+  const annualTaxYear = currentPeriod?.year
+  const annualTaxByMonth = Array.from({ length: 12 }, () => 0)
+  if (annualTaxYear !== undefined) {
+    periods
+      .filter(period => period.year === annualTaxYear)
+      .forEach(period => period.depts
+        .filter(department => department.status === 'approved')
+        .forEach(department => {
+          Object.values(department.rows).forEach(row => {
+            annualTaxByMonth[period.month - 1] += Number(row.tax) || 0
+          })
+        }))
+  }
+  const annualTaxTotal = annualTaxByMonth.reduce((sum, value) => sum + value, 0)
+  const annualTaxApprovedMonths = annualTaxByMonth.filter(value => value > 0).length
+  const annualTaxScope = role === 'hr' && userDepartment ? userDepartment : 'ทุกฝ่าย'
 
   const now = new Date()
   const hour = now.getHours()
@@ -1226,8 +1279,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
         </>
       )}
 
-      {/* HR-only monthly report */}
-      {role === 'hr' && <div className="card dashboard-monthly-report" style={{ padding: 24, width: '100%' }}>
+      <div className="card dashboard-monthly-report" style={{ padding: 24, width: '100%' }}>
         <div className="dashboard-monthly-report-chart">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -1241,7 +1293,25 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
           <CategoryDonut title="รายการรับสะสมตามประเภท" total={currentTotals.gross} items={incomeCategories} tone="income" />
           <CategoryDonut title="รายการหักสะสมตามประเภท" total={currentTotals.deduct} items={deductionCategories} tone="deduct" />
         </aside>
-      </div>}
+      </div>
+
+      <section className="card dashboard-annual-tax-report" aria-label="ภาษีหัก ณ ที่จ่ายสะสมรายปี">
+        <div className="dashboard-annual-tax-heading">
+          <div>
+            <div className="dashboard-annual-tax-title">ภาษีหัก ณ ที่จ่ายสะสมรายปี</div>
+            <div className="dashboard-annual-tax-subtitle">{annualTaxScope} · เฉพาะรอบเงินเดือนที่อนุมัติแล้ว</div>
+          </div>
+          <div className="dashboard-annual-tax-total">
+            <span>ปี พ.ศ. {annualTaxYear ? annualTaxYear + 543 : '—'}</span>
+            <strong>{thb(Math.round(annualTaxTotal))} <em>บาท</em></strong>
+          </div>
+        </div>
+        <AnnualTaxBarChart values={annualTaxByMonth} labels={MONTH_TH.slice(1).map(month => month.slice(0, 3))} highlightedMonth={currentPeriod?.month} />
+        <div className="dashboard-annual-tax-footer">
+          <span>แสดงยอดภาษีที่หักในแต่ละเดือน</span>
+          <span>มีข้อมูลภาษี {annualTaxApprovedMonths} เดือน</span>
+        </div>
+      </section>
 
       {/* Recent list */}
       <div ref={recentPeriodsRef} className={`card dashboard-recent-periods ${(role === 'director' || role === 'admin') ? 'dashboard-recent-periods-detailed' : ''} ${isRecentPeriodsHighlighted ? 'is-highlighted' : ''}`} style={{ padding: 24 }}>

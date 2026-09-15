@@ -1042,6 +1042,14 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
     if (!periods.some(period => period.id === dashboardPeriodId)) setDashboardPeriodId(periods[0]?.id ?? '')
   }, [periods, dashboardPeriodId])
   const currentPeriod = periods.find(period => period.id === dashboardPeriodId) ?? periods[0]
+  const [dashboardDepartment, setDashboardDepartment] = useState('')
+  const dashboardDepartmentNames = [...new Set(currentPeriod?.depts.map(department => department.department) ?? [])]
+  useEffect(() => {
+    if (role !== 'director') return
+    if (!dashboardDepartmentNames.includes(dashboardDepartment)) {
+      setDashboardDepartment(dashboardDepartmentNames[0] ?? '')
+    }
+  }, [role, dashboardDepartment, dashboardDepartmentNames.join('|')])
   const currentPeriodIndex = periods.findIndex(period => period.id === currentPeriod?.id)
   const prevPeriod = currentPeriodIndex >= 0 ? periods[currentPeriodIndex + 1] : undefined
   const dashboardYears = [...new Set(periods.map(period => period.year))].sort((a, b) => b - a)
@@ -1055,8 +1063,22 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
   const [isRecentPeriodsHighlighted, setIsRecentPeriodsHighlighted] = useState(false)
   const recentPeriodsRef = useRef<HTMLDivElement>(null)
   const recentPeriodsHighlightTimer = useRef<number | null>(null)
-  const currentTotals = currentPeriod ? periodTotals(currentPeriod) : { base: 0, gross: 0, deduct: 0, net: 0, emps: 0 }
-  const prevTotals = prevPeriod ? periodTotals(prevPeriod) : null
+  const reportDepartment = role === 'director' ? dashboardDepartment : role === 'hr' ? userDepartment ?? '' : ''
+  const departmentsForReport = (period: PayrollPeriod) => reportDepartment
+    ? period.depts.filter(department => department.department === reportDepartment)
+    : period.depts
+  const totalsForReport = (period: PayrollPeriod) => departmentsForReport(period).reduce((totals, department) => {
+    const departmentTotals = deptTotals(department)
+    return {
+      base: totals.base + departmentTotals.totalBase,
+      gross: totals.gross + departmentTotals.totalGross,
+      deduct: totals.deduct + departmentTotals.totalDeduct,
+      net: totals.net + departmentTotals.totalNet,
+      emps: totals.emps + departmentTotals.count,
+    }
+  }, { base: 0, gross: 0, deduct: 0, net: 0, emps: 0 })
+  const currentTotals = currentPeriod ? totalsForReport(currentPeriod) : { base: 0, gross: 0, deduct: 0, net: 0, emps: 0 }
+  const prevTotals = prevPeriod ? totalsForReport(prevPeriod) : null
 
   const pendingDepts = currentPeriod?.depts.filter(d => d.status === 'pending') ?? []
 
@@ -1064,11 +1086,11 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
   const chartPeriods = [...periods].slice(0, 7).reverse()
   const monthLabels = chartPeriods.map(period => `${MONTH_TH[period.month].slice(0, 3)} ${String(period.year + 543).slice(-2)}`)
   const lineData = [
-    { label: 'รายการรับรวม', values: chartPeriods.map(period => periodTotals(period).gross), color: '#9C6FE4' },
-    { label: 'รายการหักรวม', values: chartPeriods.map(period => periodTotals(period).deduct), color: '#FFB4A2' },
-    { label: 'ยอดรับสุทธิรวม', values: chartPeriods.map(period => periodTotals(period).net), color: '#22C55E' },
+    { label: 'รายการรับรวม', values: chartPeriods.map(period => totalsForReport(period).gross), color: '#9C6FE4' },
+    { label: 'รายการหักรวม', values: chartPeriods.map(period => totalsForReport(period).deduct), color: '#FFB4A2' },
+    { label: 'ยอดรับสุทธิรวม', values: chartPeriods.map(period => totalsForReport(period).net), color: '#22C55E' },
   ]
-  const dashboardRows = currentPeriod?.depts.flatMap(dept => Object.values(dept.rows)) ?? []
+  const dashboardRows = currentPeriod ? departmentsForReport(currentPeriod).flatMap(dept => Object.values(dept.rows)) : []
   const currentPayrollEmployeeCodes = new Set(dashboardRows.map(row => row.empId))
   const currentPayrollEmployees = employees.filter(employee =>
     employee.status === 'ACTIVE' && currentPayrollEmployeeCodes.has(employee.employee_code)
@@ -1102,7 +1124,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
     periods
       .filter(period => period.year === annualTaxYear)
       .forEach(period => period.depts
-        .filter(department => department.status === 'approved')
+        .filter(department => department.status === 'approved' && (!reportDepartment || department.department === reportDepartment))
         .forEach(department => {
           Object.values(department.rows).forEach(row => {
             annualTaxByMonth[period.month - 1] += Number(row.tax) || 0
@@ -1111,7 +1133,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
   }
   const annualTaxTotal = annualTaxByMonth.reduce((sum, value) => sum + value, 0)
   const annualTaxApprovedMonths = annualTaxByMonth.filter(value => value > 0).length
-  const annualTaxScope = role === 'hr' && userDepartment ? userDepartment : 'ทุกฝ่าย'
+  const annualTaxScope = reportDepartment || 'ทุกฝ่าย'
 
   const now = new Date()
   const hour = now.getHours()
@@ -1206,6 +1228,11 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
         }}>
           {dashboardYears.map(year => <option key={year} value={year}>{year + 543}</option>)}
         </AppSelect>
+        {role === 'director' && (
+          <AppSelect className="inp" style={{ width: 230 }} value={dashboardDepartment} onChange={event => setDashboardDepartment(event.target.value)} aria-label="เลือกฝ่ายที่ต้องการดูรายงาน">
+            {dashboardDepartmentNames.map(department => <option key={department} value={department}>{department}</option>)}
+          </AppSelect>
+        )}
       </div>
 
       <div className="dashboard-quick-menu">
@@ -1227,7 +1254,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
         <div className="dashboard-payroll-summary-head">
           <div>
             <div className="dashboard-payroll-summary-title">สรุปรอบเงินเดือน {currentPeriod ? periodLabel(currentPeriod) : ''}</div>
-            <div className="dashboard-payroll-summary-subtitle">ภาพรวมรายการเงินเดือนของ{role === 'hr' && userDepartment ? userDepartment : 'ทุกฝ่าย'}</div>
+            <div className="dashboard-payroll-summary-subtitle">ภาพรวมรายการเงินเดือนของ{reportDepartment || 'ทุกฝ่าย'}</div>
           </div>
           <div className="dashboard-payroll-people">👥 พนักงาน {thbInt(currentTotals.emps)} คน</div>
         </div>
@@ -1316,7 +1343,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
       {/* Recent list */}
       <div ref={recentPeriodsRef} className={`card dashboard-recent-periods ${(role === 'director' || role === 'admin') ? 'dashboard-recent-periods-detailed' : ''} ${isRecentPeriodsHighlighted ? 'is-highlighted' : ''}`} style={{ padding: 24 }}>
         <div className="flex items-center justify-between mb-4">
-          <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>รายการรอบเงินเดือนล่าสุด</div>
+          <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 15 }}>รายการรอบเงินเดือนล่าสุด{role === 'director' && dashboardDepartment ? ` · ${dashboardDepartment}` : ''}</div>
           <button className="btn btn-ghost btn-sm" style={{ color: 'var(--purple-600)' }} onClick={() => setPage('periods')}>ดูทั้งหมด →</button>
         </div>
         <div style={{ overflowX: 'auto' }}>
@@ -1334,14 +1361,16 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
             </thead>
             <tbody>
               {periods.slice(0, 6).map(period => {
-                // HR sees one department at a time.  Its status must describe
-                // that department, not an aggregate such as "remaining 1/6".
-                const hrDepartment = role === 'hr'
+                // HR and the Director's selected report view describe one
+                // department, not an aggregate such as "remaining 1/6".
+                const scopedDepartment = role === 'hr'
                   ? period.depts.find(department => department.department === userDepartment) ?? period.depts[0]
-                  : undefined
-                const totals = hrDepartment
+                  : role === 'director' && dashboardDepartment
+                    ? period.depts.find(department => department.department === dashboardDepartment)
+                    : undefined
+                const totals = scopedDepartment
                   ? (() => {
-                      const departmentTotals = deptTotals(hrDepartment)
+                      const departmentTotals = deptTotals(scopedDepartment)
                       return {
                         emps: departmentTotals.count,
                         gross: departmentTotals.totalGross,
@@ -1352,8 +1381,8 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
                 const isExpanded = expandedDashboardPeriodId === period.id
                 const completedCount = period.depts.filter(department => ['approved', 'closed'].includes(department.status)).length
                 const remainingCount = period.depts.length - completedCount
-                const periodStatus = hrDepartment
-                  ? { type: hrDepartment.status, label: statusLabel[hrDepartment.status] }
+                const periodStatus = scopedDepartment
+                  ? { type: scopedDepartment.status, label: statusLabel[scopedDepartment.status] }
                   : remainingCount > 0
                     ? { type: 'pending', label: `รอดำเนินการ ${remainingCount}/${period.depts.length} ฝ่าย` }
                     : { type: 'approved', label: `เสร็จสิ้น ${completedCount}/${period.depts.length} ฝ่าย` }
@@ -1361,8 +1390,8 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
                   <Fragment key={period.id}>
                     <tr key={period.id} style={{ cursor: 'pointer' }} onClick={() => {
                       setActivePeriodId(period.id)
-                      if (role === 'hr' && hrDepartment) {
-                        setActiveDeptId(hrDepartment.id)
+                      if (role === 'hr' && scopedDepartment) {
+                        setActiveDeptId(scopedDepartment.id)
                         setPage('dept-table')
                       } else {
                         setPage('period-detail')

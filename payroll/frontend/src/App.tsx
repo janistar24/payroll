@@ -1216,8 +1216,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
         </div>
       </div>
 
-      <div className="card" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 13, fontWeight: 800, color: '#4C3B73', whiteSpace: 'nowrap' }}>แสดงข้อมูลรอบเงินเดือน</span>
+      <div className="card" aria-label="เลือกเดือน ปี และฝ่ายสำหรับแสดงรายงาน" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <AppSelect className="inp" style={{ width: 150 }} value={String(currentPeriod?.month ?? '')} onChange={event => selectDashboardPeriod(currentPeriod?.year ?? 0, Number(event.target.value))}>
           {dashboardMonths.map(month => <option key={month} value={month}>{MONTH_TH[month]}</option>)}
         </AppSelect>
@@ -1297,11 +1296,6 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
             <div className="dashboard-admin-alert-action">
               <button className="btn btn-ghost btn-sm" onClick={() => setPage('payslip-status')}>ดูรายละเอียด →</button>
             </div>
-          </section>
-          <section className="dashboard-admin-alert-print" aria-label="สรุปรายการที่ควรตรวจสอบสำหรับพิมพ์">
-            <div><span>สถานะการส่งสลิป</span><strong>ส่งไม่สำเร็จ {failedEmailCount} ราย</strong></div>
-            <div><span>ข้อมูลติดต่อ</span><strong>ไม่มีอีเมล {missingEmailCount} ราย</strong></div>
-            <div><span>ความครบถ้วนของรอบ</span><strong>ยังไม่เข้ารอบ {missingPayrollCount} ราย</strong></div>
           </section>
         </>
       )}

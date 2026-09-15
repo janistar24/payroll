@@ -3561,6 +3561,7 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
   const [creatingUser, setCreatingUser] = useState(false)
   const [creatingInvite, setCreatingInvite] = useState(false)
   const [reviewingRequest, setReviewingRequest] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [changingAccountStatusId, setChangingAccountStatusId] = useState<number | null>(null)
   const load = useCallback(async () => { try { setUsers(await getUsers()) } catch (error) { showToast(error instanceof Error ? error.message : 'โหลดบัญชีไม่สำเร็จ', 'error') } }, [showToast])
   const loadRequests = useCallback(async () => { try { setAccessRequests(await getAccessRequests()) } catch (error) { showToast(error instanceof Error ? error.message : 'โหลดคำขอไม่สำเร็จ', 'error') } }, [showToast])
@@ -3568,6 +3569,16 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
   const create = async () => { if (creatingUser) return; setCreatingUser(true); try { await createSystemUser({ username, temporary_password: temporaryPassword, employee_id: Number(employeeId), role: newRole }); showToast('สร้างบัญชีผู้ใช้งานแล้ว', 'success'); setShowCreate(false); setUsername(''); setTemporaryPassword(''); setEmployeeId(''); void load() } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างบัญชีไม่สำเร็จ', 'error') } finally { setCreatingUser(false) } }
   const reset = async (user: SystemUser) => { const password = window.prompt(`กำหนดรหัสผ่านชั่วคราวใหม่สำหรับ ${user.username} (อย่างน้อย 8 ตัวอักษร)`); if (!password) return; try { await resetSystemUserPassword(user.id, password); showToast('รีเซ็ตรหัสผ่านแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'รีเซ็ตรหัสผ่านไม่สำเร็จ', 'error') } }
   const createInvite = async () => { if (creatingInvite) return; setCreatingInvite(true); try { const result = await createUserInvite(inviteEmail, inviteRole); setInviteUrl(result.data.invite_url); showToast('สร้างลิงก์คำเชิญแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างคำเชิญไม่สำเร็จ', 'error') } finally { setCreatingInvite(false) } }
+  const refreshUsers = async () => {
+    if (refreshing) return
+    setRefreshing(true)
+    try {
+      await Promise.all([load(), loadRequests()])
+      showToast('อัปเดตรายชื่อผู้ใช้และคำขอล่าสุดแล้ว', 'success')
+    } finally {
+      setRefreshing(false)
+    }
+  }
   const approveRequest = async () => { if (!approvalRequest || reviewingRequest) return; setReviewingRequest(true); try { await approveAccessRequest(approvalRequest.id, approvalRole); showToast('อนุมัติและเปิดใช้งานบัญชีแล้ว', 'success'); setApprovalRequest(null); void Promise.all([load(), loadRequests()]) } catch (error) { showToast(error instanceof Error ? error.message : 'อนุมัติไม่สำเร็จ', 'error') } finally { setReviewingRequest(false) } }
   const rejectRequest = async () => { if (!approvalRequest || reviewingRequest) return; setReviewingRequest(true); try { await rejectAccessRequest(approvalRequest.id, rejectionReason); setAccessRequests(current => current.filter(request => request.id !== approvalRequest.id)); showToast('ไม่อนุมัติสิทธิ์และปิดคำขอแล้ว', 'success'); setApprovalRequest(null); setRejectMode(false); setRejectionReason('') } catch (error) { showToast(error instanceof Error ? error.message : 'ไม่สามารถปิดคำขอได้', 'error') } finally { setReviewingRequest(false) } }
   const openApproval = (request: AccessRequest) => { setApprovalRequest(request); setApprovalRole(request.requested_role); setRejectMode(false); setRejectionReason('') }
@@ -3596,7 +3607,7 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
   const linkedEmployeeIds = new Set(users.map(user => user.employee_id).filter((id): id is number => id !== null))
   return (
     <div className="anim">
-      <PageHeader title="จัดการผู้ใช้งาน" subtitle="สร้างบัญชีโดยผูกกับข้อมูลพนักงานจริง" actions={<div className="flex gap-2"><button className="btn btn-secondary" onClick={() => setShowInvite(true)}>✉ สร้างคำเชิญ</button><button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ เพิ่มผู้ใช้งาน</button></div>} />
+      <PageHeader title="จัดการผู้ใช้งาน" subtitle="สร้างบัญชีโดยผูกกับข้อมูลพนักงานจริง" actions={<div className="flex gap-2"><button className="btn btn-secondary" aria-busy={refreshing} disabled={refreshing} onClick={() => void refreshUsers()}><BusyLabel busy={refreshing} label="กำลังรีเฟรช…">↻ รีเฟรช</BusyLabel></button><button className="btn btn-secondary" onClick={() => setShowInvite(true)}>✉ สร้างคำเชิญ</button><button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ เพิ่มผู้ใช้งาน</button></div>} />
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         <table className="tbl">
           <thead><tr><th>ชื่อผู้ใช้</th><th>ชื่อ</th><th>รหัสผ่าน</th><th>สิทธิ์การใช้งาน</th><th>สถานะ</th><th>ดำเนินการ</th><th>ลบบัญชี</th></tr></thead>

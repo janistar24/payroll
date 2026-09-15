@@ -1327,7 +1327,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
             <strong>{thb(Math.round(annualTaxTotal))} <em>บาท</em></strong>
           </div>
         </div>
-        <AnnualTaxBarChart values={annualTaxByMonth} labels={MONTH_TH.slice(1).map(month => month.slice(0, 3))} highlightedMonth={currentPeriod?.month} />
+        <AnnualTaxBarChart values={annualTaxByMonth} labels={['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']} highlightedMonth={currentPeriod?.month} />
         <div className="dashboard-annual-tax-footer">
           <span>แสดงยอดภาษีที่หักในแต่ละเดือน</span>
           <span>มีข้อมูลภาษี {annualTaxApprovedMonths} เดือน</span>

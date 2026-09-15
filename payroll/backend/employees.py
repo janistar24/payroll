@@ -1,3 +1,5 @@
+from uuid import uuid4
+
 from DBHelper import DBHelper
 
 
@@ -5,6 +7,12 @@ class Employees:
 
     def __init__(self):
         self.db = DBHelper()
+
+    @staticmethod
+    def _technical_employee_code(employee):
+        """Create a hidden legacy identifier only when a new record has none."""
+        supplied = (employee.employee_code or "").strip()
+        return supplied or f"SYS-{uuid4().hex[:24].upper()}"
 
     def dump(self, department_id=None):
         data, columns = self.db.fetch(
@@ -48,7 +56,7 @@ class Employees:
                 {
                     "Is Error": True,
                     "Error Message": (
-                        f"ไม่พบพนักงานรหัส {employee_id}"
+                        "ไม่พบข้อมูลพนักงาน"
                     )
                 },
                 {}
@@ -84,6 +92,7 @@ class Employees:
 
     def create(self, employee):
         with self.db.transaction() as cursor:
+            employee.employee_code = self._technical_employee_code(employee)
             self._validate_references(
                 cursor,
                 employee.department_id,
@@ -141,6 +150,17 @@ class Employees:
 
     def update(self, employee_id, employee):
         with self.db.transaction() as cursor:
+            # A blank value comes from the new code-free UI.  Preserve the
+            # existing technical identifier so historical payroll links stay intact.
+            if not (employee.employee_code or "").strip():
+                cursor.execute(
+                    "SELECT employee_code FROM public.employees WHERE id = %s",
+                    (employee_id,)
+                )
+                current = cursor.fetchone()
+                if current is None:
+                    return False
+                employee.employee_code = current[0]
             self._validate_references(
                 cursor,
                 employee.department_id,

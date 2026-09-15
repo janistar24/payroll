@@ -399,11 +399,11 @@ const rowNet = (e: Employee, r: PayrollRow) => rowGross(e, r) - rowDeduct(r)
 
 // รูปแบบทางการของรายงาน ใช้ร่วมกันทั้ง HR / Director / Admin
 const PAYROLL_REPORT_COLUMNS = [
-  'ลำดับ', 'รหัส', 'ชื่อ-นามสกุล', 'ตำแหน่ง', 'เงินเดือน', 'เงินเพิ่ม/\nค่าตอบแทน',
+  'ลำดับ', 'ชื่อ-นามสกุล', 'ตำแหน่ง', 'เงินเดือน', 'เงินเพิ่ม/\nค่าตอบแทน',
   'เงินประจำ\nตำแหน่ง', 'รวมรายการรับ', 'เพื่อชำระหนี้\nธนาคารกรุงไทย', 'ภาษีหัก ณ\nที่จ่าย',
   'ประกันสังคม', 'ฌาปนกิจ', 'ธนาคาร\nกรุงไทย', 'ธนาคารออมสิน\nสาขาตาคลี', 'รวมรายการหัก', 'ยอดรับสุทธิ',
 ]
-const PAYROLL_REPORT_WIDTHS = [7.19, 8.78, 21.79, 21.59, 12.39, 12.39, 11.19, 14.39, 15.99, 10.59, 12.39, 10.59, 15.78, 15.19, 14.19, 12.39]
+const PAYROLL_REPORT_WIDTHS = [7.19, 21.79, 21.59, 12.39, 12.39, 11.19, 14.39, 15.99, 10.59, 12.39, 10.59, 15.78, 15.19, 14.19, 12.39]
 type PayrollExportEntry = { employee: Employee; row: PayrollRow }
 
 const exportPayrollWorkbook = async ({ period, department, entries }: {
@@ -454,8 +454,8 @@ const exportPayrollWorkbook = async ({ period, department, entries }: {
     // รายงานยัง export ได้แม้เบราว์เซอร์ไม่สามารถอ่านไฟล์โลโก้จาก cache ได้
   }
 
-  sheet.mergeCells('A7:E7'); sheet.mergeCells('F7:H7'); sheet.mergeCells('I7:O7'); sheet.mergeCells('P7:P8')
-  sheet.getCell('A7').value = 'ข้อมูลพนักงาน'; sheet.getCell('F7').value = 'รายการรับ'; sheet.getCell('I7').value = 'รายการหัก'; sheet.getCell('P7').value = 'ยอดรับสุทธิ'
+  sheet.mergeCells('A7:D7'); sheet.mergeCells('E7:G7'); sheet.mergeCells('H7:N7'); sheet.mergeCells('O7:O8')
+  sheet.getCell('A7').value = 'ข้อมูลพนักงาน'; sheet.getCell('E7').value = 'รายการรับ'; sheet.getCell('H7').value = 'รายการหัก'; sheet.getCell('O7').value = 'ยอดรับสุทธิ'
   PAYROLL_REPORT_COLUMNS.forEach((label, index) => { sheet.getCell(8, index + 1).value = label })
   sheet.getRow(7).height = 13; sheet.getRow(8).height = 42
   for (let row = 7; row <= 8; row += 1) {
@@ -471,24 +471,24 @@ const exportPayrollWorkbook = async ({ period, department, entries }: {
   entries.forEach(({ employee, row }, index) => {
     const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
     values.forEach((value, valueIndex) => { totals[valueIndex] += value })
-    const sheetRow = sheet.addRow([index + 1, employee.id, `${employee.title}${employee.firstName} ${employee.lastName}`, employee.position, ...values])
+    const sheetRow = sheet.addRow([index + 1, `${employee.title}${employee.firstName} ${employee.lastName}`, employee.position, ...values])
     sheetRow.height = 13
     sheetRow.eachCell({ includeEmpty: true }, (cell, column) => {
       cell.font = { name: 'Tahoma', size: 10 }
       cell.border = border
-      cell.alignment = column <= 2 ? centered : { horizontal: column >= 5 ? 'right' : 'left', vertical: 'middle', wrapText: false }
-      if (column >= 5) cell.numFmt = '#,##0.00'
+      cell.alignment = column <= 1 ? centered : { horizontal: column >= 4 ? 'right' : 'left', vertical: 'middle', wrapText: false }
+      if (column >= 4) cell.numFmt = '#,##0.00'
     })
   })
-  const totalRow = sheet.addRow(['รวมทั้งสิ้น', '', '', '', ...totals])
-  sheet.mergeCells(`A${totalRow.number}:D${totalRow.number}`)
+  const totalRow = sheet.addRow(['รวมทั้งสิ้น', '', '', ...totals])
+  sheet.mergeCells(`A${totalRow.number}:C${totalRow.number}`)
   totalRow.height = 13
   totalRow.eachCell({ includeEmpty: true }, (cell, column) => {
     cell.font = { name: 'Tahoma', size: 10, bold: true }
     cell.border = border
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFFFCC' } }
-    cell.alignment = column >= 5 ? { horizontal: 'right', vertical: 'middle', wrapText: false } : centered
-    if (column >= 5) cell.numFmt = '#,##0.00'
+    cell.alignment = column >= 4 ? { horizontal: 'right', vertical: 'middle', wrapText: false } : centered
+    if (column >= 4) cell.numFmt = '#,##0.00'
   })
 
   const raw = await workbook.xlsx.writeBuffer()
@@ -510,7 +510,7 @@ const printPayrollReport = ({ period, department, status, entries }: {
   const body = entries.map(({ employee, row }, index) => {
     const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
     values.forEach((value, valueIndex) => { totals[valueIndex] += value })
-    return `<tr><td class="center">${index + 1}</td><td class="center">${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+    return `<tr><td class="center">${index + 1}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
   }).join('')
   printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานการปรับปรุงข้อมูลเงินเดือน</title><style>@page{size:297mm 210mm;margin:8mm 7mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;color:#000;background:#fff;font-family:Tahoma,sans-serif;font-size:7.2pt}.head{display:grid;grid-template-columns:1fr auto 1fr;align-items:center}.head img{width:14mm;height:14mm;object-fit:contain}.head-title{text-align:center}.head-title h1,.head-title h2,.head-title p{margin:0}.head-title h1{font-size:13pt;line-height:1.25}.head-title h2{font-size:11pt;line-height:1.25}.head-title p{font-size:8.5pt;margin-top:2px}.page{text-align:right;font-size:8pt}.meta{display:grid;grid-template-columns:repeat(3,1fr);margin:5mm 0 2mm}.meta div:nth-child(2){text-align:center}.meta div:last-child{text-align:right}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:.45pt solid #000;padding:3px 2px;vertical-align:middle}thead th{background:#ffffcc;text-align:center;font-weight:700;line-height:1.15;font-size:7pt;overflow-wrap:anywhere}tbody td,tfoot td{font-size:6.6pt;line-height:1.15;white-space:nowrap;overflow-wrap:normal;word-break:keep-all}td.num{text-align:right;font-variant-numeric:tabular-nums}td.center{text-align:center}tfoot td{background:#ffffcc;font-weight:700;border-top:1pt solid #000;border-bottom:1pt solid #000}.signatures{display:grid;grid-template-columns:repeat(3,1fr);gap:16mm;margin-top:9mm;text-align:center;line-height:1.65}col.c1{width:3.4%}col.c2{width:4.8%}col.c3{width:11.5%}col.c4{width:7.6%}col.c5{width:7.3%}col.c6{width:6.4%}col.c7{width:7.4%}col.c8{width:7.4%}col.c9{width:6.4%}col.c10{width:6.4%}col.c11{width:6.4%}col.c12{width:6.4%}col.c13{width:6.4%}col.c14{width:6.4%}col.c15{width:7.4%}col.c16{width:7.7%}</style></head><body><div class="head"><div><img src="${takhliLogo}" alt="ตราเทศบาลเมืองตาคลี"></div><div class="head-title"><h1>เทศบาลเมืองตาคลี</h1><h2>รายงานการปรับปรุงข้อมูลเงินเดือน</h2><p>${escapeMarkup(department)} · ประจำเดือน ${escapeMarkup(periodLabel(period))}</p></div><div class="page">หน้า 1/1</div></div><div class="meta"><div><b>วันที่จ่าย:</b> ${escapeMarkup(new Date(period.payDate).toLocaleDateString('th-TH', { dateStyle: 'long' }))}</div><div><b>จำนวนพนักงาน:</b> ${entries.length} คน</div><div><b>สถานะ:</b> ${escapeMarkup(statusLabel[status])}</div></div><table><colgroup>${Array.from({ length: 16 }, (_, index) => `<col class="c${index + 1}">`).join('')}</colgroup><thead><tr><th colspan="5">ข้อมูลพนักงาน</th><th colspan="3">รายการรับ</th><th colspan="7">รายการหัก</th><th rowspan="2">ยอดรับสุทธิ</th></tr><tr>${PAYROLL_REPORT_COLUMNS.slice(0, -1).map(value => `<th>${value}</th>`).join('')}</tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${totals.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr></tfoot></table><div class="signatures"><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้จัดทำ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้ตรวจสอบ</div><div>ลงชื่อ ........................................................<br>(........................................................)<br>ผู้อนุมัติ</div></div><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close())})<\/script></body></html>`)
   // เอกสารเก่ามี listener print ตอน load อยู่แล้ว จึงกันไม่ให้เรียกซ้ำ แล้วสั่งพิมพ์จาก click นี้โดยตรง
@@ -529,7 +529,7 @@ const legacyPrintPayrollTemplate = ({ period, department, status, entries }: {
   const body = entries.map(({ employee, row }, index) => {
     const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
     values.forEach((value, valueIndex) => { totals[valueIndex] += value })
-    return `<tr><td>${index + 1}</td><td>${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+    return `<tr><td>${index + 1}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
   }).join('')
   const widths = PAYROLL_REPORT_WIDTHS.map(width => `${(width / PAYROLL_REPORT_WIDTHS.reduce((sum, value) => sum + value, 0)) * 100}%`)
   const printedAt = formatBuddhistDateTime(new Date())
@@ -550,7 +550,7 @@ const printPayrollTemplate = ({ period, department, status: _status, entries }: 
   const body = entries.map(({ employee, row }, index) => {
     const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
     values.forEach((value, valueIndex) => { totals[valueIndex] += value })
-    return `<tr><td>${index + 1}</td><td>${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+    return `<tr><td>${index + 1}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
   }).join('')
   const columnTracks = PAYROLL_REPORT_WIDTHS.map(width => `${width}fr`).join(' ')
   const colgroup = PAYROLL_REPORT_WIDTHS.map(width => `<col style="width:${(width / PAYROLL_REPORT_WIDTHS.reduce((sum, value) => sum + value, 0)) * 100}%">`).join('')
@@ -579,7 +579,7 @@ const printPayrollTemplateExact = ({ period, department, status: _status, entrie
   const body = entries.map(({ employee, row }, index) => {
     const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
     values.forEach((value, valueIndex) => { totals[valueIndex] += value })
-    return `<tr><td>${index + 1}</td><td>${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+    return `<tr><td>${index + 1}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
   }).join('')
   const colgroup = PAYROLL_REPORT_WIDTHS.map(width => `<col style="width:${(width / PAYROLL_REPORT_WIDTHS.reduce((sum, value) => sum + value, 0)) * 100}%">`).join('')
   const headers = PAYROLL_REPORT_COLUMNS.slice(0, -1).map(label => `<th>${escapeMarkup(label).replace(/\n/g, '<br>')}</th>`).join('')
@@ -1771,7 +1771,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const visibleEmployees = emps.filter(employee => {
     const keyword = search.trim().toLowerCase()
     if (!keyword) return true
-    return employee.id.toLowerCase().includes(keyword) || `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(keyword)
+    return `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(keyword)
   })
   const inlineCandidates = useMemo(() => {
     const keyword = inlineAddSearch.trim().toLowerCase()
@@ -1780,7 +1780,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       // One-character searches are useful for names, but every employee code
       // includes "EMP".  Only begin matching codes after two characters.
       `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(keyword) ||
-      (keyword.length >= 2 && employee.id.toLowerCase().startsWith(keyword))
+      false
     ).slice(0, 8)
   }, [availableEmployees, inlineAddSearch])
 
@@ -1862,7 +1862,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     const payload = includedEmployeeIds.map(employeeCode => {
       const row = rows[employeeCode]
       const employeeId = byCode.get(employeeCode)
-      if (!employeeId || !row) throw new Error(`ไม่พบข้อมูลพนักงาน ${employeeCode}`)
+      if (!employeeId || !row) throw new Error('ไม่พบข้อมูลพนักงาน')
       return { employee_id: employeeId, lines: {
         EXTRA_PAY: row.extra, POS_ALLOW: row.posAllowance, KTB_LOAN: row.debtKTB,
         TAX: row.tax, SSF: row.social, FUNERAL_FUND: row.funeral, SAVINGS_BANK_LOAN: row.gsb,
@@ -2024,7 +2024,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       const gross = rowGross(employee, row)
       const deduct = rowDeduct(row)
       const net = rowNet(employee, row)
-      return `<Row>${textCell(index + 1, 'Center')}${textCell(employee.id, 'Center')}${textCell(`${employee.title}${employee.firstName} ${employee.lastName}`)}${textCell(employee.position)}${numberCell(employee.baseSalary)}${numberCell(row.extra)}${numberCell(row.posAllowance)}${numberCell(gross)}${numberCell(row.debtKTB)}${numberCell(row.tax)}${numberCell(row.social)}${numberCell(row.funeral)}${numberCell(row.ktb)}${numberCell(row.gsb)}${numberCell(deduct)}${numberCell(net)}</Row>`
+      return `<Row>${textCell(index + 1, 'Center')}${textCell(`${employee.title}${employee.firstName} ${employee.lastName}`)}${textCell(employee.position)}${numberCell(employee.baseSalary)}${numberCell(row.extra)}${numberCell(row.posAllowance)}${numberCell(gross)}${numberCell(row.debtKTB)}${numberCell(row.tax)}${numberCell(row.social)}${numberCell(row.funeral)}${numberCell(row.ktb)}${numberCell(row.gsb)}${numberCell(deduct)}${numberCell(net)}</Row>`
     }).join('')
     const workbook = `<?xml version="1.0" encoding="UTF-8"?>
 <?mso-application progid="Excel.Sheet"?>
@@ -2045,7 +2045,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   <Row><Cell ss:MergeAcross="15" ss:StyleID="Subtitle"><Data ss:Type="String">${escapeMarkup(dept.department)}</Data></Cell></Row>
   <Row></Row>
   <Row><Cell ss:MergeAcross="4" ss:StyleID="Header"><Data ss:Type="String">ข้อมูลพนักงาน</Data></Cell><Cell ss:MergeAcross="2" ss:StyleID="Header"><Data ss:Type="String">รายการรับ</Data></Cell><Cell ss:MergeAcross="6" ss:StyleID="Header"><Data ss:Type="String">รายการหัก</Data></Cell><Cell ss:StyleID="Header"><Data ss:Type="String">ยอดรับสุทธิ</Data></Cell></Row>
-  <Row>${['ลำดับ','รหัส','ชื่อ-นามสกุล','ตำแหน่ง','ฐานเงินเดือน','เงินเพิ่ม','เงินประจำตำแหน่ง','รวมรายการรับ','ชำระหนี้ KTB','ภาษีหัก ณ ที่จ่าย','ประกันสังคม','ฌาปนกิจ','ธนาคารกรุงไทย','ธนาคารออมสิน','รวมรายการหัก','ยอดรับสุทธิ'].map(value => textCell(value, 'Header')).join('')}</Row>
+  <Row>${['ลำดับ','ชื่อ-นามสกุล','ตำแหน่ง','ฐานเงินเดือน','เงินเพิ่ม','เงินประจำตำแหน่ง','รวมรายการรับ','ชำระหนี้ KTB','ภาษีหัก ณ ที่จ่าย','ประกันสังคม','ฌาปนกิจ','ธนาคารกรุงไทย','ธนาคารออมสิน','รวมรายการหัก','ยอดรับสุทธิ'].map(value => textCell(value, 'Header')).join('')}</Row>
   ${dataRows}
   <Row><Cell ss:MergeAcross="3" ss:StyleID="Header"><Data ss:Type="String">รวมทั้งสิ้น</Data></Cell>${totalValues.map(value => numberCell(value, 'Total')).join('')}</Row>
 </Table><WorksheetOptions xmlns="urn:schemas-microsoft-com:office:excel"><Selected/><FreezePanes/><FrozenNoSplit/><SplitHorizontal>6</SplitHorizontal><TopRowBottomPane>6</TopRowBottomPane><ActivePane>2</ActivePane><PageSetup><Layout x:Orientation="Landscape" xmlns:x="urn:schemas-microsoft-com:office:excel"/></PageSetup></WorksheetOptions></Worksheet>
@@ -2071,7 +2071,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     const printRows = emps.map((employee, index) => {
       const row = rows[employee.id]
       const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
-      return `<tr><td class="center">${index + 1}</td><td class="center">${escapeMarkup(employee.id)}</td><td class="employee-name">${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+      return `<tr><td class="center">${index + 1}</td><td class="employee-name">${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
     }).join('')
     const printWindow = window.open('', '_blank', 'width=1200,height=800')
     if (!printWindow) {
@@ -2119,7 +2119,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       <div className="card" style={{ padding: '12px 14px', marginBottom: 16 }}>
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap" style={{ flex: 1 }}>
-            <input className="inp" style={{ maxWidth: 300 }} value={search} onChange={event => setSearch(event.target.value)} placeholder="🔍 ค้นหาชื่อหรือรหัสพนักงาน" />
+            <input className="inp" style={{ maxWidth: 300 }} value={search} onChange={event => setSearch(event.target.value)} placeholder="🔍 ค้นหาชื่อพนักงาน" />
             <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{visibleEmployees.length} รายการ</span>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -2168,7 +2168,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
         <table className="tbl payroll-detail-table" style={{ minWidth: 1200 }}>
           <thead>
             <tr>
-              <th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
+              <th colSpan={4} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
               <th colSpan={3} className="th-group th-group-income">รายการรับ</th>
               <th colSpan={7} className="th-group th-group-deduct">รายการหัก</th>
               <th colSpan={1} className="th-group th-group-net">ยอดรับสุทธิ</th>
@@ -2177,7 +2177,6 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             <tr>
               {/* Emp */}
               <th className="th-emp">#</th>
-              <th className="th-emp">รหัส</th>
               <th className="th-emp">ชื่อ–นามสกุล</th>
               <th className="th-emp">ตำแหน่ง</th>
               <th className="th-emp" style={{ textAlign: 'right' }}>ฐานเงินเดือน</th>
@@ -2205,7 +2204,6 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               return (
                 <tr key={e.id} className={isActive ? 'editing' : ''}>
                   <td className="readonly" style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>{idx + 1}</td>
-                  <td className="readonly">{e.id}</td>
                   <td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{e.title}{e.firstName} {e.lastName}</td>
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.position}</td>
                   <td className="num readonly">{thb(e.baseSalary)}</td>
@@ -2230,12 +2228,12 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             })}
             {editing && !isReadonly && (
               <tr className="payroll-inline-add-row" style={{ background: 'rgba(240,236,251,0.35)', borderTop: '2px dashed rgba(124,92,191,0.25)' }}>
-                <td colSpan={3} style={{ padding: '10px 12px' }}>
+                <td colSpan={2} style={{ padding: '10px 12px' }}>
                   <div style={{ fontSize: 11, color: 'var(--purple-600)', marginBottom: 6, fontWeight: 700 }}>+ เพิ่มพนักงาน</div>
                   <div ref={inlineAddRef} style={{ position: 'relative', width: '100%' }}>
                     <input
                       className="inp"
-                      placeholder="พิมพ์ชื่อหรือรหัสพนักงาน"
+                      placeholder="พิมพ์ชื่อพนักงาน"
                       value={inlineAddSearch}
                       onChange={event => { setInlineAddSearch(event.target.value); openInlineDropdown() }}
                       onFocus={() => inlineAddSearch && openInlineDropdown()}
@@ -2243,13 +2241,13 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                     />
                   </div>
                 </td>
-                <td colSpan={14} />
+                <td colSpan={13} />
               </tr>
             )}
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>
+              <td colSpan={3} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>
               <td className="num">{thb(totals.base)}</td>
               <td className="num">{thb(totals.extra)}</td>
               <td className="num">{thb(totals.pos)}</td>
@@ -2278,7 +2276,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
         }}>
           {!inlineAddSearch.trim() ? (
             <div style={{ padding: '12px 14px', fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
-              พิมพ์ชื่อหรือรหัสพนักงานเพื่อค้นหา
+              พิมพ์ชื่อพนักงานเพื่อค้นหา
             </div>
           ) : inlineCandidates.length === 0 ? (
             <div style={{ padding: '12px 14px', fontSize: 12, color: 'var(--text-muted)', textAlign: 'center' }}>
@@ -2291,7 +2289,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>{employee.title}{employee.firstName} {employee.lastName}</div>
               <div style={{ display: 'flex', gap: 8, marginTop: 2, fontSize: 11, color: 'var(--text-muted)' }}>
-                <span style={{ fontFamily: 'monospace' }}>{employee.id}</span><span>{employee.position}</span>
+                <span>{employee.position}</span>
               </div>
             </button>
           ))}
@@ -2480,7 +2478,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
   const visibleEmployees = useMemo(() => {
     const keyword = search.trim().toLowerCase()
     if (!keyword) return emps
-    return emps.filter(employee => employee.id.toLowerCase().includes(keyword) || `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(keyword))
+    return emps.filter(employee => `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(keyword))
   }, [emps, search])
 
   const exportExcel = () => exportPayrollWorkbook({
@@ -2491,10 +2489,10 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
 
   const legacyExportExcel = () => {
     const escapeCell = (value: unknown) => String(value ?? '').replace(/[\t\r\n]/g, ' ')
-    const columns = ['ลำดับ', 'รหัส', 'ชื่อ-นามสกุล', 'ตำแหน่ง', 'ฐานเงินเดือน', 'เงินเพิ่ม', 'เงินประจำตำแหน่ง', 'รวมรายการรับ', 'ชำระหนี้ KTB', 'ภาษีหัก ณ ที่จ่าย', 'ประกันสังคม', 'ฌาปนกิจ', 'ธนาคารกรุงไทย', 'ธนาคารออมสิน', 'รวมรายการหัก', 'ยอดรับสุทธิ']
+    const columns = ['ลำดับ', 'ชื่อ-นามสกุล', 'ตำแหน่ง', 'ฐานเงินเดือน', 'เงินเพิ่ม', 'เงินประจำตำแหน่ง', 'รวมรายการรับ', 'ชำระหนี้ KTB', 'ภาษีหัก ณ ที่จ่าย', 'ประกันสังคม', 'ฌาปนกิจ', 'ธนาคารกรุงไทย', 'ธนาคารออมสิน', 'รวมรายการหัก', 'ยอดรับสุทธิ']
     const rows = visibleEmployees.map((employee, index) => {
       const row = dept.rows[employee.id] ?? makeDefaultRow(employee)
-      return [index + 1, employee.id, `${employee.title}${employee.firstName} ${employee.lastName}`, employee.position, employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
+      return [index + 1, `${employee.title}${employee.firstName} ${employee.lastName}`, employee.position, employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
     })
     const content = `\ufeff${[columns, ...rows].map(row => row.map(escapeCell).join('\t')).join('\n')}`
     const url = URL.createObjectURL(new Blob([content], { type: 'application/vnd.ms-excel;charset=utf-8' }))
@@ -2518,9 +2516,9 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
     const body = visibleEmployees.map((employee, index) => {
       const row = dept.rows[employee.id] ?? makeDefaultRow(employee)
       const values = [employee.baseSalary, row.extra, row.posAllowance, rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, rowDeduct(row), rowNet(employee, row)]
-      return `<tr><td>${index + 1}</td><td>${escapeMarkup(employee.id)}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
+      return `<tr><td>${index + 1}</td><td>${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${values.map(value => `<td class="num">${thb(value)}</td>`).join('')}</tr>`
     }).join('')
-    printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>บัญชีรายละเอียดการจ่ายเงินเดือน</title><style>@page{size:A4 landscape;margin:10mm}body{font-family:Tahoma,sans-serif;color:#000;font-size:8pt}h1,h2,p{text-align:center;margin:0}h1{font-size:14pt}h2{font-size:11pt}.meta{margin:5mm 0}table{width:100%;border-collapse:collapse}th,td{border:.5pt solid #000;padding:3px}th{background:#eee;text-align:center}.num{text-align:right}tfoot td{font-weight:bold;background:#eee}</style></head><body><h1>เทศบาลเมืองตาคลี</h1><h2>บัญชีรายละเอียดการจ่ายเงินเดือน ประจำเดือน${escapeMarkup(periodLabel(period))}</h2><p>${escapeMarkup(dept.department)}</p><p class="meta">วันที่จ่าย ${escapeMarkup(new Date(period.payDate).toLocaleDateString('th-TH'))} · จำนวนพนักงาน ${visibleEmployees.length} คน</p><table><thead><tr><th>#</th><th>รหัส</th><th>ชื่อ-นามสกุล</th><th>ตำแหน่ง</th><th>ฐานเงินเดือน</th><th>เงินเพิ่ม</th><th>เงินประจำตำแหน่ง</th><th>รวมรายการรับ</th><th>ชำระหนี้ KTB</th><th>ภาษี</th><th>ประกันสังคม</th><th>ฌาปนกิจ</th><th>ธ.กรุงไทย</th><th>ธ.ออมสิน</th><th>รวมรายการหัก</th><th>ยอดสุทธิ</th></tr></thead><tbody>${body}</tbody></table><script>window.addEventListener('load',()=>window.print())<\/script></body></html>`)
+    printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>บัญชีรายละเอียดการจ่ายเงินเดือน</title><style>@page{size:A4 landscape;margin:10mm}body{font-family:Tahoma,sans-serif;color:#000;font-size:8pt}h1,h2,p{text-align:center;margin:0}h1{font-size:14pt}h2{font-size:11pt}.meta{margin:5mm 0}table{width:100%;border-collapse:collapse}th,td{border:.5pt solid #000;padding:3px}th{background:#eee;text-align:center}.num{text-align:right}tfoot td{font-weight:bold;background:#eee}</style></head><body><h1>เทศบาลเมืองตาคลี</h1><h2>บัญชีรายละเอียดการจ่ายเงินเดือน ประจำเดือน${escapeMarkup(periodLabel(period))}</h2><p>${escapeMarkup(dept.department)}</p><p class="meta">วันที่จ่าย ${escapeMarkup(new Date(period.payDate).toLocaleDateString('th-TH'))} · จำนวนพนักงาน ${visibleEmployees.length} คน</p><table><thead><tr><th>#</th><th>ชื่อ-นามสกุล</th><th>ตำแหน่ง</th><th>ฐานเงินเดือน</th><th>เงินเพิ่ม</th><th>เงินประจำตำแหน่ง</th><th>รวมรายการรับ</th><th>ชำระหนี้ KTB</th><th>ภาษี</th><th>ประกันสังคม</th><th>ฌาปนกิจ</th><th>ธ.กรุงไทย</th><th>ธ.ออมสิน</th><th>รวมรายการหัก</th><th>ยอดสุทธิ</th></tr></thead><tbody>${body}</tbody></table><script>window.addEventListener('load',()=>window.print())<\/script></body></html>`)
     printWindow.document.close()
   }
 
@@ -2614,7 +2612,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
       <div className="card" style={{ padding: '12px 14px', marginBottom: 16 }}>
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2 flex-wrap" style={{ flex: 1 }}>
-            <input className="inp" style={{ maxWidth: 300 }} value={search} onChange={event => setSearch(event.target.value)} placeholder="🔍 ค้นหาชื่อหรือรหัสพนักงาน" />
+            <input className="inp" style={{ maxWidth: 300 }} value={search} onChange={event => setSearch(event.target.value)} placeholder="🔍 ค้นหาชื่อพนักงาน" />
             <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{visibleEmployees.length} รายการ</span>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -2636,14 +2634,13 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
         <table className="tbl payroll-detail-table" style={{ minWidth: 1200 }}>
           <thead>
             <tr>
-              <th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
+              <th colSpan={4} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
               <th colSpan={3} className="th-group th-group-income">รายการรับ</th>
               <th colSpan={7} className="th-group th-group-deduct">รายการหัก</th>
               <th colSpan={1} className="th-group th-group-net">ยอดรับสุทธิ</th>
             </tr>
             <tr>
               <th className="th-emp">#</th>
-              <th className="th-emp">รหัส</th>
               <th className="th-emp">ชื่อ–นามสกุล</th>
               <th className="th-emp">ตำแหน่ง</th>
               <th className="th-emp" style={{ textAlign: 'right' }}>ฐานเงินเดือน</th>
@@ -2667,7 +2664,6 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
               return (
                 <tr key={e.id}>
                   <td className="readonly" style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>{idx + 1}</td>
-                  <td className="readonly">{e.id}</td>
                   <td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{e.title}{e.firstName} {e.lastName}</td>
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{e.position}</td>
                   <td className="num readonly">{thb(e.baseSalary)}</td>
@@ -2688,7 +2684,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>
+              <td colSpan={3} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>
               <td className="num">{thb(t.totalBase)}</td>
               <td className="num">{thb(t.totalExtra)}</td>
               <td className="num">{thb(t.totalPos)}</td>
@@ -2830,7 +2826,7 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
   const filtered = useMemo(() => employees.filter(e => {
     const name = `${e.prefix ?? ''}${e.first_name} ${e.last_name}`
     if (filterDept !== 'all' && String(e.department_id) !== filterDept) return false
-    if (search && !name.includes(search) && !e.employee_code.includes(search)) return false
+    if (search && !name.includes(search)) return false
     return true
   }), [employees, search, filterDept])
 
@@ -2876,7 +2872,7 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
       />
       <div className="card" style={{ padding: '14px 18px', marginBottom: 14 }}>
         <div className="flex items-center gap-3">
-          <input className="inp" style={{ maxWidth: 240 }} placeholder="ค้นหาชื่อหรือรหัสพนักงาน..." value={search} onChange={e => setSearch(e.target.value)} />
+          <input className="inp" style={{ maxWidth: 240 }} placeholder="ค้นหาชื่อพนักงาน..." value={search} onChange={e => setSearch(e.target.value)} />
           {role !== 'hr' && (
             <AppSelect className="inp" style={{ maxWidth: 220 }} value={filterDept} onChange={e => setFilterDept(e.target.value)}>
               <option value="all">ทุกฝ่าย</option>
@@ -2889,7 +2885,6 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
         <table className="tbl">
           <thead>
             <tr>
-              <th>รหัสพนักงาน</th>
               <th>ชื่อ–นามสกุล</th>
               <th>ตำแหน่ง</th>
               <th>ฝ่าย</th>
@@ -2900,12 +2895,11 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={8}><div className="empty-state">กำลังโหลดข้อมูลพนักงานจากฐานข้อมูล...</div></td></tr>}
-            {!loading && error && <tr><td colSpan={8}><div className="empty-state" style={{ color: '#B42318' }}>ไม่สามารถโหลดข้อมูลพนักงานได้: {error}</div></td></tr>}
-            {!loading && !error && filtered.length === 0 && <tr><td colSpan={8}><div className="empty-state">ไม่พบพนักงานที่ตรงกับเงื่อนไข</div></td></tr>}
+            {loading && <tr><td colSpan={7}><div className="empty-state">กำลังโหลดข้อมูลพนักงานจากฐานข้อมูล...</div></td></tr>}
+            {!loading && error && <tr><td colSpan={7}><div className="empty-state" style={{ color: '#B42318' }}>ไม่สามารถโหลดข้อมูลพนักงานได้: {error}</div></td></tr>}
+            {!loading && !error && filtered.length === 0 && <tr><td colSpan={7}><div className="empty-state">ไม่พบพนักงานที่ตรงกับเงื่อนไข</div></td></tr>}
             {filtered.map(e => (
               <tr key={e.id}>
-                <td style={{ color: 'var(--text-secondary)', fontSize: 12.5 }}>{e.employee_code}</td>
                 <td style={{ fontWeight: 500 }}>{e.prefix}{e.first_name} {e.last_name}</td>
                 <td style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{e.position_id ? positionById.get(e.position_id) ?? 'ไม่พบตำแหน่ง' : '–'}</td>
                 <td style={{ fontSize: 12.5 }}>{e.department_id ? departmentById.get(e.department_id) ?? 'ไม่พบหน่วยงาน' : '–'}</td>
@@ -2930,7 +2924,7 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
           <div className="flex flex-col gap-4">
             <div style={{ padding: 14, borderRadius: 10, background: 'var(--purple-100)' }}>
               <div style={{ fontFamily: 'var(--font-display)', fontSize: 17, fontWeight: 700 }}>{detailEmployee.prefix}{detailEmployee.first_name} {detailEmployee.last_name}</div>
-              <div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>{detailEmployee.employee_code} · {detailEmployee.status === 'ACTIVE' ? 'ปกติ' : statusLabel[detailEmployee.status]}</div>
+              <div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>{detailEmployee.status === 'ACTIVE' ? 'ปกติ' : statusLabel[detailEmployee.status]}</div>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px 18px' }}>
               {[
@@ -2961,7 +2955,7 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
         <Modal title="ยืนยันการลบข้อมูลพนักงาน" onClose={() => !deactivating && setEmployeeToDeactivate(null)}>
           <div className="flex flex-col gap-4">
             <div style={{ padding: 14, borderRadius: 10, border: '1px solid #FECACA', background: '#FEF2F2', color: '#991B1B', fontSize: 13, lineHeight: 1.6 }}>
-              ลบ <strong>{employeeToDeactivate.prefix}{employeeToDeactivate.first_name} {employeeToDeactivate.last_name}</strong> ({employeeToDeactivate.employee_code}) ออกจากรายการพนักงานหรือไม่?
+              ลบ <strong>{employeeToDeactivate.prefix}{employeeToDeactivate.first_name} {employeeToDeactivate.last_name}</strong> ออกจากรายการพนักงานหรือไม่?
             </div>
             <div style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.6 }}>
               ระบบจะปิดใช้งานพนักงานในฐานข้อมูลและซ่อนจากรายการนี้ โดยไม่ลบข้อมูลหรือประวัติเงินเดือนเดิม
@@ -2992,7 +2986,6 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
 }) {
   const emp = empId ? employees.find(employee => employee.id === empId) : null
   const initialPrefix = emp?.prefix ?? ''
-  const [employeeCode, setEmployeeCode] = useState(emp?.employee_code ?? '')
   const [nationalId, setNationalId] = useState(emp?.national_id ?? '')
   const [prefixChoice, setPrefixChoice] = useState(
     EMPLOYEE_PREFIXES.includes(initialPrefix as typeof EMPLOYEE_PREFIXES[number]) ? initialPrefix : initialPrefix ? 'OTHER' : ''
@@ -3025,7 +3018,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
   }, [emp?.position_id, positionName, positions])
 
   const handleSave = async () => {
-    if (!employeeCode.trim() || nationalId.length !== 13 || !firstName.trim() || !lastName.trim() || !birthDate || !baseSalary || (prefixChoice === 'OTHER' && !customPrefix.trim()) || (employeeType === 'OTHER' && !employeeTypeOther.trim())) {
+    if (nationalId.length !== 13 || !firstName.trim() || !lastName.trim() || !birthDate || !baseSalary || (prefixChoice === 'OTHER' && !customPrefix.trim()) || (employeeType === 'OTHER' && !employeeTypeOther.trim())) {
       setSaveError('กรุณากรอกช่องที่จำเป็นให้ครบ รวมถึงวันเดือนปีเกิด และเลขประจำตัวประชาชนต้องมี 13 หลัก')
       return
     }
@@ -3040,7 +3033,7 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
         : existingPosition
       const resolvedPrefix = prefixChoice === 'OTHER' ? customPrefix.trim() : prefixChoice
       const payload: EmployeeSaveInput = {
-        employee_code: employeeCode.trim(),
+        employee_code: emp?.employee_code ?? '',
         national_id: nationalId,
         prefix: resolvedPrefix || null,
         first_name: firstName.trim(),
@@ -3059,12 +3052,14 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
         bank_account_no: bankAccountNo.trim() || null,
         base_salary: baseSalary,
       }
-      const savedEmployeeId = empId ?? await createEmployee(payload)
+      const createdEmployee = empId ? null : await createEmployee(payload)
+      const savedEmployeeId = empId ?? createdEmployee!.id
       if (empId) await updateEmployee(empId, payload)
       const savedAt = new Date().toISOString()
       const optimisticEmployee: DatabaseEmployee = {
         id: savedEmployeeId,
         ...payload,
+        employee_code: emp?.employee_code ?? createdEmployee!.employee_code,
         base_salary: String(payload.base_salary),
         created_at: emp?.created_at ?? savedAt,
         updated_at: savedAt,
@@ -3088,7 +3083,6 @@ function EmployeeForm({ empId, employees, departments, positions, setPage, showT
       <div className="card" style={{ padding: 28 }}>
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.04em' }}>ข้อมูลส่วนตัว</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
-          <FormField label="รหัสพนักงาน" required><input className="inp" value={employeeCode} onChange={e => setEmployeeCode(e.target.value.toUpperCase())} placeholder="EMP000" /></FormField>
           <FormField label="เลขประจำตัวประชาชน" required><input className="inp" inputMode="numeric" maxLength={13} value={nationalId} onChange={e => setNationalId(e.target.value.replace(/\D/g, '').slice(0, 13))} /></FormField>
           <FormField label="คำนำหน้า">
             <AppSelect className="inp" value={prefixChoice} onChange={e => setPrefixChoice(e.target.value)}>
@@ -3357,7 +3351,6 @@ function PayslipStatus({ periods, onReload, onEmployeeEmailUpdated, showToast, o
             <table className="tbl">
               <thead>
                 <tr>
-                  <th>รหัสพนักงาน</th>
                   <th>ชื่อ–นามสกุล</th>
                   <th>อีเมล</th>
                   <th>สถานะ PDF</th>
@@ -3408,7 +3401,7 @@ function PayslipStatus({ periods, onReload, onEmployeeEmailUpdated, showToast, o
                   const editingEmail = editingEmailCode === e.id
                   const saveEmail = async () => {
                     const nextEmail = emailDraft.trim()
-                    if (!e.databaseId) { showToast('ไม่พบรหัสพนักงานสำหรับบันทึกอีเมล', 'error'); return }
+                    if (!e.databaseId) { showToast('ไม่พบข้อมูลพนักงานสำหรับบันทึกอีเมล', 'error'); return }
                     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(nextEmail)) { showToast('กรุณากรอกอีเมลให้ถูกต้องก่อนบันทึก', 'error'); return }
                     setSavingEmailCode(e.id)
                     try {
@@ -3425,7 +3418,6 @@ function PayslipStatus({ periods, onReload, onEmployeeEmailUpdated, showToast, o
                   }
                   return (
                     <tr key={e.id}>
-                      <td style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{e.id}</td>
                       <td>{e.title}{e.firstName} {e.lastName}</td>
                       <td style={{ fontSize: 12, color: e.email?.trim() ? 'var(--text-secondary)' : '#B45309', fontWeight: e.email?.trim() ? 400 : 600, minWidth: 250 }}>
                         {editingEmail ? <div className="flex items-center gap-1" style={{ minWidth: 228 }}><input className="inp" autoFocus type="email" value={emailDraft} onChange={event => setEmailDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void saveEmail(); if (event.key === 'Escape') { setEditingEmailCode(null); setEmailDraft('') } }} style={{ height: 32, minWidth: 0, padding: '6px 9px', fontSize: 12 }} /><button className="btn btn-primary btn-xs" aria-busy={savingEmailCode === e.id} disabled={savingEmailCode === e.id} onClick={() => void saveEmail()}><BusyLabel busy={savingEmailCode === e.id} label="กำลังบันทึก…">บันทึก</BusyLabel></button></div>
@@ -3632,7 +3624,7 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
       {approvalRequest && <Modal title={rejectMode ? 'ไม่อนุมัติสิทธิ์' : 'ตรวจสอบและอนุมัติ'} onClose={() => setApprovalRequest(null)}><div className="flex flex-col gap-4"><div style={{ padding: '10px 12px', background: rejectMode ? '#FFF4F2' : '#F7F4FF', borderRadius: 10, fontSize: 13 }}><strong>{String(approvalRequest.employee_data.prefix ?? '')}{String(approvalRequest.employee_data.first_name ?? '')} {String(approvalRequest.employee_data.last_name ?? '')}</strong><br /><span style={{ color: 'var(--text-secondary)' }}>{approvalRequest.username} · {approvalRequest.invited_email}</span></div>{rejectMode ? <><FormField label="เหตุผล (ไม่บังคับ)"><textarea className="inp" value={rejectionReason} onChange={event => setRejectionReason(event.target.value)} rows={3} placeholder="ระบุเหตุผลที่ไม่อนุมัติ" /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setRejectMode(false)}>กลับ</button><button className="btn btn-danger" onClick={() => void rejectRequest()}>ไม่อนุมัติและปิดคำขอ</button></div></> : <><FormField label="กำหนดสิทธิ์เป็น :" required><select className="inp" value={approvalRole} onChange={event => setApprovalRole(event.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้บริหาร</option><option value="admin">แอดมิน</option></select></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setApprovalRequest(null)}>ยกเลิก</button><button className="btn btn-danger" onClick={() => setRejectMode(true)}>ไม่อนุมัติสิทธิ์</button><button className="btn btn-primary" onClick={() => void approveRequest()}>อนุมัติและเปิดใช้งาน</button></div></>}</div></Modal>}
       {showCreate && <Modal title="เพิ่มผู้ใช้งาน" onClose={() => setShowCreate(false)}><div className="flex flex-col gap-4">
         <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>เลือกพนักงานที่มีข้อมูลจริงแล้ว ระบบจะใช้ชื่อและอีเมลจากข้อมูลพนักงานโดยอัตโนมัติ</div>
-        <FormField label="พนักงาน" required><select className="inp" value={employeeId} onChange={e => setEmployeeId(e.target.value)}><option value="">เลือกพนักงาน</option>{employees.filter(e => !linkedEmployeeIds.has(e.id)).map(e => <option key={e.id} value={e.id}>{e.employee_code} · {e.prefix}{e.first_name} {e.last_name}</option>)}</select></FormField>
+        <FormField label="พนักงาน" required><select className="inp" value={employeeId} onChange={e => setEmployeeId(e.target.value)}><option value="">เลือกพนักงาน</option>{employees.filter(e => !linkedEmployeeIds.has(e.id)).map(e => <option key={e.id} value={e.id}>{e.prefix}{e.first_name} {e.last_name}</option>)}</select></FormField>
         <FormField label="ชื่อผู้ใช้" required><input className="inp" value={username} onChange={e => setUsername(e.target.value)} /></FormField>
         <FormField label="รหัสผ่านชั่วคราว (อย่างน้อย 8 ตัวอักษร)" required><input className="inp" type="password" value={temporaryPassword} onChange={e => setTemporaryPassword(e.target.value)} /></FormField>
         <FormField label="สิทธิ์" required><select className="inp" value={newRole} onChange={e => setNewRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้บริหาร</option><option value="admin">แอดมิน</option></select></FormField>
@@ -3810,7 +3802,7 @@ function InvitePage({ token }: { token: string }) {
   const [saving, setSaving] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
-  const [form, setForm] = useState<Record<string, string>>({ employee_code: '', national_id: '', prefix: '', custom_prefix: '', first_name: '', last_name: '', department_id: '', position_name: '', employee_type: 'CIVIL_SERVANT', employee_type_other: '', birth_date: '', start_date: '', end_date: '', email: '', phone: '', bank_name: '', bank_account_no: '', base_salary: '', username: '', password: '', confirm_password: '' })
+  const [form, setForm] = useState<Record<string, string>>({ national_id: '', prefix: '', custom_prefix: '', first_name: '', last_name: '', department_id: '', position_name: '', employee_type: 'CIVIL_SERVANT', employee_type_other: '', birth_date: '', start_date: '', end_date: '', email: '', phone: '', bank_name: '', bank_account_no: '', base_salary: '', username: '', password: '', confirm_password: '' })
   useEffect(() => { getInvite(token).then(data => { setInvite(data); setForm(current => ({ ...current, email: data.email })) }).catch(e => setError(e.message)) }, [token])
   const set = (key: string, value: string) => setForm(current => ({ ...current, [key]: value }))
   const uniqueDepartments = invite?.departments.filter((department, index, items) => items.findIndex(item => item.name.trim() === department.name.trim()) === index) ?? []
@@ -3821,7 +3813,7 @@ function InvitePage({ token }: { token: string }) {
     setSaving(true)
     try {
       await submitInvite(token, { username: form.username, password: form.password, employee: {
-        employee_code: form.employee_code, national_id: form.national_id, prefix: form.prefix === 'OTHER' ? form.custom_prefix : form.prefix || null, first_name: form.first_name, last_name: form.last_name,
+        employee_code: '', national_id: form.national_id, prefix: form.prefix === 'OTHER' ? form.custom_prefix : form.prefix || null, first_name: form.first_name, last_name: form.last_name,
         department_id: Number(form.department_id) || null, position_id: null, employee_type: form.employee_type, status: 'ACTIVE',
         birth_date: form.birth_date || null, start_date: form.start_date || null, end_date: form.end_date || null, email: form.email, phone: form.phone || null,
         bank_name: form.bank_name || null, bank_account_no: form.bank_account_no || null, base_salary: Number(form.base_salary || 0), employee_type_other: form.employee_type === 'OTHER' ? form.employee_type_other : null
@@ -3840,7 +3832,7 @@ function InvitePage({ token }: { token: string }) {
       <div style={{ background: '#F0ECFF', padding: '12px 14px', borderRadius: 10, marginBottom: 22, fontSize: 14 }}>อีเมลคำเชิญ: <strong>{invite.email}</strong> · สิทธิ์การใช้งานที่ต้องการ: <strong>{roleLabel(invite.requested_role)}</strong></div>
       <p style={{ color: '#737080', fontSize: 13, marginBottom: 20 }}><span style={{ color: '#EF4444' }}>*</span> จำเป็นต้องกรอก · ช่องที่ระบุ “ไม่บังคับ” สามารถเว้นได้</p>
       <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลส่วนตัว</div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16, marginBottom: 24 }}>{field('employee_code','รหัสพนักงาน','text',true,{ placeholder: 'EMP000', onChange: e => set('employee_code', e.target.value.toUpperCase()) })}{field('national_id','เลขประจำตัวประชาชน','text',true,{ inputMode: 'numeric', maxLength: 13, onChange: e => set('national_id', e.target.value.replace(/\D/g, '')) })}<FormField label="คำนำหน้า (ไม่บังคับ)"><select className="inp" value={form.prefix} onChange={e => set('prefix', e.target.value)}><option value="">ไม่ระบุ</option>{EMPLOYEE_PREFIXES.map(option => <option key={option} value={option}>{option}</option>)}<option value="OTHER">อื่นๆ (โปรดระบุ)</option></select></FormField>{form.prefix === 'OTHER' && field('custom_prefix','คำนำหน้าอื่นๆ','text',true,{ maxLength: 20 })}{field('first_name','ชื่อ','text',true)}{field('last_name','นามสกุล','text',true)}<FormField label="วันเดือนปีเกิด (พ.ศ.)" required><BuddhistDateInput value={form.birth_date} onChange={value => set('birth_date', value)} required /></FormField><FormField label="อีเมล" required><input className="inp" type="email" value={form.email} readOnly style={{ background: '#F6F5F9' }} /></FormField>{field('phone','โทรศัพท์','tel')}</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16, marginBottom: 24 }}>{field('national_id','เลขประจำตัวประชาชน','text',true,{ inputMode: 'numeric', maxLength: 13, onChange: e => set('national_id', e.target.value.replace(/\D/g, '')) })}<FormField label="คำนำหน้า (ไม่บังคับ)"><select className="inp" value={form.prefix} onChange={e => set('prefix', e.target.value)}><option value="">ไม่ระบุ</option>{EMPLOYEE_PREFIXES.map(option => <option key={option} value={option}>{option}</option>)}<option value="OTHER">อื่นๆ (โปรดระบุ)</option></select></FormField>{form.prefix === 'OTHER' && field('custom_prefix','คำนำหน้าอื่นๆ','text',true,{ maxLength: 20 })}{field('first_name','ชื่อ','text',true)}{field('last_name','นามสกุล','text',true)}<FormField label="วันเดือนปีเกิด (พ.ศ.)" required><BuddhistDateInput value={form.birth_date} onChange={value => set('birth_date', value)} required /></FormField><FormField label="อีเมล" required><input className="inp" type="email" value={form.email} readOnly style={{ background: '#F6F5F9' }} /></FormField>{field('phone','โทรศัพท์','tel')}</div>
       <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลการทำงาน</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16, marginBottom: 24 }}><FormField label="ฝ่าย" required><select className="inp" required value={form.department_id} onChange={e => set('department_id', e.target.value)}><option value="">ไม่ระบุ</option>{uniqueDepartments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></FormField><FormField label="ตำแหน่ง (ไม่บังคับ)"><input className="inp" list="invite-position-options" value={form.position_name} onChange={e => set('position_name', e.target.value)} /><datalist id="invite-position-options">{invite.positions.map(position => <option key={position.id} value={position.name} />)}</datalist></FormField><FormField label="ประเภทพนักงาน" required><select className="inp" value={form.employee_type} onChange={e => set('employee_type', e.target.value)}>{EMPLOYEE_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></FormField>{form.employee_type === 'OTHER' && field('employee_type_other','ประเภทพนักงานอื่นๆ','text',true,{ maxLength: 150 })}<FormField label="วันที่เริ่มงาน (พ.ศ.) (ไม่บังคับ)"><BuddhistDateInput value={form.start_date} onChange={value => set('start_date', value)} /></FormField><FormField label="วันที่สิ้นสุด (พ.ศ.) (ไม่บังคับ)"><BuddhistDateInput value={form.end_date} onChange={value => set('end_date', value)} /></FormField></div>
       <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลเงินเดือน</div>

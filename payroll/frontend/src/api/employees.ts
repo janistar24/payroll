@@ -71,7 +71,7 @@ async function parseApiError(response: Response): Promise<string> {
   return `บันทึกข้อมูลพนักงานไม่สำเร็จ: ${response.status}`
 }
 
-export async function createEmployee(data: EmployeeSaveInput): Promise<number> {
+export async function createEmployee(data: EmployeeSaveInput): Promise<{ id: number; employee_code: string }> {
   const response = await fetch(`${API_URL}/employees`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authorizationHeaders() },
@@ -79,7 +79,7 @@ export async function createEmployee(data: EmployeeSaveInput): Promise<number> {
   })
   if (!response.ok) throw new Error(await parseApiError(response))
   const result = await response.json()
-  return result.data.id
+  return result.data
 }
 
 export async function updateEmployee(employeeId: number, data: EmployeeSaveInput): Promise<void> {

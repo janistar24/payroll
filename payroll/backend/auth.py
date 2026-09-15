@@ -322,15 +322,15 @@ class AuthService:
             """SELECT employee.id, linked_user.id AS user_id
                FROM public.employees employee
                LEFT JOIN public.users linked_user ON linked_user.employee_id = employee.id
-               WHERE employee.employee_code = %s OR employee.national_id = %s
+               WHERE employee.national_id = %s
                ORDER BY employee.id DESC""",
-            (employee_code.strip(), national_id.strip()),
+            (national_id.strip(),),
         )
         if not data:
             return None
         records = [dict(zip(columns, row)) for row in data]
         if any(record["user_id"] is not None for record in records):
-            raise ValueError("รหัสพนักงานหรือเลขบัตรประชาชนนี้มีบัญชีผู้ใช้แล้ว")
+            raise ValueError("เลขประจำตัวประชาชนนี้มีบัญชีผู้ใช้แล้ว")
         return records[0]["id"]
 
     def ensure_username_available(self, username):

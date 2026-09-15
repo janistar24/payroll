@@ -611,24 +611,24 @@ select.inp {
   .dashboard-admin-alert-strip .dashboard-admin-alert-action,
   .dashboard-admin-alert-print { display: none !important; }
   .dashboard-monthly-report {
-    display: grid !important;
-    grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.85fr) !important;
-    gap: 16px !important;
+    display: block !important;
     padding: 14px !important;
+    break-before: page;
+    page-break-before: always;
     break-inside: avoid;
     page-break-inside: avoid;
   }
   .dashboard-monthly-report-chart {
-    padding: 0 16px 0 0 !important;
-    margin-bottom: 0;
-    border-right: 1px solid rgba(0,0,0,0.10) !important;
-    border-bottom: 0 !important;
+    padding: 0 0 14px !important;
+    margin-bottom: 14px;
+    border-right: 0 !important;
+    border-bottom: 1px solid rgba(0,0,0,0.10);
   }
   .dashboard-monthly-report-donuts {
     display: grid !important;
-    grid-template-columns: 1fr !important;
-    grid-template-rows: 1fr 1fr !important;
-    gap: 12px !important;
+    grid-template-columns: 1fr 1fr !important;
+    grid-template-rows: auto !important;
+    gap: 18px !important;
     break-inside: avoid;
     page-break-inside: avoid;
   }
@@ -637,9 +637,9 @@ select.inp {
     page-break-inside: avoid;
   }
   .dashboard-category-donut + .dashboard-category-donut {
-    border-top: 1px solid rgba(0,0,0,0.10) !important;
-    border-left: 0 !important;
-    padding: 12px 0 0 !important;
+    border-top: 0 !important;
+    border-left: 1px solid rgba(0,0,0,0.10) !important;
+    padding: 0 0 0 18px !important;
   }
   .dashboard-annual-tax-report {
     break-inside: avoid;

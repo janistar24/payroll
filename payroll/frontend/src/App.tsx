@@ -2802,11 +2802,9 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
             <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{visibleEmployees.length} รายการ</span>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            {(dept.revisionNumber ?? 0) > 0 && (
-              <button className="btn btn-secondary" aria-busy={historyLoading} disabled={historyLoading} onClick={() => void openHistory()}>
-                <BusyLabel busy={historyLoading} label="กำลังโหลด…">🗂️ ดูประวัติฉบับก่อน</BusyLabel>
-              </button>
-            )}
+            <button className="btn btn-secondary" aria-busy={historyLoading} disabled={historyLoading} onClick={() => void openHistory()}>
+              <BusyLabel busy={historyLoading} label="กำลังโหลด…">🗂️ ดูประวัติฉบับก่อน</BusyLabel>
+            </button>
             <button className="btn btn-secondary" onClick={printPayrollTable}>🖨️ พิมพ์ตาราง</button>
             <button className="btn btn-secondary" onClick={exportExcel}>📥 ส่งออก Excel</button>
           </div>

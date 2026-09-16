@@ -864,6 +864,80 @@ def get_payroll_periods(user=Depends(get_current_user)):
         )
 
 
+@app.get("/api/reports/annual-tax")
+def get_annual_tax_report(year: int, department_id: int | None = None, report_type: str = "tax", user=Depends(get_current_user)):
+    """Read annual tax or income data directly from approved payroll snapshots.
+
+    The report is derived on demand so it cannot become out of sync with the
+    saved payroll tables. HR is always restricted to their own department.
+    """
+    try:
+        if year < 2000 or year > 3000:
+            raise HTTPException(status_code=400, detail="ปีที่เลือกไม่ถูกต้อง")
+        if report_type not in {"tax", "income"}:
+            raise HTTPException(status_code=400, detail="ประเภทรายงานไม่ถูกต้อง")
+        scoped_department_id = _department_scope(user)
+        effective_department_id = scoped_department_id if scoped_department_id is not None else department_id
+        amount_join = ""
+        amount_expression = "item.total_earnings"
+        if report_type == "tax":
+            amount_join = """
+                LEFT JOIN (
+                    SELECT line.payroll_item_id, line.amount
+                    FROM public.payroll_item_lines line
+                    JOIN public.pay_item_types item_type ON item_type.id = line.pay_item_type_id
+                    WHERE item_type.code = 'TAX'
+                ) tax_line ON tax_line.payroll_item_id = item.id
+            """
+            amount_expression = "COALESCE(tax_line.amount, 0)"
+        monthly_columns = ",\n                   ".join(
+            f"COALESCE(SUM(CASE WHEN period.month = {month} THEN {amount_expression} ELSE 0 END), 0) AS month_{month}"
+            for month in range(1, 13)
+        )
+        query = """
+            SELECT employee.id AS employee_id,
+                   COALESCE(employee.prefix, '') AS prefix,
+                   employee.first_name,
+                   employee.last_name,
+                   department.name AS department_name,
+                   COALESCE(position.name, '–') AS position_name,
+                   {monthly_columns}
+            FROM public.payroll_items item
+            JOIN public.payroll_department_batches batch ON batch.id = item.department_batch_id
+            JOIN public.payroll_periods period ON period.id = item.payroll_period_id
+            JOIN public.employees employee ON employee.id = item.employee_id
+            JOIN public.departments department ON department.id = item.department_id
+            LEFT JOIN public.positions position ON position.id = employee.position_id
+            {amount_join}
+            WHERE period.year = %s
+              AND batch.is_current = TRUE
+              AND batch.status IN ('APPROVED', 'PAID')
+              AND (%s::integer IS NULL OR item.department_id = %s)
+            GROUP BY employee.id, employee.prefix, employee.first_name, employee.last_name,
+                     department.name, position.name
+            ORDER BY department.name, employee.first_name, employee.last_name, employee.id
+        """.format(monthly_columns=monthly_columns, amount_join=amount_join)
+        data, columns = db.fetch(query, (year, effective_department_id, effective_department_id))
+        rows = []
+        for value in data:
+            record = dict(zip(columns, value))
+            months = [float(record[f"month_{month}"] or 0) for month in range(1, 13)]
+            rows.append({
+                "employee_id": record["employee_id"],
+                "full_name": f"{record['prefix']}{record['first_name']} {record['last_name']}",
+                "department_name": record["department_name"],
+                "position_name": record["position_name"],
+                "months": months,
+                "total": sum(months),
+            })
+        return {"success": True, "data": {"year": year, "department_id": effective_department_id, "report_type": report_type, "rows": rows}}
+    except HTTPException:
+        raise
+    except Exception as error:
+        logging.exception("Unable to load annual tax report")
+        raise HTTPException(status_code=500, detail={"message": "ไม่สามารถโหลดรายงานภาษีประจำปีได้", "error": str(error)})
+
+
 @app.post("/api/payroll_periods", status_code=201)
 def create_payroll_period(request: PayrollPeriodCreate, user=Depends(get_current_user)):
     try:

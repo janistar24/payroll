@@ -21,6 +21,7 @@ import { activateSystemUser, approveAccessRequest, changeMyPassword, createSyste
 import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollPeriodRecord } from './api/payroll'
 import { createPayItemType, type PayItemType } from './api/payItemTypes'
+import { getAnnualTaxReport, type AnnualTaxRow } from './api/annualTax'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Role = 'hr' | 'director' | 'admin'
@@ -68,6 +69,7 @@ type Page =
   | 'employees'
   | 'employee-form'
   | 'payslip-status'
+  | 'annual-tax'
   | 'admin-users'
 
 interface Employee {
@@ -265,6 +267,7 @@ const formatBuddhistDateTime = (value: string | Date) => new Intl.DateTimeFormat
 
 const MONTH_TH = ['', 'มกราคม','กุมภาพันธ์','มีนาคม','เมษายน','พฤษภาคม','มิถุนายน','กรกฎาคม','สิงหาคม','กันยายน','ตุลาคม','พฤศจิกายน','ธันวาคม']
 const MONTH_EN_SHORT = ['', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const TAX_MONTH_LABELS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.']
 
 const periodLabel = (p: PayrollPeriod) => `${MONTH_TH[p.month]} ${p.year + 543}`
 
@@ -740,18 +743,21 @@ function Sidebar({ role, page, setPage }: { role: Role; page: Page; setPage: (p:
     { id: 'periods',   label: 'รอบเงินเดือน', icon: '📅' },
     { id: 'employees', label: 'พนักงาน', icon: '👥' },
     { id: 'payslip-status', label: 'สถานะการส่งอีเมล', icon: '📨' },
+    { id: 'annual-tax', label: 'รายงานประจำปี', icon: '📊' },
   ]
   const dirNav: NavEntry[] = [
     { id: 'dashboard', label: 'หน้าหลัก', icon: '🏠' },
     { id: 'periods',   label: 'รอบเงินเดือน', icon: '📅' },
     { id: 'employees', label: 'พนักงาน', icon: '👥' },
     { id: 'payslip-status', label: 'สถานะการส่งอีเมล', icon: '📨' },
+    { id: 'annual-tax', label: 'รายงานประจำปี', icon: '📊' },
   ]
   const adminNav: NavEntry[] = [
     { id: 'dashboard',     label: 'หน้าหลัก', icon: '🏠' },
     { id: 'periods',       label: 'รอบเงินเดือน', icon: '📅' },
     { id: 'employees',     label: 'พนักงาน', icon: '👥' },
     { id: 'payslip-status',label: 'สถานะการส่งอีเมล', icon: '📨' },
+    { id: 'annual-tax',    label: 'รายงานประจำปี', icon: '📊' },
     { id: 'admin-users',   label: 'จัดการผู้ใช้งาน', icon: '👤' },
   ]
   const navItems = role === 'hr' ? hrNav : role === 'director' ? dirNav : adminNav
@@ -3639,6 +3645,90 @@ function PayslipStatus({ periods, onReload, onEmployeeEmailUpdated, showToast, o
   )
 }
 
+// ─── Annual Tax Report ────────────────────────────────────────────────────────
+
+const downloadAnnualTaxExcel = async (yearBE: number, departmentLabel: string, reportLabel: string, rows: AnnualTaxRow[]) => {
+  const ExcelJS = (await import('exceljs')).default
+  const workbook = new ExcelJS.Workbook()
+  workbook.creator = 'PayFlow'
+  const sheet = workbook.addWorksheet(`${reportLabel} ${yearBE}`.slice(0, 31))
+  const headers = ['ที่', 'ชื่อ-นามสกุล', 'หน่วยงาน', 'ตำแหน่ง', ...TAX_MONTH_LABELS, 'รวม']
+  const border = { top: { style: 'thin' as const }, left: { style: 'thin' as const }, bottom: { style: 'thin' as const }, right: { style: 'thin' as const } }
+  const headerFill = { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FFE5E7EB' } }
+  sheet.pageSetup = { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: .25, right: .25, top: .4, bottom: .4, header: .2, footer: .2 } }
+  sheet.columns = headers.map((_, index) => ({ width: index === 0 ? 6 : index === 1 ? 26 : index === 2 ? 18 : index === 3 ? 24 : index === 16 ? 14 : 11 }))
+  sheet.mergeCells('A1:Q1'); sheet.getCell('A1').value = 'เทศบาลเมืองตาคลี'; sheet.getCell('A1').font = { name: 'Tahoma', size: 15, bold: true }; sheet.getCell('A1').alignment = { horizontal: 'center' }
+  sheet.mergeCells('A2:Q2'); sheet.getCell('A2').value = `${reportLabel}ประจำปี พ.ศ. ${yearBE}`; sheet.getCell('A2').font = { name: 'Tahoma', size: 12, bold: true }; sheet.getCell('A2').alignment = { horizontal: 'center' }
+  sheet.mergeCells('A3:Q3'); sheet.getCell('A3').value = `หน่วยงาน: ${departmentLabel}    |    วันที่พิมพ์: ${formatBuddhistDate(new Date(), true)}`; sheet.getCell('A3').font = { name: 'Tahoma', size: 9 }; sheet.getCell('A3').alignment = { horizontal: 'center' }
+  ;['A4:A5', 'B4:B5', 'C4:C5', 'D4:D5', 'Q4:Q5'].forEach(range => sheet.mergeCells(range))
+  sheet.mergeCells('E4:P4')
+  ;['ที่', 'ชื่อ-นามสกุล', 'หน่วยงาน', 'ตำแหน่ง'].forEach((value, index) => { sheet.getCell(4, index + 1).value = value })
+  sheet.getCell('E4').value = reportLabel
+  sheet.getCell('Q4').value = 'รวม'
+  TAX_MONTH_LABELS.forEach((label, index) => { sheet.getCell(5, index + 5).value = label })
+  for (let row = 4; row <= 5; row += 1) sheet.getRow(row).eachCell({ includeEmpty: true }, cell => { cell.font = { name: 'Tahoma', size: 9, bold: true }; cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; cell.fill = headerFill; cell.border = border })
+  sheet.getRow(4).height = 19; sheet.getRow(5).height = 20
+  const totals = Array.from({ length: 12 }, () => 0)
+  rows.forEach((entry, index) => {
+    entry.months.forEach((amount, month) => { totals[month] += amount })
+    const row = sheet.addRow([index + 1, entry.full_name, entry.department_name, entry.position_name, ...entry.months.map(amount => amount || '-'), entry.total])
+    row.height = 18
+    row.eachCell({ includeEmpty: true }, (cell, column) => { cell.font = { name: 'Tahoma', size: 9 }; cell.border = border; cell.alignment = { horizontal: column >= 5 ? 'right' : column === 1 ? 'center' : 'left', vertical: 'middle', wrapText: false }; if (column >= 5 && typeof cell.value === 'number') cell.numFmt = '#,##0.00' })
+  })
+  const totalRow = sheet.addRow(['รวมทั้งสิ้น', '', '', '', ...totals, totals.reduce((sum, amount) => sum + amount, 0)])
+  sheet.mergeCells(`A${totalRow.number}:D${totalRow.number}`)
+  totalRow.eachCell({ includeEmpty: true }, (cell, column) => { cell.font = { name: 'Tahoma', size: 9, bold: true }; cell.border = border; cell.fill = headerFill; cell.alignment = { horizontal: column >= 5 ? 'right' : 'center', vertical: 'middle' }; if (column >= 5) cell.numFmt = '#,##0.00' })
+  const raw = await workbook.xlsx.writeBuffer()
+  const url = URL.createObjectURL(new Blob([raw], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+  const anchor = document.createElement('a'); anchor.href = url; anchor.download = `${reportLabel}_${departmentLabel.replace(/[\\/:*?"<>|]/g, '-')}_${yearBE}.xlsx`; anchor.click(); URL.revokeObjectURL(url)
+}
+
+const printAnnualTaxReport = (yearBE: number, departmentLabel: string, reportLabel: string, rows: AnnualTaxRow[]) => {
+  const printWindow = window.open('', '_blank', 'noopener,noreferrer')
+  if (!printWindow) return false
+  const totals = Array.from({ length: 12 }, () => 0)
+  const body = rows.map((entry, index) => {
+    entry.months.forEach((amount, month) => { totals[month] += amount })
+    return `<tr><td class="center">${index + 1}</td><td>${escapeMarkup(entry.full_name)}</td><td>${escapeMarkup(entry.department_name)}</td><td>${escapeMarkup(entry.position_name)}</td>${entry.months.map(amount => `<td class="num">${amount ? thb(amount) : '–'}</td>`).join('')}<td class="num">${thb(entry.total)}</td></tr>`
+  }).join('') || `<tr><td colspan="17" class="empty">ยังไม่มีข้อมูล${escapeMarkup(reportLabel)}จากรอบเงินเดือนที่อนุมัติแล้ว</td></tr>`
+  const grandTotal = totals.reduce((sum, amount) => sum + amount, 0)
+  printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${escapeMarkup(reportLabel)}ประจำปี ${yearBE}</title><style>@page{size:A4 landscape;margin:9mm 7mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;font-family:Tahoma,sans-serif;color:#111;font-size:7pt}.head{text-align:center;margin-bottom:4mm}.head h1,.head h2,.head p{margin:0}.head h1{font-size:15pt}.head h2{font-size:11pt;margin-top:1mm}.head p{font-size:8pt;margin-top:1.5mm}table{border-collapse:collapse;width:100%;table-layout:fixed}th,td{border:.45pt solid #555;padding:3px 2px;vertical-align:middle;line-height:1.2}thead th{background:#e5e7eb;text-align:center;font-weight:700;font-size:7pt}tbody td{white-space:nowrap}td.center{text-align:center}td.num{text-align:right;font-variant-numeric:tabular-nums}td.empty{text-align:center;padding:12px;color:#64748b}tfoot td{background:#e5e7eb;font-weight:700}.c-no{width:3%}.c-name{width:14%}.c-dept{width:9%}.c-pos{width:13%}.c-month{width:4.2%}.c-total{width:7.6%}</style></head><body><div class="head"><h1>เทศบาลเมืองตาคลี</h1><h2>${escapeMarkup(reportLabel)}ประจำปี พ.ศ. ${yearBE}</h2><p>หน่วยงาน: ${escapeMarkup(departmentLabel)} · วันที่พิมพ์ ${escapeMarkup(formatBuddhistDate(new Date(), true))}</p></div><table><colgroup><col class="c-no"><col class="c-name"><col class="c-dept"><col class="c-pos">${Array.from({ length: 12 }, () => '<col class="c-month">').join('')}<col class="c-total"></colgroup><thead><tr><th rowspan="2">ที่</th><th rowspan="2">ชื่อ-นามสกุล</th><th rowspan="2">หน่วยงาน</th><th rowspan="2">ตำแหน่ง</th><th colspan="12">${escapeMarkup(reportLabel)}</th><th rowspan="2">รวม</th></tr><tr>${TAX_MONTH_LABELS.map(label => `<th>${label}</th>`).join('')}</tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${totals.map(amount => `<td class="num">${thb(amount)}</td>`).join('')}<td class="num">${thb(grandTotal)}</td></tr></tfoot></table><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close())})<\/script></body></html>`)
+  printWindow.document.close()
+  return true
+}
+
+function AnnualTaxReportPage({ role, periods, departments, userDepartment, showToast }: { role: Role; periods: PayrollPeriod[]; departments: Department[]; userDepartment: string | null; showToast: (msg: string, type?: 'success' | 'error') => void }) {
+  const reportYears = useMemo(() => Array.from(new Set(periods.map(period => period.year + 543))).sort((a, b) => b - a), [periods])
+  const [yearBE, setYearBE] = useState(reportYears[0] ?? new Date().getFullYear() + 543)
+  const [departmentValue, setDepartmentValue] = useState('')
+  const [reportType, setReportType] = useState<'tax' | 'income'>('tax')
+  const [rows, setRows] = useState<AnnualTaxRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const scopedDepartmentId = role === 'hr' ? departments.find(department => department.name === userDepartment)?.id : undefined
+  const selectedDepartmentId = scopedDepartmentId ?? (departmentValue ? Number(departmentValue) : undefined)
+  const selectedDepartmentLabel = role === 'hr' ? userDepartment ?? 'ฝ่ายของฉัน' : departments.find(department => department.id === selectedDepartmentId)?.name ?? 'ทุกฝ่าย'
+  const reportLabel = reportType === 'tax' ? 'รายการนำส่งภาษี' : 'รายได้รวมทั้งปี'
+
+  useEffect(() => { if (reportYears.length && !reportYears.includes(yearBE)) setYearBE(reportYears[0]) }, [reportYears, yearBE])
+  useEffect(() => {
+    let active = true
+    setLoading(true); setLoadError('')
+    getAnnualTaxReport(yearBE - 543, selectedDepartmentId, reportType).then(data => { if (active) setRows(data) }).catch(error => { if (active) { setRows([]); setLoadError(error instanceof Error ? error.message : 'ไม่สามารถโหลดรายงานประจำปีได้') } }).finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [yearBE, selectedDepartmentId, reportType])
+
+  const monthlyTotals = Array.from({ length: 12 }, (_, month) => rows.reduce((sum, row) => sum + (row.months[month] || 0), 0))
+  const total = monthlyTotals.reduce((sum, amount) => sum + amount, 0)
+  const exportExcel = async () => { try { await downloadAnnualTaxExcel(yearBE, selectedDepartmentLabel, reportLabel, rows) } catch { showToast('ส่งออก Excel ไม่สำเร็จ', 'error') } }
+
+  return <div className="anim">
+    <PageHeader title="รายงานประจำปี" subtitle="สรุปรายการนำส่งภาษีหรือรายได้รวมจากรอบเงินเดือนที่อนุมัติแล้ว" actions={<div className="flex gap-2"><button className="btn btn-secondary" onClick={() => { if (!printAnnualTaxReport(yearBE, selectedDepartmentLabel, reportLabel, rows)) showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error') }}>🖨️ พิมพ์รายงาน</button><button className="btn btn-primary" onClick={() => void exportExcel()}>📥 ส่งออก Excel</button></div>} />
+    <div className="card" style={{ padding: '14px 18px', marginBottom: 16 }}><div className="flex items-end gap-3 flex-wrap"><FormField label="ประเภทรายงาน"><AppSelect className="inp" style={{ width: 220 }} value={reportType} onChange={event => setReportType(event.target.value as 'tax' | 'income')}><option value="tax">รายการนำส่งภาษี</option><option value="income">รายได้รวมทั้งปี</option></AppSelect></FormField><FormField label="ปี (พ.ศ.)"><AppSelect className="inp" style={{ width: 180 }} value={String(yearBE)} onChange={event => setYearBE(Number(event.target.value))}>{(reportYears.length ? reportYears : [yearBE]).map(year => <option key={year} value={year}>{year}</option>)}</AppSelect></FormField><FormField label="หน่วยงาน"><AppSelect className="inp" style={{ width: 260 }} value={role === 'hr' ? String(scopedDepartmentId ?? '') : departmentValue} onChange={event => setDepartmentValue(event.target.value)} disabled={role === 'hr'}><option value="">ทุกฝ่าย</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField><span style={{ fontSize: 12.5, color: 'var(--text-secondary)', paddingBottom: 10 }}>แสดงเฉพาะรอบเงินเดือนที่อนุมัติแล้ว</span></div></div>
+    <div className="card" style={{ padding: 0, overflowX: 'auto' }}><div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(0,0,0,.07)' }}><div><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 16 }}>{reportLabel}</div><div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>ปี พ.ศ. {yearBE} · {selectedDepartmentLabel}</div></div><div style={{ fontWeight: 700, color: 'var(--purple-600)' }}>รวม {thb(total)} บาท</div></div><table className="tbl" style={{ minWidth: 1480 }}><thead><tr><th rowSpan={2} style={{ width: 52 }}>ที่</th><th rowSpan={2} style={{ minWidth: 190 }}>ชื่อ-นามสกุล</th><th rowSpan={2} style={{ minWidth: 145 }}>หน่วยงาน</th><th rowSpan={2} style={{ minWidth: 190 }}>ตำแหน่ง</th><th colSpan={12} style={{ textAlign: 'center' }}>{reportLabel}</th><th rowSpan={2} style={{ minWidth: 115, textAlign: 'right' }}>รวม</th></tr><tr>{TAX_MONTH_LABELS.map(label => <th key={label} style={{ minWidth: 77, textAlign: 'right' }}>{label}</th>)}</tr></thead><tbody>{loading ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>กำลังโหลดรายงาน…</td></tr> : loadError ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: '#B91C1C' }}>{loadError}</td></tr> : rows.length === 0 ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>ยังไม่มีข้อมูล{reportLabel}จากรอบเงินเดือนที่อนุมัติแล้ว</td></tr> : rows.map((row, index) => <tr key={`${row.employee_id}-${row.department_name}`}><td style={{ textAlign: 'center' }}>{index + 1}</td><td>{row.full_name}</td><td>{row.department_name}</td><td>{row.position_name}</td>{row.months.map((amount, month) => <td key={month} style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{amount ? thb(amount) : '–'}</td>)}<td style={{ textAlign: 'right', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{thb(row.total)}</td></tr>)}</tbody><tfoot>{!loading && !loadError && <tr><td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>{monthlyTotals.map((amount, month) => <td key={month} style={{ textAlign: 'right', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{thb(amount)}</td>)}<td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--purple-600)', fontVariantNumeric: 'tabular-nums' }}>{thb(total)}</td></tr>}</tfoot></table></div>
+  </div>
+}
+
 // ─── Reports ──────────────────────────────────────────────────────────────────
 
 function ReportsPage({ periods }: { periods: PayrollPeriod[] }) {
@@ -4183,6 +4273,7 @@ export default function App() {
   const pageTitle: Partial<Record<Page, string>> = {
     dashboard: 'หน้าหลัก', periods: 'รอบเงินเดือน', employees: 'พนักงาน',
     'payslip-status': 'สถานะการส่งอีเมล', 'director-approvals': 'อนุมัติเงินเดือน',
+    'annual-tax': 'รายงานประจำปี',
     'admin-users': 'จัดการผู้ใช้งาน', 'period-detail': 'รายละเอียดรอบเงินเดือน',
     'dept-table': 'รายละเอียดรอบเงินเดือน', 'director-detail': 'รายละเอียดการอนุมัติ',
     'employee-form': 'ข้อมูลพนักงาน',
@@ -4270,6 +4361,7 @@ export default function App() {
           )}
           {page === 'payslip-status' && <PayslipStatus periods={visiblePeriods} onReload={loadEmployeeData} onEmployeeEmailUpdated={updateEmailLocally} showToast={showToast}
             onManageEmployees={() => setPage('employees')} />}
+          {page === 'annual-tax' && <AnnualTaxReportPage role={role} periods={visiblePeriods} departments={visibleDepartments} userDepartment={userDepartment} showToast={showToast} />}
           {page === 'admin-users' && <AdminUsers employees={databaseEmployees} showToast={showToast} />}
         </main>
       </div>

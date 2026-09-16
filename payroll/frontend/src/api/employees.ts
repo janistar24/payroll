@@ -6,6 +6,8 @@ export interface Employee {
   first_name: string
   last_name: string
   department_id: number | null
+  organization_id: number | null
+  organization_name?: string | null
   position_id: number | null
   employee_type:
     | 'CIVIL_SERVANT'

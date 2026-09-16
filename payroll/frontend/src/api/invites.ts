@@ -2,7 +2,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
 
 export type InviteRole = 'hr' | 'director' | 'admin'
 export type InviteReference = { id: number; code: string; name: string }
-export type InviteData = { email: string; requested_role: InviteRole; departments: InviteReference[]; positions: InviteReference[] }
+export type InviteData = { email: string; requested_role: InviteRole; departments: InviteReference[]; positions: InviteReference[]; organizations: { id: number; name: string; is_active: boolean }[] }
 
 async function publicRequest(path: string, init?: RequestInit) {
   const response = await fetch(`${API_URL}${path}`, { ...init, headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) } })

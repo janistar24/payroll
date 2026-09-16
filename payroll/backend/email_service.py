@@ -133,7 +133,7 @@ class PayslipEmailService:
             )
         pdf = canvas.Canvas(buffer, pagesize=A4, encrypt=encryption)
         width, height = A4
-        pdf.setTitle(f"Payslip {item['employee_code']}")
+        pdf.setTitle("Payslip")
 
         def text(x, y, value, size=10, align="left"):
             # Noto Sans Thai deliberately has no Latin glyphs.  Split mixed
@@ -272,7 +272,7 @@ class PayslipEmailService:
     def build_payslip_pdf(self, payroll_item_id, lock_for_email=False):
         item = self._load_item(payroll_item_id)
         password = self._email_pdf_password(item) if lock_for_email else None
-        filename = f"payslip-{item['employee_code']}-{item['year']}-{item['month']:02d}.pdf"
+        filename = f"ใบแจ้งยอดเงินเดือน-{item['year']}-{item['month']:02d}.pdf"
         return self._build_pdf(item, password=password), filename
 
     def _set_status(self, payroll_item_id, status, error_message=None):

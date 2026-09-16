@@ -21,11 +21,13 @@ class Employees:
                 employee.*,
                 department.code AS department_code,
                 department.name AS department_name,
+                organization.name AS organization_name,
                 position.code AS position_code,
                 position.name AS position_name,
                 position.level AS position_level
             FROM public.employees employee
             LEFT JOIN public.departments department ON department.id = employee.department_id
+            LEFT JOIN public.organizations organization ON organization.id = employee.organization_id
             LEFT JOIN public.positions position ON position.id = employee.position_id
             WHERE employee.status <> 'TERMINATED'
               AND (%s::integer IS NULL OR employee.department_id = %s)
@@ -73,7 +75,7 @@ class Employees:
         )
 
     @staticmethod
-    def _validate_references(cursor, department_id, position_id):
+    def _validate_references(cursor, department_id, position_id, organization_id):
         if department_id is not None:
             cursor.execute(
                 "SELECT id FROM public.departments WHERE id = %s AND is_active = TRUE",
@@ -89,6 +91,10 @@ class Employees:
             )
             if cursor.fetchone() is None:
                 raise ValueError("ไม่พบตำแหน่งที่เปิดใช้งาน")
+        if organization_id is not None:
+            cursor.execute("SELECT id FROM public.organizations WHERE id = %s AND is_active = TRUE", (organization_id,))
+            if cursor.fetchone() is None:
+                raise ValueError("ไม่พบหน่วยงานที่เปิดใช้งาน")
 
     def create(self, employee):
         with self.db.transaction() as cursor:
@@ -96,7 +102,8 @@ class Employees:
             self._validate_references(
                 cursor,
                 employee.department_id,
-                employee.position_id
+                employee.position_id,
+                employee.organization_id
             )
             cursor.execute(
                 """
@@ -107,6 +114,7 @@ class Employees:
                     first_name,
                     last_name,
                     department_id,
+                    organization_id,
                     position_id,
                     employee_type,
                     employee_type_other,
@@ -120,7 +128,7 @@ class Employees:
                     bank_account_no,
                     base_salary
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 RETURNING id
@@ -132,6 +140,7 @@ class Employees:
                     employee.first_name.strip(),
                     employee.last_name.strip(),
                     employee.department_id,
+                    employee.organization_id,
                     employee.position_id,
                     employee.employee_type,
                     employee.employee_type_other.strip() if employee.employee_type_other else None,
@@ -164,7 +173,8 @@ class Employees:
             self._validate_references(
                 cursor,
                 employee.department_id,
-                employee.position_id
+                employee.position_id,
+                employee.organization_id
             )
             cursor.execute(
                 """
@@ -175,6 +185,7 @@ class Employees:
                     first_name = %s,
                     last_name = %s,
                     department_id = %s,
+                    organization_id = %s,
                     position_id = %s,
                     employee_type = %s,
                 employee_type_other = %s,
@@ -198,6 +209,7 @@ class Employees:
                     employee.first_name.strip(),
                     employee.last_name.strip(),
                     employee.department_id,
+                    employee.organization_id,
                     employee.position_id,
                     employee.employee_type,
                     employee.employee_type_other.strip() if employee.employee_type_other else None,

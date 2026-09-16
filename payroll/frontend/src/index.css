@@ -738,12 +738,11 @@ select.inp {
 .th-group-deduct { background: #FFF2EE; color: #9A3412; border-color: #FCA5A5; }
 .th-group-net    { background: #EDE8FF; color: #5B21B6; border-color: #C4B5FD; }
 .payroll-add-item-button {
-  display: inline-grid; place-items: center; width: 19px; height: 19px; margin-left: 6px;
-  border: 1px solid currentColor; border-radius: 50%; background: rgba(255,255,255,.7);
-  color: inherit; font: inherit; font-size: 15px; font-weight: 700; line-height: 1; cursor: pointer;
-  vertical-align: -1px;
+  float: right; margin: 0; padding: 0;
+  border: 0; background: transparent; color: var(--purple-600);
+  font: inherit; font-size: 11px; font-weight: 700; line-height: 1.2; cursor: pointer;
 }
-.payroll-add-item-button:hover { background: #FFF; box-shadow: 0 1px 3px rgba(0,0,0,.12); }
+.payroll-add-item-button:hover { color: #5B21B6; text-decoration: underline; }
 .payroll-detail-table .th-group-income,
 .payroll-detail-table .th-group-deduct,
 .payroll-detail-table .th-group-net { border-left: 1px solid rgba(0,0,0,0.05); }

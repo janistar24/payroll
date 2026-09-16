@@ -17,6 +17,7 @@ from DBHelper import DBHelper
 from departments import Departments
 from employees import Employees
 from positions import Positions
+from organizations import Organizations
 from payroll_periods import Payroll_periods
 from payroll_items import PayrollItems
 from payroll_department_batches import PayrollDepartmentBatches
@@ -35,6 +36,7 @@ db = DBHelper()
 departments_service = Departments()
 employees_service = Employees()
 positions_service = Positions()
+organizations_service = Organizations()
 payroll_periods_service = Payroll_periods()
 payroll_items_service = PayrollItems()
 payroll_department_batches_service = PayrollDepartmentBatches()
@@ -212,17 +214,19 @@ def get_app_data(user=Depends(get_current_user)):
         # These reads are independent.  Keep one HTTP request for the
         # browser, while letting the bounded database pool run the reads in
         # parallel instead of adding their remote latency together.
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=6) as executor:
             employees_future = executor.submit(employees_service.dump, department_id)
             departments_future = executor.submit(departments_service.dump)
             positions_future = executor.submit(positions_service.dump)
             payroll_future = executor.submit(payroll_periods_service.dump, department_id)
             pay_item_types_future = executor.submit(pay_item_types_service.dump)
+            organizations_future = executor.submit(organizations_service.dump)
             employees = employees_future.result()
             departments = departments_future.result()
             positions = positions_future.result()
             payroll_periods = payroll_future.result()
             pay_item_types = pay_item_types_future.result()
+            organizations = organizations_future.result()
         return {
             "success": True,
             "data": {
@@ -231,6 +235,7 @@ def get_app_data(user=Depends(get_current_user)):
                 "positions": positions,
                 "payroll_periods": payroll_periods,
                 "pay_item_types": pay_item_types,
+                "organizations": organizations,
             },
         }
     except HTTPException:
@@ -270,6 +275,7 @@ class EmployeeSave(BaseModel):
     first_name: str = Field(min_length=1, max_length=150)
     last_name: str = Field(min_length=1, max_length=150)
     department_id: int | None = None
+    organization_id: int | None = None
     position_id: int | None = None
     employee_type: str
     employee_type_other: str | None = Field(default=None, max_length=150)
@@ -380,6 +386,7 @@ class AccessRequestSubmit(BaseModel):
     username: str = Field(min_length=3, max_length=100)
     password: str = Field(min_length=8, max_length=255)
     position_name: str | None = Field(default=None, max_length=255)
+    organization_name: str | None = Field(default=None, max_length=255)
     employee: EmployeeSave
 
     @model_validator(mode="after")
@@ -639,7 +646,7 @@ def create_invite(request: InviteCreateRequest, http_request: Request, user=Depe
 def get_invite(token: str):
     try:
         invite = auth_service.validate_invite(token)
-        return {"success": True, "data": {"email": invite["email"], "requested_role": invite["requested_role"], "departments": departments_service.dump(), "positions": positions_service.dump()}}
+        return {"success": True, "data": {"email": invite["email"], "requested_role": invite["requested_role"], "departments": departments_service.dump(), "positions": positions_service.dump(), "organizations": organizations_service.dump()}}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
@@ -651,6 +658,8 @@ def submit_access_request(token: str, request: AccessRequestSubmit):
         # name and returns an existing row when it already exists, avoiding duplicates.
         if request.position_name and request.position_name.strip():
             request.employee.position_id = positions_service.create(request.position_name)["id"]
+        if request.organization_name and request.organization_name.strip():
+            request.employee.organization_id = organizations_service.create(request.organization_name)["id"]
         auth_service.submit_access_request(token, request.username, request.password, request.employee.model_dump(mode="json"))
         return {"success": True, "message": "ส่งคำขอเรียบร้อยแล้ว"}
     except ValueError as error:
@@ -825,6 +834,10 @@ class PositionCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
 
 
+class OrganizationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+
+
 @app.post("/api/positions", status_code=201)
 def create_position(request: PositionCreate, user=Depends(get_current_user)):
     try:
@@ -840,6 +853,22 @@ def create_position(request: PositionCreate, user=Depends(get_current_user)):
                 "error": str(error)
             }
         )
+
+
+@app.get("/api/organizations")
+def get_organizations(user=Depends(get_current_user)):
+    return {"success": True, "data": organizations_service.dump()}
+
+
+@app.post("/api/organizations", status_code=201)
+def create_organization(request: OrganizationCreate, user=Depends(get_current_user)):
+    try:
+        _require_employee_creation_role(user)
+        organization = organizations_service.create(request.name)
+        audit_logger.log(user["id"], "CREATE", "organization", organization["id"], {"name": organization["name"]})
+        return {"success": True, "data": organization}
+    except Exception as error:
+        raise HTTPException(status_code=500, detail={"message": "ไม่สามารถเพิ่มหน่วยงานได้", "error": str(error)})
 
 @app.get("/api/payroll_periods")
 def get_payroll_periods(user=Depends(get_current_user)):

@@ -1881,6 +1881,11 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const [newItemName, setNewItemName] = useState('')
   const [newItemCategory, setNewItemCategory] = useState<PayItemType['category']>('EARNING')
   const [creatingItemType, setCreatingItemType] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState('')
+  const [historyBatches, setHistoryBatches] = useState<DeptPayroll[]>([])
+  const [historicBatch, setHistoricBatch] = useState<DeptPayroll | null>(null)
   const [submitting, setSubmitting] = useState(false)
   const [focusRow, setFocusRow] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
@@ -1994,6 +1999,24 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       showToast(error instanceof Error ? error.message : 'เพิ่มประเภทรายการเงินเดือนไม่สำเร็จ', 'error')
     } finally {
       setCreatingItemType(false)
+    }
+  }
+
+  const openHistory = async () => {
+    if (!dept.databaseId) {
+      showToast('ไม่พบข้อมูลรอบเงินเดือน', 'error')
+      return
+    }
+    setHistoryOpen(true)
+    setHistoryError('')
+    setHistoryLoading(true)
+    try {
+      const records = await getPayrollBatchHistory(dept.databaseId)
+      setHistoryBatches(records.map(record => mapPayrollHistoryBatch(record, period)))
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : 'ไม่สามารถโหลดประวัติฉบับเงินเดือนได้')
+    } finally {
+      setHistoryLoading(false)
     }
   }
 
@@ -2253,6 +2276,10 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     printWindow.document.close()
   }
 
+  if (historicBatch) {
+    return <HistoricPayrollView period={period} dept={historicBatch} onBack={() => setHistoricBatch(null)} />
+  }
+
   return (
     <div className="anim">
       <PageHeader
@@ -2291,6 +2318,9 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>{visibleEmployees.length} รายการ</span>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
+            <button className="btn btn-secondary" aria-busy={historyLoading} disabled={historyLoading} onClick={() => void openHistory()}>
+              <BusyLabel busy={historyLoading} label="กำลังโหลด…">🗂️ ดูประวัติฉบับก่อน</BusyLabel>
+            </button>
             <button className="btn btn-secondary" onClick={printPayrollTable}>🖨️ พิมพ์ตาราง</button>
             <button className="btn btn-secondary" onClick={exportExcel}>📥 ส่งออก Excel</button>
             <button className="btn btn-secondary" onClick={() => {
@@ -2482,6 +2512,34 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             <div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingItemType} onClick={() => setShowAddItemModal(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={creatingItemType} disabled={creatingItemType || !newItemName.trim()} onClick={() => void addPayItemType()}><BusyLabel busy={creatingItemType} label="กำลังเพิ่ม…">เพิ่มคอลัมน์</BusyLabel></button></div>
           </div>
         </Modal>
+      )}
+
+      {historyOpen && createPortal(
+        <div style={{ position: 'fixed', inset: 0, zIndex: 70, display: 'flex', justifyContent: 'flex-end', background: 'rgba(28, 21, 46, 0.22)' }} onMouseDown={() => setHistoryOpen(false)}>
+          <aside role="dialog" aria-modal="true" aria-label="ประวัติฉบับเงินเดือน" onMouseDown={event => event.stopPropagation()} style={{ width: 'min(390px, 100%)', height: '100%', background: '#FFFFFF', boxShadow: '-14px 0 36px rgba(36, 25, 66, 0.18)', padding: 22, overflowY: 'auto' }}>
+            <div className="flex justify-between items-start gap-3" style={{ paddingBottom: 15, borderBottom: '1px solid var(--border)' }}>
+              <div><div style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 700 }}>ประวัติฉบับเงินเดือน</div><div style={{ marginTop: 3, color: 'var(--text-secondary)', fontSize: 12.5 }}>{dept.department} · {periodLabel(period)}</div></div>
+              <button className="btn btn-ghost btn-sm" aria-label="ปิด" onClick={() => setHistoryOpen(false)}>✕</button>
+            </div>
+            {historyLoading ? <div className="flex items-center gap-2" style={{ padding: '26px 0', color: 'var(--purple-600)', fontSize: 13, fontWeight: 600 }}><span className="btn-spinner" />กำลังโหลดประวัติ…</div>
+              : historyError ? <div style={{ padding: '22px 0', color: '#B42318', fontSize: 13 }}>{historyError}</div>
+              : <div style={{ position: 'relative', marginTop: 20, paddingLeft: 25 }}>
+                <div style={{ position: 'absolute', left: 6, top: 7, bottom: 23, width: 2, background: '#E3DDF7' }} />
+                {historyBatches.map(batch => {
+                  const isCurrent = batch.databaseId === dept.databaseId
+                  return <div key={batch.id} style={{ position: 'relative', paddingBottom: 18 }}>
+                    <span style={{ position: 'absolute', left: -23, top: 6, width: 12, height: 12, borderRadius: '50%', border: `3px solid ${isCurrent ? '#7651DC' : '#A8A5B3'}`, background: '#FFF' }} />
+                    <div style={{ border: `1px solid ${isCurrent ? '#D6C7FF' : '#E5E3EB'}`, background: isCurrent ? '#F7F4FF' : '#FFF', borderRadius: 10, padding: 12 }}>
+                      <div className="flex justify-between gap-2"><strong style={{ fontSize: 13 }}>{isCurrent ? `ฉบับปัจจุบัน · ครั้งที่ ${batch.revisionNumber ?? 0}` : batch.revisionNumber ? `ฉบับแก้ไข ครั้งที่ ${batch.revisionNumber}` : 'ฉบับเดิม · รอบปกติ'}</strong><StatusBadge s={batch.status} /></div>
+                      {batch.revisionReason && <div style={{ marginTop: 4, fontSize: 12, color: 'var(--text-secondary)' }}>เหตุผล: {batch.revisionReason}</div>}
+                      <div style={{ marginTop: 7, fontSize: 11.5, color: 'var(--text-muted)' }}>{batch.approvedAt ? `อนุมัติ ${formatBuddhistDateTime(batch.approvedAt)}` : `สร้าง ${formatBuddhistDateTime(batch.updatedAt)}`}</div>
+                      {!isCurrent && <button className="btn btn-secondary btn-sm" style={{ width: '100%', marginTop: 10 }} onClick={() => { setHistoricBatch(batch); setHistoryOpen(false) }}>ดูตารางฉบับนี้</button>}
+                    </div>
+                  </div>
+                })}
+              </div>}
+          </aside>
+        </div>, document.body
       )}
 
       {showDiscardModal && (

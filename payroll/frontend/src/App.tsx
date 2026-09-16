@@ -19,7 +19,8 @@ import { getAppData } from './api/bootstrap'
 import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
 import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, revealAccessRequestPassword, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
-import { createPayrollPeriod, createPayrollRevision, getPayrollBatchHistory, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollPeriodRecord } from './api/payroll'
+import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollPeriodRecord } from './api/payroll'
+import { createPayItemType, type PayItemType } from './api/payItemTypes'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Role = 'hr' | 'director' | 'admin'
@@ -95,6 +96,8 @@ interface PayrollRow {
   funeral: number      // ฌาปนกิจ
   ktb: number          // ธนาคารกรุงไทย
   gsb: number          // ธนาคารออมสิน
+  customIncome: Record<string, number>
+  customDeduction: Record<string, number>
 }
 
 interface DeptPayroll {
@@ -195,6 +198,7 @@ const makeDefaultRow = (e: Employee): PayrollRow => ({
   // HR enters and saves the actual values for the period.
   empId: e.id, extra: 0, posAllowance: 0,
   debtKTB: 0, tax: 0, social: 0, funeral: 0, ktb: 0, gsb: 0,
+  customIncome: {}, customDeduction: {},
 })
 
 // Deterministic extras per employee index so seed data is stable
@@ -283,6 +287,8 @@ const databaseEmployeeToPayrollEmployee = (employee: DatabaseEmployee, departmen
   socialSecId: '',
 })
 
+const STANDARD_PAY_ITEM_CODES = new Set(['EXTRA_PAY', 'POS_ALLOW', 'KTB_LOAN', 'TAX', 'SSF', 'FUNERAL_FUND', 'SAVINGS_BANK_LOAN'])
+
 const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEmployee[], departments: Department[], positions: Position[]): PayrollPeriod[] => {
   const payrollEmployees = employees.map(employee => databaseEmployeeToPayrollEmployee(employee, departments, positions))
   const payrollEmployeesByCode = new Map(payrollEmployees.map(employee => [employee.id, employee]))
@@ -301,6 +307,8 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
           empId: item.employee_code, extra: lines.EXTRA_PAY ?? 0, posAllowance: lines.POS_ALLOW ?? 0,
           debtKTB: lines.KTB_LOAN ?? 0, tax: lines.TAX ?? 0, social: lines.SSF ?? 0,
           funeral: lines.FUNERAL_FUND ?? 0, ktb: 0, gsb: lines.SAVINGS_BANK_LOAN ?? 0,
+          customIncome: Object.fromEntries(item.lines.filter(line => line.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(line.code)).map(line => [line.code, Number(line.amount)])),
+          customDeduction: Object.fromEntries(item.lines.filter(line => line.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(line.code)).map(line => [line.code, Number(line.amount)])),
         }
         const status = item.email_status
         emailStatuses[item.employee_code] = status === 'SENT' ? 'sent' : status === 'FAILED' ? 'failed' : 'waiting'
@@ -368,6 +376,8 @@ const mapPayrollHistoryBatch = (batch: PayrollBatchRecord, period: PayrollPeriod
       empId: item.employee_code, extra: lines.EXTRA_PAY ?? 0, posAllowance: lines.POS_ALLOW ?? 0,
       debtKTB: lines.KTB_LOAN ?? 0, tax: lines.TAX ?? 0, social: lines.SSF ?? 0,
       funeral: lines.FUNERAL_FUND ?? 0, ktb: 0, gsb: lines.SAVINGS_BANK_LOAN ?? 0,
+      customIncome: Object.fromEntries(item.lines.filter(line => line.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(line.code)).map(line => [line.code, Number(line.amount)])),
+      customDeduction: Object.fromEntries(item.lines.filter(line => line.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(line.code)).map(line => [line.code, Number(line.amount)])),
     }
     return {
       id: item.employee_code, title: item.prefix ?? '', firstName: item.first_name, lastName: item.last_name,
@@ -393,8 +403,8 @@ const escapeMarkup = (value: unknown) => String(value ?? '')
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#039;')
 
-const rowGross = (e: Employee, r: PayrollRow) => e.baseSalary + r.extra + r.posAllowance
-const rowDeduct = (r: PayrollRow) => r.debtKTB + r.tax + r.social + r.funeral + r.ktb + r.gsb
+const rowGross = (e: Employee, r: PayrollRow) => e.baseSalary + r.extra + r.posAllowance + Object.values(r.customIncome ?? {}).reduce((sum, value) => sum + value, 0)
+const rowDeduct = (r: PayrollRow) => r.debtKTB + r.tax + r.social + r.funeral + r.ktb + r.gsb + Object.values(r.customDeduction ?? {}).reduce((sum, value) => sum + value, 0)
 const rowNet = (e: Employee, r: PayrollRow) => rowGross(e, r) - rowDeduct(r)
 
 // รูปแบบทางการของรายงาน ใช้ร่วมกันทั้ง HR / Director / Admin
@@ -500,6 +510,26 @@ const exportPayrollWorkbook = async ({ period, department, entries }: {
   URL.revokeObjectURL(url)
 }
 
+const exportPayrollWorkbookWithCustomItems = async ({ period, department, entries, payItemTypes }: {
+  period: PayrollPeriod; department: string; entries: PayrollExportEntry[]; payItemTypes: PayItemType[]
+}) => {
+  const ExcelJS = (await import('exceljs')).default
+  const incomeTypes = payItemTypes.filter(item => item.is_active && item.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(item.code))
+  const deductionTypes = payItemTypes.filter(item => item.is_active && item.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(item.code))
+  const headers = ['ลำดับ', 'ชื่อ-นามสกุล', 'ตำแหน่ง', 'ฐานเงินเดือน', 'เงินเพิ่ม', 'เงินประจำตำแหน่ง', ...incomeTypes.map(item => item.name), 'รวมรายการรับ', 'ชำระหนี้ KTB', 'ภาษีหัก ณ ที่จ่าย', 'ประกันสังคม', 'ฌาปนกิจ', 'ธนาคารกรุงไทย', 'ธนาคารออมสิน', ...deductionTypes.map(item => item.name), 'รวมรายการหัก', 'ยอดรับสุทธิ']
+  const workbook = new ExcelJS.Workbook()
+  const sheet = workbook.addWorksheet(`เงินเดือน ${MONTH_TH[period.month]}`)
+  sheet.pageSetup = { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0 }
+  sheet.columns = headers.map((header, index) => ({ width: index === 1 ? 24 : index === 2 ? 22 : 14 }))
+  sheet.mergeCells(1, 1, 1, headers.length); sheet.getCell(1, 1).value = 'เทศบาลเมืองตาคลี'; sheet.getCell(1, 1).font = { name: 'Tahoma', size: 14, bold: true }; sheet.getCell(1, 1).alignment = { horizontal: 'center' }
+  sheet.mergeCells(2, 1, 2, headers.length); sheet.getCell(2, 1).value = `รายงานการปรับปรุงข้อมูลเงินเดือน · ${department} · ${periodLabel(period)}`; sheet.getCell(2, 1).alignment = { horizontal: 'center' }
+  const headerRow = sheet.addRow(headers)
+  headerRow.eachCell(cell => { cell.font = { name: 'Tahoma', size: 9, bold: true }; cell.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true }; cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFECECEC' } } })
+  entries.forEach(({ employee, row }, index) => sheet.addRow([index + 1, `${employee.title}${employee.firstName} ${employee.lastName}`, employee.position, employee.baseSalary, row.extra, row.posAllowance, ...incomeTypes.map(item => row.customIncome?.[item.code] ?? 0), rowGross(employee, row), row.debtKTB, row.tax, row.social, row.funeral, row.ktb, row.gsb, ...deductionTypes.map(item => row.customDeduction?.[item.code] ?? 0), rowDeduct(row), rowNet(employee, row)]))
+  sheet.eachRow((row, number) => row.eachCell((cell, column) => { cell.font = { name: 'Tahoma', size: number <= 3 ? 9 : 8 }; cell.border = { top: { style: 'thin' }, left: { style: 'thin' }, bottom: { style: 'thin' }, right: { style: 'thin' } }; if (number > 3 && column >= 4) cell.numFmt = '#,##0.00' }))
+  const raw = await workbook.xlsx.writeBuffer(); const url = URL.createObjectURL(new Blob([raw], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `ตารางรอบเดือน_${department.replace(/[\\/:*?"<>|]/g, '-')}_${MONTH_EN_SHORT[period.month]}.xlsx`; anchor.click(); URL.revokeObjectURL(url)
+}
+
 const printPayrollReport = ({ period, department, status, entries }: {
   period: PayrollPeriod; department: string; status: DeptStatus; entries: PayrollExportEntry[]
 }) => {
@@ -597,6 +627,30 @@ const printPayrollTemplateExact = ({ period, department, status: _status, entrie
   printWindow.addEventListener('afterprint', () => printFrame.remove(), { once: true })
   printWindow.focus()
   printWindow.print()
+  return true
+}
+
+const printPayrollWithCustomItems = ({ period, department, entries, payItemTypes }: {
+  period: PayrollPeriod; department: string; entries: PayrollExportEntry[]; payItemTypes: PayItemType[]
+}) => {
+  const incomeTypes = payItemTypes.filter(item => item.is_active && item.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(item.code))
+  const deductionTypes = payItemTypes.filter(item => item.is_active && item.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(item.code))
+  const headers = ['ลำดับ', 'ชื่อ–นามสกุล', 'ตำแหน่ง', 'ฐานเงินเดือน', 'เงินเพิ่ม', 'เงินประจำตำแหน่ง', ...incomeTypes.map(item => item.name), 'รวมรายการรับ', 'ชำระหนี้ KTB', 'ภาษีหัก ณ ที่จ่าย', 'ประกันสังคม', 'ฌาปนกิจ', 'ธนาคารกรุงไทย', 'ธนาคารออมสิน', ...deductionTypes.map(item => item.name), 'รวมรายการหัก', 'ยอดรับสุทธิ']
+  const amount = (value: number) => `<td class="num">${thb(value)}</td>`
+  const rows = entries.map(({ employee, row }, index) => `<tr><td>${index + 1}</td><td class="name">${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${amount(employee.baseSalary)}${amount(row.extra)}${amount(row.posAllowance)}${incomeTypes.map(item => amount(row.customIncome?.[item.code] ?? 0)).join('')}${amount(rowGross(employee, row))}${amount(row.debtKTB)}${amount(row.tax)}${amount(row.social)}${amount(row.funeral)}${amount(row.ktb)}${amount(row.gsb)}${deductionTypes.map(item => amount(row.customDeduction?.[item.code] ?? 0)).join('')}${amount(rowDeduct(row))}${amount(rowNet(employee, row))}</tr>`).join('')
+  const totals = (selector: (employee: Employee, row: PayrollRow) => number) => entries.reduce((sum, entry) => sum + selector(entry.employee, entry.row), 0)
+  const incomeFooter = incomeTypes.map(item => amount(totals((_, row) => row.customIncome?.[item.code] ?? 0))).join('')
+  const deductionFooter = deductionTypes.map(item => amount(totals((_, row) => row.customDeduction?.[item.code] ?? 0))).join('')
+  const footer = `<tr><td colspan="3">รวมทั้งสิ้น</td>${amount(totals(employee => employee.baseSalary))}${amount(totals((_, row) => row.extra))}${amount(totals((_, row) => row.posAllowance))}${incomeFooter}${amount(totals(rowGross))}${amount(totals((_, row) => row.debtKTB))}${amount(totals((_, row) => row.tax))}${amount(totals((_, row) => row.social))}${amount(totals((_, row) => row.funeral))}${amount(totals((_, row) => row.ktb))}${amount(totals((_, row) => row.gsb))}${deductionFooter}${amount(totals((_, row) => rowDeduct(row)))}${amount(totals((employee, row) => rowNet(employee, row)))}</tr>`
+  const frame = document.createElement('iframe')
+  frame.setAttribute('aria-hidden', 'true')
+  Object.assign(frame.style, { position: 'fixed', left: '-10000px', top: '0', width: '1px', height: '1px', border: '0' })
+  document.body.appendChild(frame)
+  const doc = frame.contentDocument
+  if (!doc) { frame.remove(); return false }
+  doc.open()
+  doc.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานการปรับปรุงข้อมูลเงินเดือน</title><style>@page{size:A4 landscape;margin:8mm 7mm}*{box-sizing:border-box}body{margin:0;font-family:Tahoma,sans-serif;color:#111;font-size:7pt}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}h1,h2,p{margin:0;text-align:center}h1{font-size:14pt}h2{font-size:10pt;margin-top:2px}.meta{display:flex;justify-content:space-between;margin:4mm 0 3mm;font-size:8pt}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:.45pt solid #555;padding:2px 2.5px;vertical-align:middle;line-height:1.18}th{background:#ececec;text-align:center;font-size:6.1pt;white-space:normal;overflow-wrap:anywhere}td{font-size:6.2pt;white-space:nowrap}td:first-child{text-align:center}.name{white-space:normal}td.num{text-align:right;font-variant-numeric:tabular-nums}tfoot td{background:#f2f2f2;font-weight:700}</style></head><body><h1>เทศบาลเมืองตาคลี</h1><h2>รายงานการปรับปรุงข้อมูลเงินเดือน</h2><p>${escapeMarkup(department)} · ประจำเดือน ${escapeMarkup(periodLabel(period))}</p><div class="meta"><span>วันที่จ่าย ${escapeMarkup(formatBuddhistDate(period.payDate))}</span><span>จำนวนพนักงาน ${entries.length} คน</span><span>วันที่พิมพ์ ${escapeMarkup(formatBuddhistDate(new Date()))}</span></div><table><thead><tr>${headers.map(header => `<th>${escapeMarkup(header)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody><tfoot>${footer}</tfoot></table><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.frameElement?.remove())})<\/script></body></html>`)
+  doc.close()
   return true
 }
 
@@ -1482,6 +1536,9 @@ function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActi
   const [createNote, setCreateNote] = useState('')
   const [createDepartmentId, setCreateDepartmentId] = useState('')
   const [creating, setCreating] = useState(false)
+  const [editingPeriods, setEditingPeriods] = useState(false)
+  const [periodToDelete, setPeriodToDelete] = useState<PayrollPeriod | null>(null)
+  const [deletingPeriod, setDeletingPeriod] = useState(false)
 
   const handleCreate = async () => {
     if (creating) return
@@ -1502,12 +1559,27 @@ function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActi
     }
   }
 
+  const confirmDeletePeriod = async () => {
+    if (!periodToDelete?.databaseId || deletingPeriod) return
+    setDeletingPeriod(true)
+    try {
+      await deletePayrollPeriod(periodToDelete.databaseId)
+      await reloadPayroll()
+      showToast(`ลบรอบเงินเดือน ${periodLabel(periodToDelete)} เรียบร้อยแล้ว`, 'success')
+      setPeriodToDelete(null)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'ลบรอบเงินเดือนไม่สำเร็จ', 'error')
+    } finally {
+      setDeletingPeriod(false)
+    }
+  }
+
   return (
     <div className="anim">
       <PageHeader
         title="รอบเงินเดือน"
         subtitle="จัดการและติดตามรอบเงินเดือนทั้งหมด"
-        actions={role === 'hr' || role === 'admin' ? <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ สร้างรอบเงินเดือน</button> : undefined}
+        actions={role === 'hr' || role === 'admin' ? <div className="flex gap-2">{role === 'admin' && <button className="btn btn-secondary" onClick={() => setEditingPeriods(value => !value)}>{editingPeriods ? 'ปิดการแก้ไข' : '✏️ แก้ไขรอบเงินเดือน'}</button>}<button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ สร้างรอบเงินเดือน</button></div> : undefined}
       />
       <div className="flex flex-col gap-4">
         {error ? (
@@ -1558,7 +1630,10 @@ function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActi
                       <span className={`badge badge-${periodStatus.type}`}>{periodStatus.label}</span>
                     )}
                   </div>
-                  <span style={{ color: '#CBD5E1', fontSize: 18 }}>›</span>
+                  {editingPeriods && role === 'admin' && (
+                    <button type="button" className="btn btn-danger btn-xs" title="ลบรอบเงินเดือน" onClick={event => { event.stopPropagation(); setPeriodToDelete(p) }}>−</button>
+                  )}
+                  {!editingPeriods && <span style={{ color: '#CBD5E1', fontSize: 18 }}>›</span>}
                 </div>
               </div>
             </div>
@@ -1597,6 +1672,7 @@ function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActi
           </div>
         </Modal>
       )}
+      {periodToDelete && <Modal title="ยืนยันการลบรอบเงินเดือน" onClose={() => !deletingPeriod && setPeriodToDelete(null)}><div className="flex flex-col gap-4"><div style={{ background: '#FFF1F2', border: '1px solid #FECDD3', borderRadius: 10, padding: '13px 15px', color: '#9F1239', fontSize: 13, lineHeight: 1.65 }}>การลบจะเอาข้อมูลของรอบ <strong>{periodLabel(periodToDelete)}</strong> รวมถึงตารางและรายการรับ–หักของทุกฝ่ายออกจากฐานข้อมูลอย่างถาวร<br /><br />ระบบอนุญาตเฉพาะรอบที่ทุกฝ่ายยังเป็น <strong>แบบร่าง</strong> เท่านั้น</div><div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={deletingPeriod} onClick={() => setPeriodToDelete(null)}>ยกเลิก</button><button className="btn btn-danger" aria-busy={deletingPeriod} disabled={deletingPeriod} onClick={() => void confirmDeletePeriod()}><BusyLabel busy={deletingPeriod} label="กำลังลบ…">ลบรอบเงินเดือน</BusyLabel></button></div></div></Modal>}
     </div>
   )
 }
@@ -1723,12 +1799,28 @@ function CellInput({ empId, field, value, isReadonly, onFocus, onCommit }: CellI
   )
 }
 
+function CustomPayItemCell({ empId, code, category, value, isReadonly, onFocus, onCommit }: {
+  empId: string; code: string; category: 'EARNING' | 'DEDUCTION'; value: number; isReadonly: boolean;
+  onFocus: (id: string) => void; onCommit: (empId: string, category: 'EARNING' | 'DEDUCTION', code: string, value: number) => void;
+}) {
+  const [localValue, setLocalValue] = useState(String(value))
+  const ref = useRef<HTMLInputElement>(null)
+  useEffect(() => setLocalValue(String(value)), [value])
+  if (isReadonly) return <td className="num readonly">{thb(value)}</td>
+  return <td style={{ padding: '4px 8px' }}><input ref={ref} className="cell-inp" type="number" min={0} value={localValue} placeholder="0.00"
+    onFocus={() => onFocus(empId)}
+    onChange={event => { const next = event.target.value; setLocalValue(next); const amount = Number(next); if (next === '' || (Number.isFinite(amount) && amount >= 0)) onCommit(empId, category, code, next === '' ? 0 : amount) }}
+    onBlur={() => onCommit(empId, category, code, Math.max(0, Number(localValue) || 0))}
+    onKeyDown={event => event.key === 'Enter' && ref.current?.blur()} /></td>
+}
+
 // ─── Dept Payroll Table ───────────────────────────────────────────────────────
 
-function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, departments, positions, reloadPayroll }: {
+function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, departments, positions, payItemTypes, setPayItemTypes, reloadPayroll }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
   setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void;
-  databaseEmployees: DatabaseEmployee[]; departments: Department[]; positions: Position[]; reloadPayroll: () => Promise<void>;
+  databaseEmployees: DatabaseEmployee[]; departments: Department[]; positions: Position[]; payItemTypes: PayItemType[];
+  setPayItemTypes: React.Dispatch<React.SetStateAction<PayItemType[]>>; reloadPayroll: () => Promise<void>;
 }) {
   // Combine the payroll snapshot with the live employee directory.  A staff member
   // added after this payroll period was first loaded must be available immediately.
@@ -1773,6 +1865,10 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const [revisionType, setRevisionType] = useState('')
   const [revisionReason, setRevisionReason] = useState('')
   const [creatingRevision, setCreatingRevision] = useState(false)
+  const [showAddItemModal, setShowAddItemModal] = useState(false)
+  const [newItemName, setNewItemName] = useState('')
+  const [newItemCategory, setNewItemCategory] = useState<PayItemType['category']>('EARNING')
+  const [creatingItemType, setCreatingItemType] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [focusRow, setFocusRow] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
@@ -1783,6 +1879,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const inlineAddRef = useRef<HTMLDivElement>(null)
   const inlineDropdownRef = useRef<HTMLDivElement>(null)
   const isReadonly = dept.status === 'pending' || dept.status === 'approved' || dept.status === 'closed'
+  const customIncomeTypes = payItemTypes.filter(item => item.is_active && item.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(item.code))
+  const customDeductionTypes = payItemTypes.filter(item => item.is_active && item.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(item.code))
   const availableEmployees = allDepartmentEmployees.filter(employee => !includedEmployeeIds.includes(employee.id))
   const visibleEmployees = emps.filter(employee => {
     const keyword = search.trim().toLowerCase()
@@ -1855,18 +1953,52 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     setDirty(true)
   }, [])
 
+  const setCustomCell = useCallback((empId: string, category: 'EARNING' | 'DEDUCTION', code: string, val: number) => {
+    setRows(previous => {
+      const row = previous[empId]
+      const key = category === 'EARNING' ? 'customIncome' : 'customDeduction'
+      return { ...previous, [empId]: { ...row, [key]: { ...row[key], [code]: val } } }
+    })
+    setDirty(true)
+  }, [])
+
+  const addPayItemType = async () => {
+    if (!newItemName.trim()) { showToast('กรุณาระบุชื่อรายการ', 'error'); return }
+    setCreatingItemType(true)
+    try {
+      const created = await createPayItemType({ name: newItemName.trim(), category: newItemCategory })
+      setPayItemTypes(current => current.some(item => item.code === created.code) ? current : [...current, created])
+      setRows(current => Object.fromEntries(Object.entries(current).map(([employeeId, row]) => [employeeId, {
+        ...row,
+        [created.category === 'EARNING' ? 'customIncome' : 'customDeduction']: {
+          ...(created.category === 'EARNING' ? row.customIncome : row.customDeduction),
+          [created.code]: 0,
+        },
+      }])))
+      setNewItemName('')
+      setShowAddItemModal(false)
+      showToast('เพิ่มคอลัมน์รายการเงินเดือนแล้ว กรอกจำนวนเงินและกดบันทึกเพื่อใช้ในรอบนี้', 'success')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'เพิ่มประเภทรายการเงินเดือนไม่สำเร็จ', 'error')
+    } finally {
+      setCreatingItemType(false)
+    }
+  }
+
   const pendingChangeCount = useMemo(() => {
     const originalIds = new Set(initialIncludedEmployeeIds.current)
     const currentIds = new Set(includedEmployeeIds)
     const added = includedEmployeeIds.filter(id => !originalIds.has(id)).length
     const removed = initialIncludedEmployeeIds.current.filter(id => !currentIds.has(id)).length
-    const editableFields: Array<Exclude<keyof PayrollRow, 'empId'>> = ['extra', 'posAllowance', 'debtKTB', 'tax', 'social', 'funeral', 'ktb', 'gsb']
+    const editableFields: Array<Exclude<keyof PayrollRow, 'empId' | 'customIncome' | 'customDeduction'>> = ['extra', 'posAllowance', 'debtKTB', 'tax', 'social', 'funeral', 'ktb', 'gsb']
     const editedCells = includedEmployeeIds.reduce((count, id) => {
       if (!originalIds.has(id)) return count
       const original = initialRows.current[id]
       const current = rows[id]
       if (!original || !current) return count
-      return count + editableFields.filter(field => original[field] !== current[field]).length
+      const customChanges = [...new Set([...Object.keys(original.customIncome ?? {}), ...Object.keys(current.customIncome ?? {}), ...Object.keys(original.customDeduction ?? {}), ...Object.keys(current.customDeduction ?? {})])]
+        .filter(code => (original.customIncome?.[code] ?? original.customDeduction?.[code] ?? 0) !== (current.customIncome?.[code] ?? current.customDeduction?.[code] ?? 0)).length
+      return count + editableFields.filter(field => original[field] !== current[field]).length + customChanges
     }, 0)
     return added + removed + editedCells
   }, [includedEmployeeIds, rows])
@@ -1882,6 +2014,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       return { employee_id: employeeId, lines: {
         EXTRA_PAY: row.extra, POS_ALLOW: row.posAllowance, KTB_LOAN: row.debtKTB,
         TAX: row.tax, SSF: row.social, FUNERAL_FUND: row.funeral, SAVINGS_BANK_LOAN: row.gsb,
+        ...row.customIncome, ...row.customDeduction,
       } }
     })
     await savePayrollBatchItems(dept.databaseId, payload)
@@ -2025,11 +2158,13 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     setCell(id, field, val)
   }, [setCell])
 
-  const exportExcel = () => exportPayrollWorkbook({
-    period,
-    department: dept.department,
-    entries: emps.map(employee => ({ employee, row: rows[employee.id] })),
-  })
+  const exportExcel = () => {
+    const entries = emps.map(employee => ({ employee, row: rows[employee.id] }))
+    if (customIncomeTypes.length || customDeductionTypes.length) {
+      return exportPayrollWorkbookWithCustomItems({ period, department: dept.department, entries, payItemTypes })
+    }
+    return exportPayrollWorkbook({ period, department: dept.department, entries })
+  }
 
   const legacyExportExcel = () => {
     const numberCell = (value: number, style = 'Number') => `<Cell ss:StyleID="${style}"><Data ss:Type="Number">${value}</Data></Cell>`
@@ -2077,7 +2212,12 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   }
 
   const printPayrollTable = () => {
-    if (!printPayrollTemplateExact({ period, department: dept.department, status: dept.status, entries: emps.map(employee => ({ employee, row: rows[employee.id] })) })) {
+    const entries = emps.map(employee => ({ employee, row: rows[employee.id] }))
+    const hasCustomColumns = customIncomeTypes.length > 0 || customDeductionTypes.length > 0
+    const printed = hasCustomColumns
+      ? printPayrollWithCustomItems({ period, department: dept.department, entries, payItemTypes })
+      : printPayrollTemplateExact({ period, department: dept.department, status: dept.status, entries })
+    if (!printed) {
       showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error')
     }
   }
@@ -2185,8 +2325,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           <thead>
             <tr>
               <th colSpan={4} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
-              <th colSpan={3} className="th-group th-group-income">รายการรับ</th>
-              <th colSpan={7} className="th-group th-group-deduct">รายการหัก</th>
+              <th colSpan={3 + customIncomeTypes.length} className="th-group th-group-income">รายการรับ {editing && !isReadonly && <button type="button" className="payroll-add-item-button" onClick={() => { setNewItemCategory('EARNING'); setShowAddItemModal(true) }} title="เพิ่มคอลัมน์รายการรับ">+</button>}</th>
+              <th colSpan={7 + customDeductionTypes.length} className="th-group th-group-deduct">รายการหัก {editing && !isReadonly && <button type="button" className="payroll-add-item-button" onClick={() => { setNewItemCategory('DEDUCTION'); setShowAddItemModal(true) }} title="เพิ่มคอลัมน์รายการหัก">+</button>}</th>
               <th colSpan={1} className="th-group th-group-net">ยอดรับสุทธิ</th>
               {editing && !isReadonly && <th rowSpan={2} className="th-group th-group-emp" style={{ minWidth: 88 }}>ดำเนินการ</th>}
             </tr>
@@ -2199,6 +2339,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               {/* Income */}
               <th className="th-income" style={{ textAlign: 'right' }}>เงินเพิ่ม</th>
               <th className="th-income" style={{ textAlign: 'right' }}>เงินประจำตำแหน่ง</th>
+              {customIncomeTypes.map(item => <th key={item.code} className="th-income" style={{ textAlign: 'right', minWidth: 125 }}>{item.name}</th>)}
               <th className="th-income" style={{ textAlign: 'right' }}>รวมรายการรับ</th>
               {/* Deduct */}
               <th className="th-deduct" style={{ textAlign: 'right' }}>ชำระหนี้ KTB</th>
@@ -2207,6 +2348,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               <th className="th-deduct" style={{ textAlign: 'right' }}>ฌาปนกิจ</th>
               <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารกรุงไทย</th>
               <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารออมสิน</th>
+              {customDeductionTypes.map(item => <th key={item.code} className="th-deduct" style={{ textAlign: 'right', minWidth: 125 }}>{item.name}</th>)}
               <th className="th-deduct" style={{ textAlign: 'right' }}>รวมรายการหัก</th>
               {/* Net */}
               <th className="th-net" style={{ textAlign: 'right' }}>ยอดรับสุทธิ</th>
@@ -2225,6 +2367,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                   <td className="num readonly">{thb(e.baseSalary)}</td>
                   <CellInput empId={e.id} field="extra"        value={r.extra}        isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
                   <CellInput empId={e.id} field="posAllowance" value={r.posAllowance} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
+                  {customIncomeTypes.map(item => <CustomPayItemCell key={item.code} empId={e.id} code={item.code} category="EARNING" value={r.customIncome?.[item.code] ?? 0} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={setCustomCell} />)}
                   <td className="num total" style={{ background: '#F0FDF4', color: '#15803D' }}>{thb(g)}</td>
                   <CellInput empId={e.id} field="debtKTB" value={r.debtKTB} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
                   <CellInput empId={e.id} field="tax"     value={r.tax}     isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
@@ -2232,6 +2375,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                   <CellInput empId={e.id} field="funeral" value={r.funeral} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
                   <CellInput empId={e.id} field="ktb"     value={r.ktb}     isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
                   <CellInput empId={e.id} field="gsb"     value={r.gsb}     isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
+                  {customDeductionTypes.map(item => <CustomPayItemCell key={item.code} empId={e.id} code={item.code} category="DEDUCTION" value={r.customDeduction?.[item.code] ?? 0} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={setCustomCell} />)}
                   <td className="num total" style={{ background: '#FFF8F6', color: '#B91C1C' }}>{thb(d)}</td>
                   <td className="num total" style={{ background: '#F5F3FF', color: 'var(--purple-600)', fontFamily: 'var(--font-display)' }}>{thb(n)}</td>
                   {editing && !isReadonly && (
@@ -2257,7 +2401,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                     />
                   </div>
                 </td>
-                <td colSpan={13} />
+                <td colSpan={13 + customIncomeTypes.length + customDeductionTypes.length} />
               </tr>
             )}
           </tbody>
@@ -2267,6 +2411,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               <td className="num">{thb(totals.base)}</td>
               <td className="num">{thb(totals.extra)}</td>
               <td className="num">{thb(totals.pos)}</td>
+              {customIncomeTypes.map(item => <td key={item.code} className="num">{thb(emps.reduce((sum, employee) => sum + (rows[employee.id].customIncome?.[item.code] ?? 0), 0))}</td>)}
               <td className="num" style={{ color: '#15803D' }}>{thb(totals.gross)}</td>
               <td className="num">{thb(totals.debtKTB)}</td>
               <td className="num">{thb(totals.tax)}</td>
@@ -2274,6 +2419,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               <td className="num">{thb(totals.funeral)}</td>
               <td className="num">{thb(totals.ktb)}</td>
               <td className="num">{thb(totals.gsb)}</td>
+              {customDeductionTypes.map(item => <td key={item.code} className="num">{thb(emps.reduce((sum, employee) => sum + (rows[employee.id].customDeduction?.[item.code] ?? 0), 0))}</td>)}
               <td className="num" style={{ color: '#B91C1C' }}>{thb(totals.deduct)}</td>
               <td className="num" style={{ color: 'var(--purple-600)' }}>{thb(totals.net)}</td>
               {editing && !isReadonly && <td />}
@@ -2311,6 +2457,17 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           ))}
         </div>,
         document.body,
+      )}
+
+      {showAddItemModal && (
+        <Modal title="เพิ่มคอลัมน์รายการเงินเดือน" onClose={() => !creatingItemType && setShowAddItemModal(false)}>
+          <div className="flex flex-col gap-4">
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65 }}>รายการที่เพิ่มจะเป็นประเภทรายการเงินเดือนใหม่ และใช้งานเป็นคอลัมน์ในรอบเงินเดือนถัดไปได้</div>
+            <FormField label="ชื่อรายการ" required><input className="inp" autoFocus value={newItemName} maxLength={100} onChange={event => setNewItemName(event.target.value)} placeholder="เช่น เงินพิเศษ" /></FormField>
+            <FormField label="จัดเป็นรายการ" required><AppSelect className="inp" value={newItemCategory} onChange={event => setNewItemCategory(event.target.value as PayItemType['category'])}><option value="EARNING">รายการรับ</option><option value="DEDUCTION">รายการหัก</option></AppSelect></FormField>
+            <div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingItemType} onClick={() => setShowAddItemModal(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={creatingItemType} disabled={creatingItemType || !newItemName.trim()} onClick={() => void addPayItemType()}><BusyLabel busy={creatingItemType} label="กำลังเพิ่ม…">เพิ่มคอลัมน์</BusyLabel></button></div>
+          </div>
+        </Modal>
       )}
 
       {showDiscardModal && (
@@ -3876,6 +4033,7 @@ export default function App() {
   const [departments, setDepartments] = useState<Department[]>([])
   const [databaseEmployees, setDatabaseEmployees] = useState<DatabaseEmployee[]>([])
   const [positions, setPositions] = useState<Position[]>([])
+  const [payItemTypes, setPayItemTypes] = useState<PayItemType[]>([])
   const [employeeLoading, setEmployeeLoading] = useState(true)
   const [employeeError, setEmployeeError] = useState('')
   const [payrollError, setPayrollError] = useState('')
@@ -3966,10 +4124,11 @@ export default function App() {
         setEmployeeError('')
         // One authenticated request avoids duplicate token checks and a second
         // browser round-trip on every login or full refresh.
-        const { employees: employeeData, departments: departmentData, positions: positionData, payroll_periods: payrollData } = await getAppData()
+        const { employees: employeeData, departments: departmentData, positions: positionData, payroll_periods: payrollData, pay_item_types: itemTypeData } = await getAppData()
         setDatabaseEmployees(employeeData)
         setDepartments(departmentData)
         setPositions(positionData)
+        setPayItemTypes(itemTypeData)
         setEmployeeLoading(false)
 
         const mappedPeriods = mapPayrollPeriods(payrollData, employeeData, departmentData, positionData)
@@ -4082,7 +4241,7 @@ export default function App() {
           )}
           {(page === 'dept-table' || (page === 'period-detail' && role === 'hr')) && activePeriod && activeDept && (
             <DeptPayrollTable period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast}
-              databaseEmployees={visibleEmployees} departments={departments} positions={positions} reloadPayroll={loadEmployeeData} />
+              databaseEmployees={visibleEmployees} departments={departments} positions={positions} payItemTypes={payItemTypes} setPayItemTypes={setPayItemTypes} reloadPayroll={loadEmployeeData} />
           )}
           {page === 'director-approvals' && (
             <DirectorApprovals periods={visiblePeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />

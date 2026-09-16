@@ -48,7 +48,7 @@ export interface PayrollItemRecord {
   base_salary: string | number
   email_status?: 'PENDING' | 'SENT' | 'FAILED' | null
   email_sent_at?: string | null
-  lines: { code: string; amount: string | number }[]
+  lines: { code: string; amount: string | number; name?: string | null; category?: 'EARNING' | 'DEDUCTION' | null }[]
 }
 
 async function parseError(response: Response, fallback: string): Promise<never> {
@@ -67,6 +67,11 @@ export async function createPayrollPeriod(input: { year: number; month: number; 
   const response = await fetch(`${API_URL}/payroll_periods`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify(input) })
   if (!response.ok) return parseError(response, `สร้างรอบเงินเดือนไม่สำเร็จ: ${response.status}`)
   return (await response.json()).data as { period_id: number; batch_id: number; existing: boolean }
+}
+
+export async function deletePayrollPeriod(periodId: number): Promise<void> {
+  const response = await fetch(`${API_URL}/payroll_periods/${periodId}`, { method: 'DELETE', headers: authorizationHeaders() })
+  if (!response.ok) return parseError(response, `ลบรอบเงินเดือนไม่สำเร็จ: ${response.status}`)
 }
 
 export async function savePayrollBatchItems(batchId: number, rows: { employee_id: number; lines: Record<string, number> }[]): Promise<void> {

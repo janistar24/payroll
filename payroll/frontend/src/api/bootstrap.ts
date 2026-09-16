@@ -3,12 +3,13 @@ import type { Department } from './departments'
 import type { Employee } from './employees'
 import type { Position } from './positions'
 import type { PayrollPeriodRecord } from './payroll'
+import type { PayItemType } from './payItemTypes'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
 
 interface AppDataResponse {
   success: boolean
-  data: { employees: Employee[]; departments: Department[]; positions: Position[]; payroll_periods: PayrollPeriodRecord[] }
+  data: { employees: Employee[]; departments: Department[]; positions: Position[]; payroll_periods: PayrollPeriodRecord[]; pay_item_types: PayItemType[] }
 }
 
 export async function getAppData(): Promise<AppDataResponse['data']> {

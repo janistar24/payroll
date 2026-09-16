@@ -139,13 +139,25 @@ class PayrollWorkflow:
                 cursor.execute("DELETE FROM public.payroll_item_lines WHERE payroll_item_id = ANY(%s)", (previous_item_ids,))
             cursor.execute("DELETE FROM public.payroll_items WHERE department_batch_id = %s", (batch_id,))
 
+            all_line_codes = {code for row in rows for code in row.get("lines", {})}
+            if all_line_codes:
+                cursor.execute(
+                    "SELECT code, category FROM public.pay_item_types WHERE is_active = TRUE AND code = ANY(%s)",
+                    (list(all_line_codes),),
+                )
+                line_categories = dict(cursor.fetchall())
+                if len(line_categories) != len(all_line_codes):
+                    raise ValueError("พบประเภทรายการรับหรือรายการหักที่ไม่ถูกต้อง")
+            else:
+                line_categories = {}
+
             item_payload = []
             line_payload = []
             for row in rows:
                 base_salary = Decimal(str(salaries[row["employee_id"]]))
                 line_values = row.get("lines", {})
-                earnings = sum(Decimal(str(value)) for code, value in line_values.items() if code in {"EXTRA_PAY", "POS_ALLOW"})
-                deductions = sum(Decimal(str(value)) for code, value in line_values.items() if code in {"KTB_LOAN", "TAX", "SSF", "FUNERAL_FUND", "SAVINGS_BANK_LOAN"})
+                earnings = sum(Decimal(str(value)) for code, value in line_values.items() if line_categories[code] == "EARNING")
+                deductions = sum(Decimal(str(value)) for code, value in line_values.items() if line_categories[code] == "DEDUCTION")
                 total_earnings = base_salary + earnings
                 net_pay = total_earnings - deductions
                 item_payload.append({

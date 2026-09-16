@@ -209,18 +209,20 @@ def get_app_data(user=Depends(get_current_user)):
     """
     try:
         department_id = _department_scope(user)
-        # These four reads are independent.  Keep one HTTP request for the
+        # These reads are independent.  Keep one HTTP request for the
         # browser, while letting the bounded database pool run the reads in
         # parallel instead of adding their remote latency together.
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=5) as executor:
             employees_future = executor.submit(employees_service.dump, department_id)
             departments_future = executor.submit(departments_service.dump)
             positions_future = executor.submit(positions_service.dump)
             payroll_future = executor.submit(payroll_periods_service.dump, department_id)
+            pay_item_types_future = executor.submit(pay_item_types_service.dump)
             employees = employees_future.result()
             departments = departments_future.result()
             positions = positions_future.result()
             payroll_periods = payroll_future.result()
+            pay_item_types = pay_item_types_future.result()
         return {
             "success": True,
             "data": {
@@ -228,6 +230,7 @@ def get_app_data(user=Depends(get_current_user)):
                 "departments": departments,
                 "positions": positions,
                 "payroll_periods": payroll_periods,
+                "pay_item_types": pay_item_types,
             },
         }
     except HTTPException:
@@ -420,9 +423,8 @@ class PayrollRowSave(BaseModel):
     @field_validator("lines")
     @classmethod
     def validate_lines(cls, value):
-        allowed = {"EXTRA_PAY", "POS_ALLOW", "KTB_LOAN", "TAX", "SSF", "FUNERAL_FUND", "SAVINGS_BANK_LOAN"}
-        if not set(value).issubset(allowed):
-            raise ValueError("พบประเภทรายการเงินเดือนที่ไม่รองรับ")
+        if any(not code or len(code) > 80 or not code.replace("_", "").isalnum() for code in value):
+            raise ValueError("รหัสประเภทรายการเงินเดือนไม่ถูกต้อง")
         if any(amount < 0 for amount in value.values()):
             raise ValueError("จำนวนเงินต้องไม่ติดลบ")
         return value
@@ -430,6 +432,18 @@ class PayrollRowSave(BaseModel):
 
 class PayrollBatchSave(BaseModel):
     rows: list[PayrollRowSave]
+
+
+class PayItemTypeCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    category: str
+
+    @field_validator("category")
+    @classmethod
+    def validate_category(cls, value):
+        if value not in {"EARNING", "DEDUCTION"}:
+            raise ValueError("ประเภทรายการไม่ถูกต้อง")
+        return value
 
 
 class PayrollBatchAction(BaseModel):
@@ -878,6 +892,40 @@ def create_payroll_period(request: PayrollPeriodCreate, user=Depends(get_current
         raise HTTPException(status_code=500, detail={"message": "สร้างรอบเงินเดือนไม่สำเร็จ", "error": str(error)})
 
 
+@app.delete("/api/payroll_periods/{period_id}")
+def delete_payroll_period(period_id: int, user=Depends(get_current_user)):
+    """Permanently remove only an entirely-draft period and its dependent rows."""
+    try:
+        _require_admin(user)
+        with db.transaction() as cursor:
+            cursor.execute("SELECT id FROM public.payroll_periods WHERE id = %s FOR UPDATE", (period_id,))
+            if cursor.fetchone() is None:
+                raise ValueError("ไม่พบรอบเงินเดือน")
+            cursor.execute("SELECT id, status FROM public.payroll_department_batches WHERE payroll_period_id = %s FOR UPDATE", (period_id,))
+            batches = cursor.fetchall()
+            if any(status != "DRAFT" for _, status in batches):
+                raise ValueError("ลบได้เฉพาะรอบที่ทุกฝ่ายยังเป็นแบบร่างเท่านั้น")
+            batch_ids = [batch_id for batch_id, _ in batches]
+            if batch_ids:
+                cursor.execute("SELECT id FROM public.payroll_items WHERE department_batch_id = ANY(%s)", (batch_ids,))
+                item_ids = [row[0] for row in cursor.fetchall()]
+                if item_ids:
+                    cursor.execute("DELETE FROM public.payslip_email_deliveries WHERE payroll_item_id = ANY(%s)", (item_ids,))
+                    cursor.execute("DELETE FROM public.payroll_item_lines WHERE payroll_item_id = ANY(%s)", (item_ids,))
+                cursor.execute("DELETE FROM public.payroll_items WHERE department_batch_id = ANY(%s)", (batch_ids,))
+                cursor.execute("DELETE FROM public.payroll_batch_employee_exclusions WHERE department_batch_id = ANY(%s)", (batch_ids,))
+                cursor.execute("DELETE FROM public.payroll_department_batches WHERE id = ANY(%s)", (batch_ids,))
+            cursor.execute("DELETE FROM public.payroll_periods WHERE id = %s", (period_id,))
+        audit_logger.log(user["id"], "DELETE_PAYROLL_PERIOD", "payroll_period", period_id, {})
+        return {"success": True}
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail={"message": "ไม่สามารถลบรอบเงินเดือนได้", "error": str(error)})
+
+
 @app.post("/api/payroll_department_batches/{batch_id}/revisions", status_code=201)
 def create_payroll_revision(batch_id: int, request: PayrollRevisionCreate, user=Depends(get_current_user)):
     batch = _ensure_batch_access(batch_id, user)
@@ -1038,3 +1086,20 @@ def get_pay_item_types(user=Depends(get_current_user)):
                 "error": str(error)
             }
         )
+
+
+@app.post("/api/pay_item_types", status_code=201)
+def create_pay_item_type(request: PayItemTypeCreate, user=Depends(get_current_user)):
+    try:
+        _require_payroll_role(user)
+        if user["role"] == "director":
+            raise HTTPException(status_code=403, detail="ผู้บริหารไม่สามารถเพิ่มประเภทรายการเงินเดือนได้")
+        item_type = pay_item_types_service.create(request.name, request.category)
+        audit_logger.log(user["id"], "CREATE_PAY_ITEM_TYPE", "pay_item_type", item_type["id"], {"name": item_type["name"], "category": item_type["category"]})
+        return {"success": True, "data": item_type}
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail={"message": "ไม่สามารถเพิ่มประเภทรายการเงินเดือนได้", "error": str(error)})

@@ -63,10 +63,10 @@ export async function getPayrollPeriods(): Promise<PayrollPeriodRecord[]> {
   return body.data as PayrollPeriodRecord[]
 }
 
-export async function createPayrollPeriod(input: { year: number; month: number; pay_date: string; note?: string }): Promise<number> {
+export async function createPayrollPeriod(input: { year: number; month: number; pay_date: string; note?: string; department_id?: number }): Promise<{ period_id: number; batch_id: number; existing: boolean }> {
   const response = await fetch(`${API_URL}/payroll_periods`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify(input) })
   if (!response.ok) return parseError(response, `สร้างรอบเงินเดือนไม่สำเร็จ: ${response.status}`)
-  return (await response.json()).data.id as number
+  return (await response.json()).data as { period_id: number; batch_id: number; existing: boolean }
 }
 
 export async function savePayrollBatchItems(batchId: number, rows: { employee_id: number; lines: Record<string, number> }[]): Promise<void> {

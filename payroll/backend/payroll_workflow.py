@@ -8,27 +8,50 @@ class PayrollWorkflow:
     def __init__(self):
         self.db = DBHelper()
 
-    def create_period(self, year, month, pay_date, note, created_by_id):
+    def create_or_get_department_batch(self, year, month, pay_date, note, created_by_id, department_id):
+        """Use one current batch per department/month so every authorised editor shares it."""
         with self.db.transaction() as cursor:
             cursor.execute(
-                """
-                INSERT INTO public.payroll_periods (year, month, pay_date, note, status, created_by_id, created_at, updated_at)
-                VALUES (%s, %s, %s, %s, 'DRAFT', %s, NOW(), NOW())
-                RETURNING id
-                """,
-                (year, month, pay_date, note, created_by_id),
+                "SELECT id FROM public.departments WHERE id = %s AND is_active = TRUE",
+                (department_id,)
             )
-            period_id = cursor.fetchone()[0]
+            if cursor.fetchone() is None:
+                raise ValueError("ไม่พบฝ่ายที่เปิดใช้งาน")
+            cursor.execute(
+                "SELECT id FROM public.payroll_periods WHERE year = %s AND month = %s FOR UPDATE",
+                (year, month)
+            )
+            existing_period = cursor.fetchone()
+            if existing_period is not None:
+                period_id = existing_period[0]
+                cursor.execute(
+                    """SELECT id FROM public.payroll_department_batches
+                       WHERE payroll_period_id = %s AND department_id = %s AND is_current = TRUE
+                       FOR UPDATE""",
+                    (period_id, department_id)
+                )
+                existing_batch = cursor.fetchone()
+                if existing_batch is not None:
+                    return {"period_id": period_id, "batch_id": existing_batch[0], "existing": True}
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO public.payroll_periods (year, month, pay_date, note, status, created_by_id, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, 'DRAFT', %s, NOW(), NOW())
+                    RETURNING id
+                    """,
+                    (year, month, pay_date, note, created_by_id),
+                )
+                period_id = cursor.fetchone()[0]
             cursor.execute(
                 """
                 INSERT INTO public.payroll_department_batches (payroll_period_id, department_id, status, created_at)
-                SELECT %s, id, 'DRAFT', NOW()
-                FROM public.departments
-                WHERE is_active = TRUE
+                VALUES (%s, %s, 'DRAFT', NOW())
+                RETURNING id
                 """,
-                (period_id,),
+                (period_id, department_id),
             )
-            return period_id
+            return {"period_id": period_id, "batch_id": cursor.fetchone()[0], "existing": False}
 
     def create_revision(self, batch_id, revision_type, reason, actor_id):
         with self.db.transaction() as cursor:

@@ -410,6 +410,7 @@ class PayrollPeriodCreate(BaseModel):
     year: int = Field(ge=2000, le=3000)
     pay_date: date
     note: str | None = Field(default=None, max_length=500)
+    department_id: int | None = None
 
 
 class PayrollRowSave(BaseModel):
@@ -852,13 +853,23 @@ def get_payroll_periods(user=Depends(get_current_user)):
 @app.post("/api/payroll_periods", status_code=201)
 def create_payroll_period(request: PayrollPeriodCreate, user=Depends(get_current_user)):
     try:
-        _require_payroll_role(user)
-        period_id = payroll_workflow_service.create_period(
+        if user["role"] not in {"hr", "admin"}:
+            raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์สร้างรอบเงินเดือน")
+        own_department_id = _department_scope(user)
+        if user["role"] == "admin":
+            if request.department_id is None:
+                raise HTTPException(status_code=400, detail="กรุณาเลือกฝ่ายที่ต้องการจัดทำ")
+            department_id = request.department_id
+        else:
+            if request.department_id is not None and request.department_id != own_department_id:
+                raise HTTPException(status_code=403, detail="พนักงานฝ่ายธุรการสร้างรอบได้เฉพาะฝ่ายของตน")
+            department_id = own_department_id
+        result = payroll_workflow_service.create_or_get_department_batch(
             request.year, request.month, request.pay_date,
-            request.note.strip() if request.note else None, user["id"]
+            request.note.strip() if request.note else None, user["id"], department_id
         )
-        audit_logger.log(user["id"], "CREATE", "payroll_period", period_id, {"year": request.year, "month": request.month})
-        return {"success": True, "data": {"id": period_id}}
+        audit_logger.log(user["id"], "CREATE_OR_OPEN", "payroll_department_batch", result["batch_id"], {"year": request.year, "month": request.month, "department_id": department_id, "existing": result["existing"]})
+        return {"success": True, "data": result}
     except psycopg.errors.UniqueViolation:
         raise HTTPException(status_code=409, detail="มีรอบเงินเดือนของเดือนและปีนี้แล้ว")
     except ValueError as error:

@@ -1459,16 +1459,19 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
 
 // ─── Payroll Periods List ─────────────────────────────────────────────────────
 
-function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, role, userDepartment, reloadPayroll, error }: {
+function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActiveDeptId, role, userDepartment, reloadPayroll, error, showToast }: {
   periods: PayrollPeriod[];
+  departments: Department[];
   setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; setActiveDeptId: (id: string) => void;
   role: Role; userDepartment: string | null; reloadPayroll: () => Promise<void>; error: string;
+  showToast: (msg: string, type?: 'success' | 'error') => void;
 }) {
   const [showCreate, setShowCreate] = useState(false)
   const [createMonth, setCreateMonth] = useState(String(new Date().getMonth() + 1))
   const [createYear, setCreateYear] = useState(String(new Date().getFullYear() + 543))
   const [createPayDate, setCreatePayDate] = useState('')
   const [createNote, setCreateNote] = useState('')
+  const [createDepartmentId, setCreateDepartmentId] = useState('')
   const [creating, setCreating] = useState(false)
 
   const handleCreate = async () => {
@@ -1476,12 +1479,15 @@ function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, rol
     setCreating(true)
     try {
       const gregorianYear = parseInt(createYear) - 543
-      const periodId = await createPayrollPeriod({ year: gregorianYear, month: parseInt(createMonth), pay_date: createPayDate, note: createNote })
+      const result = await createPayrollPeriod({ year: gregorianYear, month: parseInt(createMonth), pay_date: createPayDate, note: createNote, department_id: role === 'admin' ? Number(createDepartmentId) : undefined })
       await reloadPayroll()
-      setActivePeriodId(String(periodId))
-      setActiveDeptId('')
+      setActivePeriodId(String(result.period_id))
+      setActiveDeptId(String(result.batch_id))
       setShowCreate(false)
-      setPage(role === 'hr' ? 'dept-table' : 'period-detail')
+      showToast(result.existing ? 'พบรอบของฝ่ายนี้แล้ว จึงเปิดข้อมูลฉบับล่าสุดให้' : 'สร้างรอบเงินเดือนของฝ่ายเรียบร้อยแล้ว', 'success')
+      setPage('dept-table')
+    } catch (createError) {
+      showToast(createError instanceof Error ? createError.message : 'สร้างรอบเงินเดือนไม่สำเร็จ', 'error')
     } finally {
       setCreating(false)
     }
@@ -1566,6 +1572,7 @@ function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, rol
                 <input className="inp" type="number" min="2500" max="2700" value={createYear} onChange={e => setCreateYear(e.target.value)} />
               </div>
             </div>
+            {role === 'admin' && <FormField label="ฝ่ายที่ต้องการจัดทำ" required><AppSelect className="inp" value={createDepartmentId} onChange={event => setCreateDepartmentId(event.target.value)}><option value="">เลือกฝ่าย</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField>}
             <div>
               <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>วันที่จ่ายเงินเดือน (พ.ศ.) <span style={{ color: 'red' }}>*</span></label>
               <BuddhistDateInput value={createPayDate} onChange={setCreatePayDate} required />
@@ -1576,7 +1583,7 @@ function PeriodsPage({ periods, setPage, setActivePeriodId, setActiveDeptId, rol
             </div>
             <div className="flex gap-3 justify-end mt-2">
               <button className="btn btn-secondary" onClick={() => setShowCreate(false)} disabled={creating}>ยกเลิก</button>
-            <button className="btn btn-primary" aria-busy={creating} onClick={() => void handleCreate()} disabled={!createPayDate || creating}><BusyLabel busy={creating} label="กำลังสร้าง…">สร้างรอบเงินเดือน</BusyLabel></button>
+            <button className="btn btn-primary" aria-busy={creating} onClick={() => void handleCreate()} disabled={!createPayDate || (role === 'admin' && !createDepartmentId) || creating}><BusyLabel busy={creating} label="กำลังเปิดข้อมูล…">สร้างหรือเปิดรอบเงินเดือน</BusyLabel></button>
             </div>
           </div>
         </Modal>
@@ -4059,7 +4066,7 @@ export default function App() {
               setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
           )}
           {page === 'periods' && (
-            <PeriodsPage periods={visiblePeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} reloadPayroll={loadEmployeeData} error={payrollError} />
+            <PeriodsPage periods={visiblePeriods} departments={visibleDepartments} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} reloadPayroll={loadEmployeeData} error={payrollError} showToast={showToast} />
           )}
           {page === 'period-detail' && activePeriod && role !== 'hr' && (
             <PeriodDetail period={activePeriod} setPage={setPage} setActiveDeptId={setActiveDeptId} role={role} />

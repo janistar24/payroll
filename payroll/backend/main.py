@@ -894,18 +894,32 @@ def create_payroll_period(request: PayrollPeriodCreate, user=Depends(get_current
 
 @app.delete("/api/payroll_periods/{period_id}")
 def delete_payroll_period(period_id: int, user=Depends(get_current_user)):
-    """Permanently remove only an entirely-draft period and its dependent rows."""
+    """Remove draft payroll data within the caller's permitted scope."""
     try:
-        _require_admin(user)
+        if user["role"] not in {"hr", "director", "admin"}:
+            raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์ลบรอบเงินเดือน")
         with db.transaction() as cursor:
             cursor.execute("SELECT id FROM public.payroll_periods WHERE id = %s FOR UPDATE", (period_id,))
             if cursor.fetchone() is None:
                 raise ValueError("ไม่พบรอบเงินเดือน")
             cursor.execute("SELECT id, status FROM public.payroll_department_batches WHERE payroll_period_id = %s FOR UPDATE", (period_id,))
             batches = cursor.fetchall()
-            if any(status != "DRAFT" for _, status in batches):
-                raise ValueError("ลบได้เฉพาะรอบที่ทุกฝ่ายยังเป็นแบบร่างเท่านั้น")
-            batch_ids = [batch_id for batch_id, _ in batches]
+            if user["role"] == "hr":
+                department_id = _department_scope(user)
+                cursor.execute(
+                    "SELECT id, status FROM public.payroll_department_batches WHERE payroll_period_id = %s AND department_id = %s FOR UPDATE",
+                    (period_id, department_id),
+                )
+                own_batch = cursor.fetchone()
+                if own_batch is None:
+                    raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์ลบรอบเงินเดือนของฝ่ายนี้")
+                if own_batch[1] != "DRAFT":
+                    raise ValueError("ลบได้เฉพาะรอบของฝ่ายที่ยังเป็นแบบร่างเท่านั้น")
+                batch_ids = [own_batch[0]]
+            else:
+                if any(status != "DRAFT" for _, status in batches):
+                    raise ValueError("ลบได้เฉพาะรอบที่ทุกฝ่ายยังเป็นแบบร่างเท่านั้น")
+                batch_ids = [batch_id for batch_id, _ in batches]
             if batch_ids:
                 cursor.execute("SELECT id FROM public.payroll_items WHERE department_batch_id = ANY(%s)", (batch_ids,))
                 item_ids = [row[0] for row in cursor.fetchall()]
@@ -915,7 +929,9 @@ def delete_payroll_period(period_id: int, user=Depends(get_current_user)):
                 cursor.execute("DELETE FROM public.payroll_items WHERE department_batch_id = ANY(%s)", (batch_ids,))
                 cursor.execute("DELETE FROM public.payroll_batch_employee_exclusions WHERE department_batch_id = ANY(%s)", (batch_ids,))
                 cursor.execute("DELETE FROM public.payroll_department_batches WHERE id = ANY(%s)", (batch_ids,))
-            cursor.execute("DELETE FROM public.payroll_periods WHERE id = %s", (period_id,))
+            cursor.execute("SELECT COUNT(*) FROM public.payroll_department_batches WHERE payroll_period_id = %s", (period_id,))
+            if cursor.fetchone()[0] == 0:
+                cursor.execute("DELETE FROM public.payroll_periods WHERE id = %s", (period_id,))
         audit_logger.log(user["id"], "DELETE_PAYROLL_PERIOD", "payroll_period", period_id, {})
         return {"success": True}
     except HTTPException:

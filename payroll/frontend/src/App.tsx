@@ -1567,6 +1567,7 @@ function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActi
       await reloadPayroll()
       showToast(`ลบรอบเงินเดือน ${periodLabel(periodToDelete)} เรียบร้อยแล้ว`, 'success')
       setPeriodToDelete(null)
+      setEditingPeriods(false)
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'ลบรอบเงินเดือนไม่สำเร็จ', 'error')
     } finally {
@@ -1579,7 +1580,7 @@ function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActi
       <PageHeader
         title="รอบเงินเดือน"
         subtitle="จัดการและติดตามรอบเงินเดือนทั้งหมด"
-        actions={role === 'hr' || role === 'admin' ? <div className="flex gap-2">{role === 'admin' && <button className="btn btn-secondary" onClick={() => setEditingPeriods(value => !value)}>{editingPeriods ? 'ปิดการแก้ไข' : '✏️ แก้ไขรอบเงินเดือน'}</button>}<button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ สร้างรอบเงินเดือน</button></div> : undefined}
+        actions={role === 'hr' || role === 'director' || role === 'admin' ? <div className="flex gap-2"><button className="btn btn-secondary" onClick={() => setEditingPeriods(value => !value)}>{editingPeriods ? 'ปิดการแก้ไข' : '✏️ แก้ไขรอบเดือน'}</button>{role !== 'director' && <button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ สร้างรอบเงินเดือน</button>}</div> : undefined}
       />
       <div className="flex flex-col gap-4">
         {error ? (
@@ -1630,7 +1631,7 @@ function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActi
                       <span className={`badge badge-${periodStatus.type}`}>{periodStatus.label}</span>
                     )}
                   </div>
-                  {editingPeriods && role === 'admin' && (
+                  {editingPeriods && (
                     <button type="button" className="btn btn-danger btn-xs" title="ลบรอบเงินเดือน" onClick={event => { event.stopPropagation(); setPeriodToDelete(p) }}>−</button>
                   )}
                   {!editingPeriods && <span style={{ color: '#CBD5E1', fontSize: 18 }}>›</span>}

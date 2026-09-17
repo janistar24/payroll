@@ -36,12 +36,15 @@ class Payroll_periods:
                    approver.full_name AS approved_by_name, batch.approved_at,
                    batch.reject_reason, batch.created_at, batch.revision_number,
                    batch.parent_batch_id, batch.revision_type, batch.revision_reason,
-                   reviser.full_name AS revision_created_by_name
+                   reviser.full_name AS revision_created_by_name,
+                   batch.edit_version, batch.last_edited_at,
+                   COALESCE(editor.full_name, editor.username) AS last_edited_by_name
             FROM public.payroll_department_batches batch
             JOIN public.departments department ON department.id = batch.department_id
             LEFT JOIN public.users submitter ON submitter.id = batch.submitted_by_id
             LEFT JOIN public.users approver ON approver.id = batch.approved_by_id
             LEFT JOIN public.users reviser ON reviser.id = batch.revision_created_by_id
+            LEFT JOIN public.users editor ON editor.id = batch.last_edited_by_id
             WHERE batch.is_current = TRUE
               AND (%s::integer IS NULL OR batch.department_id = %s)
             ORDER BY batch.payroll_period_id, batch.department_id
@@ -55,6 +58,7 @@ class Payroll_periods:
                    item.department_id, item.employee_id, employee.employee_code,
                    employee.prefix, employee.first_name, employee.last_name,
                    employee.position_id, position.name AS position_name,
+                   employee.organization_name,
                    item.base_salary, item.total_earnings, item.total_deductions,
                    item.net_pay, item.created_at, line.pay_item_type_id,
                    item_type.code AS pay_item_code, item_type.name AS pay_item_name,
@@ -144,12 +148,15 @@ class Payroll_periods:
                    batch.submitted_at, batch.approved_by_id, approver.full_name AS approved_by_name,
                    batch.approved_at, batch.reject_reason, batch.created_at, batch.revision_number,
                    batch.parent_batch_id, batch.revision_type, batch.revision_reason,
-                   reviser.full_name AS revision_created_by_name, batch.is_current
+                   reviser.full_name AS revision_created_by_name, batch.is_current,
+                   batch.edit_version, batch.last_edited_at,
+                   COALESCE(editor.full_name, editor.username) AS last_edited_by_name
             FROM public.payroll_department_batches batch
             JOIN public.departments department ON department.id = batch.department_id
             LEFT JOIN public.users submitter ON submitter.id = batch.submitted_by_id
             LEFT JOIN public.users approver ON approver.id = batch.approved_by_id
             LEFT JOIN public.users reviser ON reviser.id = batch.revision_created_by_id
+            LEFT JOIN public.users editor ON editor.id = batch.last_edited_by_id
             WHERE batch.payroll_period_id = (SELECT payroll_period_id FROM public.payroll_department_batches WHERE id = %s)
               AND batch.department_id = (SELECT department_id FROM public.payroll_department_batches WHERE id = %s)
             ORDER BY batch.revision_number DESC, batch.id DESC
@@ -157,7 +164,8 @@ class Payroll_periods:
         item_query = """
             SELECT item.id, item.department_batch_id, item.employee_id, employee.employee_code,
                    employee.prefix, employee.first_name, employee.last_name,
-                   position.name AS position_name, item.base_salary,
+                   position.name AS position_name, employee.organization_name,
+                   item.base_salary,
                    line.pay_item_type_id, item_type.code AS pay_item_code, line.amount
             FROM public.payroll_items item
             JOIN public.payroll_department_batches batch ON batch.id = item.department_batch_id

@@ -4,6 +4,10 @@ from decimal import Decimal
 from DBHelper import DBHelper
 
 
+class StalePayrollVersionError(ValueError):
+    """Raised when another user saved a newer version of the same batch."""
+
+
 class PayrollWorkflow:
     def __init__(self):
         self.db = DBHelper()
@@ -80,11 +84,20 @@ class PayrollWorkflow:
             )
             return revision_id
 
-    def save_batch_items(self, batch_id, department_id, rows):
+    def save_batch_items(
+        self,
+        batch_id,
+        department_id,
+        rows,
+        change_notes=None,
+        changed_by_id=None,
+        expected_version=None,
+    ):
+        change_notes = change_notes or []
         with self.db.transaction() as cursor:
             cursor.execute(
                 """
-                SELECT batch.id, batch.status, batch.is_current
+                SELECT batch.id, batch.status, batch.is_current, batch.edit_version
                 FROM public.payroll_department_batches batch
                 WHERE batch.id = %s AND batch.department_id = %s
                 FOR UPDATE
@@ -96,8 +109,18 @@ class PayrollWorkflow:
                 raise ValueError("ไม่พบรายการฝ่ายของรอบเงินเดือน")
             if batch[1] not in {"DRAFT", "REJECTED"} or not batch[2]:
                 raise ValueError("รายการนี้ถูกส่งอนุมัติหรือปิดแล้ว จึงไม่สามารถบันทึกทับได้")
+            current_version = int(batch[3] or 0)
+            if expected_version is not None and int(expected_version) != current_version:
+                raise StalePayrollVersionError(
+                    "ข้อมูลรอบเงินเดือนถูกแก้ไขและบันทึกโดยผู้ใช้อื่นแล้ว กรุณาโหลดข้อมูลล่าสุดก่อนแก้ไขอีกครั้ง"
+                )
+
+            if changed_by_id is None:
+                raise ValueError("ไม่พบผู้แก้ไขข้อมูล")
 
             employee_ids = [row["employee_id"] for row in rows]
+            if len(employee_ids) != len(set(employee_ids)):
+                raise ValueError("พบข้อมูลพนักงานซ้ำในตารางเงินเดือน")
             if employee_ids:
                 cursor.execute(
                     """
@@ -112,6 +135,26 @@ class PayrollWorkflow:
                     raise ValueError("พบพนักงานที่ไม่อยู่ในฝ่ายหรือไม่ได้ใช้งาน")
             else:
                 salaries = {}
+
+            cursor.execute(
+                """
+                SELECT item.employee_id, item_type.code, line.amount
+                FROM public.payroll_items item
+                JOIN public.payroll_item_lines line ON line.payroll_item_id = item.id
+                JOIN public.pay_item_types item_type ON item_type.id = line.pay_item_type_id
+                WHERE item.department_batch_id = %s
+                """,
+                (batch_id,),
+            )
+            saved_lines = {
+                (employee_id, code): Decimal(str(amount))
+                for employee_id, code, amount in cursor.fetchall()
+            }
+            cursor.execute(
+                "SELECT employee_id FROM public.payroll_items WHERE department_batch_id = %s",
+                (batch_id,),
+            )
+            saved_employee_ids = {record[0] for record in cursor.fetchall()}
 
             # Remember staff intentionally removed from this payroll batch.  Without
             # this, the live employee directory would add them back after a refresh.
@@ -150,6 +193,46 @@ class PayrollWorkflow:
                     raise ValueError("พบประเภทรายการรับหรือรายการหักที่ไม่ถูกต้อง")
             else:
                 line_categories = {}
+
+            incoming_lines = {
+                (row["employee_id"], code): Decimal(str(amount))
+                for row in rows
+                for code, amount in row.get("lines", {}).items()
+            }
+            changed_keys = {
+                key
+                for key in set(saved_lines) | set(incoming_lines)
+                if key[0] in set(employee_ids) and saved_lines.get(key, Decimal("0")) != incoming_lines.get(key, Decimal("0"))
+            }
+            notes_by_key = {}
+            for note in change_notes:
+                employee_id = note["employee_id"]
+                field_code = note["field_code"]
+                if employee_id not in set(employee_ids) | saved_employee_ids:
+                    raise ValueError("พบประวัติการแก้ไขของพนักงานที่ไม่อยู่ในรอบเงินเดือน")
+                if field_code not in line_categories and (employee_id, field_code) not in saved_lines:
+                    raise ValueError("พบประเภทรายการในประวัติการแก้ไขที่ไม่ถูกต้อง")
+                reason = str(note.get("reason") or "").strip()
+                if not reason:
+                    raise ValueError("กรุณาระบุเหตุผลของรายการที่แก้ไขให้ครบถ้วน")
+                normalized = {
+                    **note,
+                    "reason": reason,
+                    "old_value": Decimal(str(note["old_value"])),
+                    "new_value": Decimal(str(note["new_value"])),
+                }
+                notes_by_key.setdefault((employee_id, field_code), []).append(normalized)
+
+            for key in changed_keys:
+                notes = notes_by_key.get(key, [])
+                if not notes:
+                    raise ValueError("กรุณาระบุเหตุผลของยอดเงินที่เปลี่ยนแปลงทุกช่อง")
+                expected_old = saved_lines.get(key, Decimal("0"))
+                expected_new = incoming_lines.get(key, Decimal("0"))
+                if notes[0]["old_value"] != expected_old or notes[-1]["new_value"] != expected_new:
+                    raise ValueError("ค่าเดิมหรือค่าใหม่ในประวัติการแก้ไขไม่ตรงกับข้อมูลล่าสุด กรุณาโหลดหน้าใหม่")
+                if any(left["new_value"] != right["old_value"] for left, right in zip(notes, notes[1:])):
+                    raise ValueError("ลำดับประวัติการแก้ไขไม่ต่อเนื่อง กรุณาโหลดหน้าใหม่")
 
             item_payload = []
             line_payload = []
@@ -219,7 +302,82 @@ class PayrollWorkflow:
                 if cursor.rowcount != len(line_payload):
                     raise ValueError("พบประเภทรายการรับหรือรายการหักที่ไม่ถูกต้อง")
 
-            cursor.execute("UPDATE public.payroll_periods SET updated_at = NOW() WHERE id = (SELECT payroll_period_id FROM public.payroll_department_batches WHERE id = %s)", (batch_id,))
+            persisted_notes = [
+                note
+                for key in changed_keys
+                for note in notes_by_key.get(key, [])
+            ]
+            added_employee_ids = set(employee_ids) - saved_employee_ids
+            removed_employee_ids = saved_employee_ids - set(employee_ids)
+            persisted_notes.extend({
+                "employee_id": employee_id,
+                "field_code": "__EMPLOYEE_ADDED__",
+                "old_value": Decimal("0"),
+                "new_value": Decimal("1"),
+                "reason": "เพิ่มพนักงานเข้าตารางเงินเดือน",
+            } for employee_id in added_employee_ids)
+            persisted_notes.extend({
+                "employee_id": employee_id,
+                "field_code": "__EMPLOYEE_REMOVED__",
+                "old_value": Decimal("1"),
+                "new_value": Decimal("0"),
+                "reason": "นำพนักงานออกจากตารางเงินเดือน",
+            } for employee_id in removed_employee_ids)
+
+            if persisted_notes:
+                cursor.execute(
+                    """INSERT INTO public.payroll_change_notes
+                    (department_batch_id, employee_id, employee_name, field_code,
+                     old_value, new_value, reason, changed_by_id, editor_name)
+                    SELECT %s, payload.employee_id,
+                           CONCAT(COALESCE(employee.prefix, ''), employee.first_name, ' ', employee.last_name),
+                           payload.field_code, payload.old_value, payload.new_value,
+                           payload.reason, %s, COALESCE(editor.full_name, editor.username)
+                    FROM jsonb_to_recordset(%s::jsonb) AS payload(
+                        employee_id integer,
+                        field_code text,
+                        old_value numeric,
+                        new_value numeric,
+                        reason text
+                    )
+                    LEFT JOIN public.employees employee ON employee.id = payload.employee_id
+                    LEFT JOIN public.users editor ON editor.id = %s""",
+                    (
+                        batch_id,
+                        changed_by_id,
+                        json.dumps([
+                            {
+                                **note,
+                                "old_value": str(note["old_value"]),
+                                "new_value": str(note["new_value"]),
+                            }
+                            for note in persisted_notes
+                        ]),
+                        changed_by_id,
+                    ),
+                )
+
+            cursor.execute(
+                """UPDATE public.payroll_department_batches
+                   SET edit_version = edit_version + 1,
+                       last_edited_at = NOW(),
+                       last_edited_by_id = %s
+                   WHERE id = %s
+                   RETURNING edit_version""",
+                (changed_by_id, batch_id),
+            )
+            new_version = cursor.fetchone()[0]
+            cursor.execute(
+                """UPDATE public.payroll_periods
+                   SET updated_at = NOW()
+                   WHERE id = (
+                       SELECT payroll_period_id
+                       FROM public.payroll_department_batches
+                       WHERE id = %s
+                   )""",
+                (batch_id,),
+            )
+            return new_version
 
     def change_batch_status(self, batch_id, action, user_id, reject_reason=None):
         with self.db.transaction() as cursor:

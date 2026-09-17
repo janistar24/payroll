@@ -22,7 +22,7 @@ from payroll_periods import Payroll_periods
 from payroll_items import PayrollItems
 from payroll_department_batches import PayrollDepartmentBatches
 from pay_item_types import PayItemTypes
-from payroll_workflow import PayrollWorkflow
+from payroll_workflow import PayrollWorkflow, StalePayrollVersionError
 from email_service import PayslipEmailService
 from auth import auth_service, get_current_user
 from audit import AuditLogger
@@ -437,8 +437,18 @@ class PayrollRowSave(BaseModel):
         return value
 
 
+class PayrollChangeNoteSave(BaseModel):
+    employee_id: int
+    field_code: str = Field(min_length=1, max_length=80)
+    old_value: Decimal
+    new_value: Decimal
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class PayrollBatchSave(BaseModel):
     rows: list[PayrollRowSave]
+    change_notes: list[PayrollChangeNoteSave] = Field(default_factory=list)
+    expected_version: int | None = Field(default=None, ge=0)
 
 
 class PayItemTypeCreate(BaseModel):
@@ -1073,17 +1083,84 @@ def get_payroll_batch_history(batch_id: int, user=Depends(get_current_user)):
 def save_payroll_batch_items(batch_id: int, request: PayrollBatchSave, user=Depends(get_current_user)):
     try:
         batch = _ensure_batch_access(batch_id, user)
-        payroll_workflow_service.save_batch_items(
-            batch_id, batch["department_id"], [row.model_dump() for row in request.rows]
+        edit_version = payroll_workflow_service.save_batch_items(
+            batch_id,
+            batch["department_id"],
+            [row.model_dump() for row in request.rows],
+            [note.model_dump() for note in request.change_notes],
+            user["id"],
+            request.expected_version,
         )
-        audit_logger.log(user["id"], "SAVE_ITEMS", "payroll_batch", batch_id, {"row_count": len(request.rows)})
-        return {"success": True}
+        audit_logger.log(user["id"], "SAVE_ITEMS", "payroll_batch", batch_id, {
+            "row_count": len(request.rows),
+            "change_note_count": len(request.change_notes),
+        })
+        return {"success": True, "data": {"edit_version": edit_version}}
     except HTTPException:
         raise
+    except StalePayrollVersionError as error:
+        raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
-        raise HTTPException(status_code=500, detail={"message": "บันทึกตารางเงินเดือนไม่สำเร็จ", "error": str(error)})
+        raise HTTPException(
+            status_code=500,
+            detail={"message": "บันทึกตารางเงินเดือนไม่สำเร็จ", "error": str(error)},
+        )
+
+
+@app.get("/api/payroll_department_batches/{batch_id}/change-notes")
+def get_payroll_change_notes(batch_id: int, user=Depends(get_current_user)):
+    batch = _ensure_batch_access(batch_id, user)
+    note_query = (
+        """SELECT note.id, note.employee_id, note.field_code, note.old_value, note.new_value,
+                  note.reason, note.changed_at,
+                  COALESCE(note.employee_name,
+                      CONCAT(COALESCE(employee.prefix, ''), employee.first_name, ' ', employee.last_name)
+                  ) AS employee_name,
+                  COALESCE(note.editor_name, editor.full_name, editor.username) AS changed_by_name
+           FROM public.payroll_change_notes note
+           LEFT JOIN public.employees employee ON employee.id = note.employee_id
+           LEFT JOIN public.users editor ON editor.id = note.changed_by_id
+           WHERE note.department_batch_id = %s
+           ORDER BY note.changed_at DESC, note.id DESC""",
+        (batch["id"],),
+    )
+    previous_query = (
+        """WITH current_batch AS (
+               SELECT batch.department_id, period.year, period.month
+               FROM public.payroll_department_batches batch
+               JOIN public.payroll_periods period ON period.id = batch.payroll_period_id
+               WHERE batch.id = %s
+           ), previous_batch AS (
+               SELECT batch.id
+               FROM public.payroll_department_batches batch
+               JOIN public.payroll_periods period ON period.id = batch.payroll_period_id
+               CROSS JOIN current_batch current
+               WHERE batch.department_id = current.department_id
+                 AND batch.is_current = TRUE
+                 AND (period.year, period.month) < (current.year, current.month)
+               ORDER BY period.year DESC, period.month DESC, batch.id DESC
+               LIMIT 1
+           )
+           SELECT item.employee_id, item_type.code AS field_code, line.amount
+           FROM previous_batch previous
+           JOIN public.payroll_items item ON item.department_batch_id = previous.id
+           JOIN public.payroll_item_lines line ON line.payroll_item_id = item.id
+           JOIN public.pay_item_types item_type ON item_type.id = line.pay_item_type_id
+           ORDER BY item.employee_id, item_type.code""",
+        (batch["id"],),
+    )
+    (note_data, note_columns), (previous_data, previous_columns) = db.fetch_many(
+        [note_query, previous_query]
+    )
+    return {
+        "success": True,
+        "data": {
+            "notes": [dict(zip(note_columns, row)) for row in note_data],
+            "previous_values": [dict(zip(previous_columns, row)) for row in previous_data],
+        },
+    }
 
 
 @app.post("/api/payroll_department_batches/{batch_id}/action")

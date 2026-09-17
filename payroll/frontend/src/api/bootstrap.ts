@@ -22,7 +22,7 @@ interface AppDataResponse {
 }
 
 export async function getAppData(): Promise<AppDataResponse['data']> {
-  const response = await fetch(`${API_URL}/app-data`, { headers: authorizationHeaders() })
+  const response = await fetch(`${API_URL}/app-data`, { headers: authorizationHeaders(), cache: 'no-store' })
   if (!response.ok) {
     const errorBody = await response.json().catch(() => null)
     const detail = errorBody?.detail

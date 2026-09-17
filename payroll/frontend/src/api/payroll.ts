@@ -61,14 +61,14 @@ async function parseError(response: Response, fallback: string): Promise<never> 
 }
 
 export async function getPayrollPeriods(): Promise<PayrollPeriodRecord[]> {
-  const response = await fetch(`${API_URL}/payroll_periods`, { headers: authorizationHeaders() })
+  const response = await fetch(`${API_URL}/payroll_periods`, { headers: authorizationHeaders(), cache: 'no-store' })
   if (!response.ok) return parseError(response, `โหลดรอบเงินเดือนไม่สำเร็จ: ${response.status}`)
   const body = await response.json()
   return body.data as PayrollPeriodRecord[]
 }
 
 export async function getPayrollSyncVersion(): Promise<string> {
-  const response = await fetch(`${API_URL}/payroll-sync-version`, { headers: authorizationHeaders() })
+  const response = await fetch(`${API_URL}/payroll-sync-version`, { headers: authorizationHeaders(), cache: 'no-store' })
   if (!response.ok) return parseError(response, `ตรวจสอบสถานะรอบเงินเดือนไม่สำเร็จ: ${response.status}`)
   return String((await response.json()).data.version ?? '')
 }

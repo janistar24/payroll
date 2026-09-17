@@ -1926,7 +1926,6 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const [changeReason, setChangeReason] = useState('')
   const [pendingNotes, setPendingNotes] = useState<PayrollChangeNote[]>([])
   const [savedNotes, setSavedNotes] = useState<PayrollChangeNote[]>([])
-  const [previousValues, setPreviousValues] = useState<Record<string, number>>({})
   const [noteOpen, setNoteOpen] = useState(false)
   const [changeLogLoading, setChangeLogLoading] = useState(false)
   const [latestVersionAvailable, setLatestVersionAvailable] = useState<number | null>(null)
@@ -1969,10 +1968,6 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     try {
       const result = await getPayrollChangeNotes(dept.databaseId)
       setSavedNotes(result.notes)
-      setPreviousValues(Object.fromEntries(result.previous_values.map(value => [
-        `${value.employee_id}:${value.field_code}`,
-        Number(value.amount),
-      ])))
       setLatestVersionAvailable(result.current_version > editVersion ? result.current_version : null)
     } catch (error) {
       if (!silent) showToast(error instanceof Error ? error.message : 'โหลดประวัติการแก้ไขไม่สำเร็จ', 'error')
@@ -2394,23 +2389,6 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     return { base, extra, pos, gross, debtKTB, tax, social, funeral, ktb, gsb, deduct, net }
   }, [rows, emps])
 
-  const previousEmployeeIds = useMemo(() => new Set(
-    Object.keys(previousValues).map(key => Number(key.split(':', 1)[0])),
-  ), [previousValues])
-  const getRowDeltas = (employee: Employee, row: PayrollRow) => {
-    const employeeId = employeeDatabaseIdByCode.get(employee.id)
-    if (!employeeId || !previousEmployeeIds.has(employeeId)) return []
-    const currentValues: Record<string, number> = {
-      EXTRA_PAY: row.extra, POS_ALLOW: row.posAllowance, KTB_LOAN: row.debtKTB,
-      TAX: row.tax, SSF: row.social, FUNERAL_FUND: row.funeral,
-      KTB_BANK: row.ktb, SAVINGS_BANK_LOAN: row.gsb,
-      ...row.customIncome, ...row.customDeduction,
-    }
-    return Object.entries(currentValues)
-      .map(([code, value]) => ({ code, label: fieldLabel(code), delta: value - (previousValues[`${employeeId}:${code}`] ?? 0) }))
-      .filter(item => item.delta !== 0)
-  }
-
   const handleFocus = useCallback((id: string) => setFocusRow(id), [])
   const handleCommit = useCallback((id: string, field: keyof PayrollRow, val: number) => {
     requestStandardCellChange(id, field, val)
@@ -2605,7 +2583,6 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               <th colSpan={3 + customIncomeTypes.length} className="th-group th-group-income">รายการรับ</th>
               <th colSpan={7 + customDeductionTypes.length} className="th-group th-group-deduct">รายการหัก {editing && !isReadonly && <button type="button" className="payroll-add-item-button" onClick={() => setShowAddItemModal(true)} title="เพิ่มประเภทรายการรับหรือรายการหัก">+ เพิ่มประเภทรายการรับ/หัก</button>}</th>
               <th colSpan={1} className="th-group th-group-net">ยอดรับสุทธิ</th>
-              <th rowSpan={2} className="th-group th-group-net" style={{ minWidth: 190 }}>เพิ่ม/ลด</th>
               {editing && !isReadonly && <th rowSpan={2} className="th-group th-group-emp" style={{ minWidth: 88 }}>ดำเนินการ</th>}
             </tr>
             <tr>
@@ -2637,7 +2614,6 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             {visibleEmployees.map((e, idx) => {
               const r = rows[e.id]
               const g = rowGross(e, r), d = rowDeduct(r), n = rowNet(e, r)
-              const deltas = getRowDeltas(e, r)
               const employeeDatabaseId = employeeDatabaseIdByCode.get(e.id)
               const isActive = focusRow === e.id
               return (
@@ -2660,13 +2636,6 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                   {customDeductionTypes.map(item => <CustomPayItemCell key={item.code} empId={e.id} code={item.code} category="DEDUCTION" value={r.customDeduction?.[item.code] ?? 0} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:${item.code}`)} onFocus={handleFocus} onCommit={requestCustomCellChange} />)}
                   <td className="num total" style={{ background: '#FFF8F6', color: '#B91C1C' }}>{thb(d)}</td>
                   <td className="num total" style={{ background: '#F5F3FF', color: 'var(--purple-600)', fontFamily: 'var(--font-display)' }}>{thb(n)}</td>
-                  <td className="readonly" style={{ minWidth: 190, padding: '6px 8px' }}>
-                    {deltas.length === 0 ? <span style={{ color: 'var(--text-muted)' }}>–</span> : deltas.map(item => (
-                      <div key={item.code} title={item.label} style={{ color: item.delta > 0 ? '#15803D' : '#B42318', fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', margin: '2px 0' }}>
-                        <span style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>{item.label}: </span>{item.delta > 0 ? '+' : ''}{thb(item.delta)}
-                      </div>
-                    ))}
-                  </td>
                   {editing && !isReadonly && (
                     <td className="readonly" style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
                       <button className="btn btn-danger btn-xs" onClick={() => removeEmployeeFromTable(e)}>ลบ</button>
@@ -3449,7 +3418,6 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
   const [employeeToDeactivate, setEmployeeToDeactivate] = useState<DatabaseEmployee | null>(null)
   const [deactivating, setDeactivating] = useState(false)
   const [deactivateError, setDeactivateError] = useState('')
-  const [exporting, setExporting] = useState(false)
 
   const departmentById = useMemo(
     () => new Map(departments.map(department => [department.id, department.name])),
@@ -4199,10 +4167,8 @@ function AnnualTaxReportPage({ role, periods, departments, userDepartment, showT
 
   const monthlyTotals = Array.from({ length: 12 }, (_, month) => rows.reduce((sum, row) => sum + (row.months[month] || 0), 0))
   const total = monthlyTotals.reduce((sum, amount) => sum + amount, 0)
-  const exportExcel = async () => { if (exporting || loading || loadError) return; setExporting(true); try { await downloadAnnualTaxExcel(yearBE, selectedDepartmentLabel, reportLabel, rows) } catch { showToast('ส่งออก Excel ไม่สำเร็จ', 'error') } finally { setExporting(false) } }
-
   return <div className="anim">
-    <PageHeader title="รายงานประจำปี" subtitle="สรุปรายการนำส่งภาษีหรือรายได้รวมจากรอบเงินเดือนที่อนุมัติแล้ว" actions={<div className="flex gap-2"><button className="btn btn-secondary" disabled={loading || Boolean(loadError)} onClick={() => { if (!printAnnualTaxReport(yearBE, selectedDepartmentLabel, reportLabel, rows)) showToast('ไม่สามารถเปิดหน้าต่างพิมพ์ได้ กรุณาลองใหม่', 'error') }}>🖨️ พิมพ์รายงาน</button><button className="btn btn-primary" aria-busy={exporting} disabled={loading || Boolean(loadError) || exporting} onClick={() => void exportExcel()}><BusyLabel busy={exporting} label="กำลังส่งออก…">📥 ส่งออก Excel</BusyLabel></button></div>} />
+    <PageHeader title="รายงานประจำปี" subtitle="สรุปรายการนำส่งภาษีหรือรายได้รวมจากรอบเงินเดือนที่อนุมัติแล้ว" actions={<button className="btn btn-secondary" disabled={loading || Boolean(loadError)} onClick={() => { if (!printAnnualTaxReport(yearBE, selectedDepartmentLabel, reportLabel, rows)) showToast('ไม่สามารถเปิดหน้าต่างพิมพ์ได้ กรุณาลองใหม่', 'error') }}>🖨️ พิมพ์รายงาน</button>} />
     <div className="card" style={{ padding: '14px 18px', marginBottom: 16 }}><div className="flex items-end gap-3 flex-wrap"><FormField label="ประเภทรายงาน"><AppSelect className="inp" style={{ width: 220 }} value={reportType} onChange={event => setReportType(event.target.value as 'tax' | 'income')}><option value="tax">รายการนำส่งภาษี</option><option value="income">รายได้รวมทั้งปี</option></AppSelect></FormField><FormField label="ปี (พ.ศ.)"><AppSelect className="inp" style={{ width: 180 }} value={String(yearBE)} onChange={event => setYearBE(Number(event.target.value))}>{(reportYears.length ? reportYears : [yearBE]).map(year => <option key={year} value={year}>{year}</option>)}</AppSelect></FormField><FormField label="หน่วยงาน"><AppSelect className="inp" style={{ width: 260 }} value={role === 'hr' ? String(scopedDepartmentId ?? '') : departmentValue} onChange={event => setDepartmentValue(event.target.value)} disabled={role === 'hr'}><option value="">ทุกฝ่าย</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField><span style={{ fontSize: 12.5, color: 'var(--text-secondary)', paddingBottom: 10 }}>แสดงเฉพาะรอบเงินเดือนที่อนุมัติแล้ว</span></div></div>
     <div className="card" style={{ padding: 0, overflowX: 'auto' }}><div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(0,0,0,.07)' }}><div><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 16 }}>{reportLabel}</div><div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>ปี พ.ศ. {yearBE} · {selectedDepartmentLabel}</div></div><div style={{ fontWeight: 700, color: 'var(--purple-600)' }}>รวม {thb(total)} บาท</div></div><table className="tbl" style={{ minWidth: 1480 }}><thead><tr><th rowSpan={2} style={{ width: 52 }}>ที่</th><th rowSpan={2} style={{ minWidth: 190 }}>ชื่อ-นามสกุล</th><th rowSpan={2} style={{ minWidth: 145 }}>หน่วยงาน</th><th rowSpan={2} style={{ minWidth: 190 }}>ตำแหน่ง</th><th colSpan={12} style={{ textAlign: 'center' }}>{reportLabel}</th><th rowSpan={2} style={{ minWidth: 115, textAlign: 'right' }}>รวม</th></tr><tr>{TAX_MONTH_LABELS.map(label => <th key={label} style={{ minWidth: 77, textAlign: 'right' }}>{label}</th>)}</tr></thead><tbody>{loading ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>กำลังโหลดรายงาน…</td></tr> : loadError ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: '#B91C1C' }}>{loadError}</td></tr> : rows.length === 0 ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>ยังไม่มีข้อมูล{reportLabel}จากรอบเงินเดือนที่อนุมัติแล้ว</td></tr> : rows.map((row, index) => <tr key={`${row.employee_id}-${row.department_name}`}><td style={{ textAlign: 'center' }}>{index + 1}</td><td>{row.full_name}</td><td>{row.department_name}</td><td>{row.position_name}</td>{row.months.map((amount, month) => <td key={month} style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{row.approved_months?.[month] ? thb(amount) : '–'}</td>)}<td style={{ textAlign: 'right', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{thb(row.total)}</td></tr>)}</tbody><tfoot>{!loading && !loadError && <tr><td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>{monthlyTotals.map((amount, month) => <td key={month} style={{ textAlign: 'right', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{thb(amount)}</td>)}<td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--purple-600)', fontVariantNumeric: 'tabular-nums' }}>{thb(total)}</td></tr>}</tfoot></table></div>
   </div>
@@ -4736,13 +4702,18 @@ export default function App() {
     }
     let cancelled = false
     const loadInitialData = async () => {
-      await loadEmployeeData()
       try {
-        const version = await getPayrollSyncVersion()
-        if (!cancelled) payrollSyncVersionRef.current = version
+        const versionBeforeLoad = await getPayrollSyncVersion()
+        await loadEmployeeData()
+        const versionAfterLoad = await getPayrollSyncVersion()
+        if (cancelled) return
+        payrollSyncVersionRef.current = versionAfterLoad
+        if (versionBeforeLoad !== versionAfterLoad) await loadEmployeeData()
       } catch {
-        // The normal data loader already displays actionable loading errors.
-        // A background sync check must never replace the current screen.
+        // Still load the page if the lightweight version check is temporarily
+        // unavailable. Authentication remains untouched and the user stays on
+        // the current page.
+        if (!cancelled) await loadEmployeeData()
       }
     }
     void loadInitialData()

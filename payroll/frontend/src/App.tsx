@@ -19,7 +19,7 @@ import { getAppData } from './api/bootstrap'
 import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
 import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, revealAccessRequestPassword, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
-import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollPeriodRecord } from './api/payroll'
+import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollChangeNotes, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
 import { createPayItemType, type PayItemType } from './api/payItemTypes'
 import { createOrganization, type Organization } from './api/organizations'
 import { getAnnualTaxReport, type AnnualTaxRow } from './api/annualTax'
@@ -80,7 +80,7 @@ interface Employee {
   firstName: string
   lastName: string
   position: string
-  organization: string
+  organization?: string
   department: string
   baseSalary: number
   email: string
@@ -102,6 +102,18 @@ interface PayrollRow {
   gsb: number          // ธนาคารออมสิน
   customIncome: Record<string, number>
   customDeduction: Record<string, number>
+}
+
+const PAYROLL_FIELD_LABELS: Record<string, string> = {
+  EXTRA_PAY: 'เงินเพิ่ม', POS_ALLOW: 'เงินประจำตำแหน่ง', KTB_LOAN: 'ชำระหนี้ KTB',
+  TAX: 'ภาษีหัก ณ ที่จ่าย', SSF: 'ประกันสังคม', FUNERAL_FUND: 'ฌาปนกิจ',
+  KTB_BANK: 'ธนาคารกรุงไทย', SAVINGS_BANK_LOAN: 'ธนาคารออมสิน',
+  __EMPLOYEE_ADDED__: 'เพิ่มพนักงาน', __EMPLOYEE_REMOVED__: 'นำพนักงานออก',
+}
+
+const PAYROLL_FIELD_CODES: Record<Exclude<keyof PayrollRow, 'empId' | 'customIncome' | 'customDeduction'>, string> = {
+  extra: 'EXTRA_PAY', posAllowance: 'POS_ALLOW', debtKTB: 'KTB_LOAN', tax: 'TAX',
+  social: 'SSF', funeral: 'FUNERAL_FUND', ktb: 'KTB_BANK', gsb: 'SAVINGS_BANK_LOAN',
 }
 
 interface DeptPayroll {
@@ -127,6 +139,9 @@ interface DeptPayroll {
   revisionType?: string
   revisionReason?: string
   revisionCreatedBy?: string
+  editVersion?: number
+  lastEditedAt?: string
+  lastEditedBy?: string
 }
 
 interface PayrollPeriod {
@@ -273,9 +288,10 @@ const TAX_MONTH_LABELS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 
 
 const periodLabel = (p: PayrollPeriod) => `${MONTH_TH[p.month]} ${p.year + 543}`
 
-const batchStatus = (status: string): DeptStatus => ({
+const BATCH_STATUS_MAP: Record<string, DeptStatus> = {
   DRAFT: 'draft', SUBMITTED: 'pending', APPROVED: 'approved', REJECTED: 'rejected', PAID: 'closed',
-}[status] ?? 'draft')
+}
+const batchStatus = (status: string): DeptStatus => BATCH_STATUS_MAP[status] ?? 'draft'
 
 const databaseEmployeeToPayrollEmployee = (employee: DatabaseEmployee, departments: Department[], positions: Position[]): Employee => ({
   id: employee.employee_code, databaseId: employee.id,
@@ -293,7 +309,7 @@ const databaseEmployeeToPayrollEmployee = (employee: DatabaseEmployee, departmen
   socialSecId: '',
 })
 
-const STANDARD_PAY_ITEM_CODES = new Set(['EXTRA_PAY', 'POS_ALLOW', 'KTB_LOAN', 'TAX', 'SSF', 'FUNERAL_FUND', 'SAVINGS_BANK_LOAN'])
+const STANDARD_PAY_ITEM_CODES = new Set(['EXTRA_PAY', 'POS_ALLOW', 'KTB_LOAN', 'TAX', 'SSF', 'FUNERAL_FUND', 'KTB_BANK', 'SAVINGS_BANK_LOAN'])
 
 const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEmployee[], departments: Department[], positions: Position[]): PayrollPeriod[] => {
   const payrollEmployees = employees.map(employee => databaseEmployeeToPayrollEmployee(employee, departments, positions))
@@ -312,7 +328,7 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
         rows[item.employee_code] = {
           empId: item.employee_code, extra: lines.EXTRA_PAY ?? 0, posAllowance: lines.POS_ALLOW ?? 0,
           debtKTB: lines.KTB_LOAN ?? 0, tax: lines.TAX ?? 0, social: lines.SSF ?? 0,
-          funeral: lines.FUNERAL_FUND ?? 0, ktb: 0, gsb: lines.SAVINGS_BANK_LOAN ?? 0,
+          funeral: lines.FUNERAL_FUND ?? 0, ktb: lines.KTB_BANK ?? 0, gsb: lines.SAVINGS_BANK_LOAN ?? 0,
           customIncome: Object.fromEntries(item.lines.filter(line => line.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(line.code)).map(line => [line.code, Number(line.amount)])),
           customDeduction: Object.fromEntries(item.lines.filter(line => line.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(line.code)).map(line => [line.code, Number(line.amount)])),
         }
@@ -346,7 +362,7 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
           firstName: item.first_name,
           lastName: item.last_name,
           position: item.position_name ?? '–',
-          organization: '–',
+          organization: item.organization_name ?? '–',
           department: batch.department_name,
           baseSalary: Number(item.base_salary),
           email: '',
@@ -371,6 +387,9 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
         revisionType: batch.revision_type ?? undefined,
         revisionReason: batch.revision_reason ?? undefined,
         revisionCreatedBy: batch.revision_created_by_name ?? undefined,
+        editVersion: batch.edit_version ?? 0,
+        lastEditedAt: batch.last_edited_at ?? undefined,
+        lastEditedBy: batch.last_edited_by_name ?? undefined,
       }
     }),
   }))
@@ -383,13 +402,13 @@ const mapPayrollHistoryBatch = (batch: PayrollBatchRecord, period: PayrollPeriod
     rows[item.employee_code] = {
       empId: item.employee_code, extra: lines.EXTRA_PAY ?? 0, posAllowance: lines.POS_ALLOW ?? 0,
       debtKTB: lines.KTB_LOAN ?? 0, tax: lines.TAX ?? 0, social: lines.SSF ?? 0,
-      funeral: lines.FUNERAL_FUND ?? 0, ktb: 0, gsb: lines.SAVINGS_BANK_LOAN ?? 0,
+      funeral: lines.FUNERAL_FUND ?? 0, ktb: lines.KTB_BANK ?? 0, gsb: lines.SAVINGS_BANK_LOAN ?? 0,
       customIncome: Object.fromEntries(item.lines.filter(line => line.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(line.code)).map(line => [line.code, Number(line.amount)])),
       customDeduction: Object.fromEntries(item.lines.filter(line => line.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(line.code)).map(line => [line.code, Number(line.amount)])),
     }
     return {
       id: item.employee_code, title: item.prefix ?? '', firstName: item.first_name, lastName: item.last_name,
-      position: item.position_name ?? '–', organization: '–', department: batch.department_name, baseSalary: Number(item.base_salary),
+      position: item.position_name ?? '–', organization: item.organization_name ?? '–', department: batch.department_name, baseSalary: Number(item.base_salary),
       email: '', status: 'inactive' as const, startDate: '', taxId: '', socialSecId: '',
     }
   })
@@ -401,6 +420,8 @@ const mapPayrollHistoryBatch = (batch: PayrollBatchRecord, period: PayrollPeriod
     updatedAt: batch.approved_at ?? batch.submitted_at ?? batch.created_at, employees,
     revisionNumber: batch.revision_number ?? 0, revisionType: batch.revision_type ?? undefined,
     revisionReason: batch.revision_reason ?? undefined, revisionCreatedBy: batch.revision_created_by_name ?? undefined,
+    editVersion: batch.edit_version ?? 0, lastEditedAt: batch.last_edited_at ?? undefined,
+    lastEditedBy: batch.last_edited_by_name ?? undefined,
   }
 }
 
@@ -713,7 +734,7 @@ function Background() {
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 
-function Toast({ msg, type, onClose }: { msg: string; type?: 'success' | 'error'; onClose: () => void }) {
+function Toast({ msg, type, onClose }: { msg: string; type?: 'success' | 'error' | 'info'; onClose: () => void }) {
   useEffect(() => { const t = setTimeout(onClose, 3500); return () => clearTimeout(t) }, [onClose])
   return (
     <div className={`toast ${type === 'success' ? 'toast-success' : type === 'error' ? 'toast-error' : ''}`}>
@@ -1768,20 +1789,22 @@ interface CellInputProps {
   field: keyof PayrollRow
   value: number
   isReadonly: boolean
+  resetVersion: number
+  isChanged: boolean
   onFocus: (id: string) => void
   onCommit: (empId: string, field: keyof PayrollRow, val: number) => void
 }
 
-function CellInput({ empId, field, value, isReadonly, onFocus, onCommit }: CellInputProps) {
+function CellInput({ empId, field, value, isReadonly, resetVersion, isChanged, onFocus, onCommit }: CellInputProps) {
   const [localVal, setLocalVal] = useState(String(value))
   const ref = useRef<HTMLInputElement>(null)
 
-  useEffect(() => { setLocalVal(String(value)) }, [value])
+  useEffect(() => { setLocalVal(String(value)) }, [value, resetVersion])
 
   if (isReadonly) return <td className="num readonly">{thb(value)}</td>
 
   return (
-    <td style={{ padding: '4px 8px' }}>
+    <td style={{ padding: '4px 8px', background: isChanged ? '#F1EAFF' : undefined, boxShadow: isChanged ? 'inset 0 0 0 2px #9B7AE8' : undefined }}>
       <input
         ref={ref}
         className="cell-inp"
@@ -1793,17 +1816,13 @@ function CellInput({ empId, field, value, isReadonly, onFocus, onCommit }: CellI
         onBlur={() => {
           const n = parseFloat(localVal) || 0
           if (n < 0) return
-          onCommit(empId, field, n)
+          if (n !== value) onCommit(empId, field, n)
         }}
         onChange={event => {
           const nextValue = event.target.value
           setLocalVal(nextValue)
-          // Update the shared draft immediately, rather than waiting for blur.
-          // This keeps the pending-change count accurate for every numeric cell.
           const parsed = Number(nextValue)
-          if (nextValue === '' || (Number.isFinite(parsed) && parsed >= 0)) {
-            onCommit(empId, field, nextValue === '' ? 0 : parsed)
-          }
+          if (nextValue !== '' && (!Number.isFinite(parsed) || parsed < 0)) setLocalVal(String(value))
         }}
         onKeyDown={e => e.key === 'Enter' && ref.current?.blur()}
       />
@@ -1811,22 +1830,34 @@ function CellInput({ empId, field, value, isReadonly, onFocus, onCommit }: CellI
   )
 }
 
-function CustomPayItemCell({ empId, code, category, value, isReadonly, onFocus, onCommit }: {
+function CustomPayItemCell({ empId, code, category, value, isReadonly, resetVersion, isChanged, onFocus, onCommit }: {
   empId: string; code: string; category: 'EARNING' | 'DEDUCTION'; value: number; isReadonly: boolean;
+  resetVersion: number; isChanged: boolean;
   onFocus: (id: string) => void; onCommit: (empId: string, category: 'EARNING' | 'DEDUCTION', code: string, value: number) => void;
 }) {
   const [localValue, setLocalValue] = useState(String(value))
   const ref = useRef<HTMLInputElement>(null)
-  useEffect(() => setLocalValue(String(value)), [value])
+  useEffect(() => setLocalValue(String(value)), [value, resetVersion])
   if (isReadonly) return <td className="num readonly">{thb(value)}</td>
-  return <td style={{ padding: '4px 8px' }}><input ref={ref} className="cell-inp" type="number" min={0} value={localValue} placeholder="0.00"
+  return <td style={{ padding: '4px 8px', background: isChanged ? '#F1EAFF' : undefined, boxShadow: isChanged ? 'inset 0 0 0 2px #9B7AE8' : undefined }}><input ref={ref} className="cell-inp" type="number" min={0} value={localValue} placeholder="0.00"
     onFocus={() => onFocus(empId)}
-    onChange={event => { const next = event.target.value; setLocalValue(next); const amount = Number(next); if (next === '' || (Number.isFinite(amount) && amount >= 0)) onCommit(empId, category, code, next === '' ? 0 : amount) }}
-    onBlur={() => onCommit(empId, category, code, Math.max(0, Number(localValue) || 0))}
+    onChange={event => { const next = event.target.value; const amount = Number(next); setLocalValue(next === '' || (Number.isFinite(amount) && amount >= 0) ? next : String(value)) }}
+    onBlur={() => { const next = Math.max(0, Number(localValue) || 0); if (next !== value) onCommit(empId, category, code, next) }}
     onKeyDown={event => event.key === 'Enter' && ref.current?.blur()} /></td>
 }
 
 // ─── Dept Payroll Table ───────────────────────────────────────────────────────
+
+type PendingPayrollCellChange = {
+  empId: string
+  employeeId: number
+  fieldCode: string
+  label: string
+  oldValue: number
+  newValue: number
+  field?: keyof PayrollRow
+  category?: 'EARNING' | 'DEDUCTION'
+}
 
 function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, departments, positions, payItemTypes, setPayItemTypes, reloadPayroll }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
@@ -1887,6 +1918,16 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const [historyBatches, setHistoryBatches] = useState<DeptPayroll[]>([])
   const [historicBatch, setHistoricBatch] = useState<DeptPayroll | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const [resetVersion, setResetVersion] = useState(0)
+  const [editVersion, setEditVersion] = useState(dept.editVersion ?? 0)
+  const [pendingCellChange, setPendingCellChange] = useState<PendingPayrollCellChange | null>(null)
+  const [changeReason, setChangeReason] = useState('')
+  const [pendingNotes, setPendingNotes] = useState<PayrollChangeNote[]>([])
+  const [savedNotes, setSavedNotes] = useState<PayrollChangeNote[]>([])
+  const [previousValues, setPreviousValues] = useState<Record<string, number>>({})
+  const [noteOpen, setNoteOpen] = useState(false)
+  const [changeLogLoading, setChangeLogLoading] = useState(false)
+  const loadedPropVersion = useRef(dept.editVersion ?? 0)
   const [focusRow, setFocusRow] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
   const [search, setSearch] = useState('')
@@ -1895,6 +1936,10 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const [inlineAddPosition, setInlineAddPosition] = useState<FloatingDropdownPosition | null>(null)
   const inlineAddRef = useRef<HTMLDivElement>(null)
   const inlineDropdownRef = useRef<HTMLDivElement>(null)
+  const employeeDatabaseIdByCode = useMemo(
+    () => new Map(databaseEmployees.map(employee => [employee.employee_code, employee.id])),
+    [databaseEmployees],
+  )
   const isReadonly = dept.status === 'pending' || dept.status === 'approved' || dept.status === 'closed'
   const customIncomeTypes = payItemTypes.filter(item => item.is_active && item.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(item.code))
   const customDeductionTypes = payItemTypes.filter(item => item.is_active && item.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(item.code))
@@ -1914,6 +1959,53 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       false
     ).slice(0, 8)
   }, [availableEmployees, inlineAddSearch])
+  const loadChangeLog = useCallback(async () => {
+    if (!dept.databaseId) return
+    setChangeLogLoading(true)
+    try {
+      const result = await getPayrollChangeNotes(dept.databaseId)
+      setSavedNotes(result.notes)
+      setPreviousValues(Object.fromEntries(result.previous_values.map(value => [
+        `${value.employee_id}:${value.field_code}`,
+        Number(value.amount),
+      ])))
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'โหลดประวัติการแก้ไขไม่สำเร็จ', 'error')
+    } finally {
+      setChangeLogLoading(false)
+    }
+  }, [dept.databaseId, showToast])
+
+  useEffect(() => {
+    const incomingVersion = dept.editVersion ?? 0
+    if (loadedPropVersion.current === incomingVersion) return
+    loadedPropVersion.current = incomingVersion
+    const excludedIds = new Set(dept.excludedEmployeeIds ?? [])
+    const savedIds = Array.from(new Set([
+      ...Object.keys(dept.rows),
+      ...allDepartmentEmployees
+        .filter(employee => employee.status === 'active' && !excludedIds.has(employee.id))
+        .map(employee => employee.id),
+    ]))
+    const freshRows = Object.fromEntries(savedIds.map(id => {
+      const employee = allDepartmentEmployees.find(item => item.id === id)
+      return [id, dept.rows[id] ?? (employee ? makeDefaultRow(employee) : initialRows.current[id])]
+    }).filter(([, row]) => Boolean(row))) as Record<string, PayrollRow>
+    setEditVersion(incomingVersion)
+    setIncludedEmployeeIds(savedIds)
+    setExcludedEmployeeIds(dept.excludedEmployeeIds ?? [])
+    setRows(freshRows)
+    initialIncludedEmployeeIds.current = savedIds
+    initialRows.current = freshRows
+    setPendingNotes([])
+    setDirty(false)
+    setEditing(false)
+    setResetVersion(version => version + 1)
+  }, [allDepartmentEmployees, dept.editVersion, dept.excludedEmployeeIds, dept.rows])
+
+  useEffect(() => {
+    void loadChangeLog()
+  }, [loadChangeLog, dept.editVersion])
 
   const updateInlineAddPosition = useCallback(() => {
     const rect = inlineAddRef.current?.getBoundingClientRect()
@@ -1979,6 +2071,93 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     setDirty(true)
   }, [])
 
+  const pendingCellKeys = useMemo(
+    () => new Set(pendingNotes.map(note => `${note.employee_id}:${note.field_code}`)),
+    [pendingNotes],
+  )
+
+  const fieldLabel = useCallback((fieldCode: string) => (
+    PAYROLL_FIELD_LABELS[fieldCode]
+      ?? payItemTypes.find(item => item.code === fieldCode)?.name
+      ?? fieldCode
+  ), [payItemTypes])
+
+  const requestStandardCellChange = useCallback((empId: string, field: keyof PayrollRow, newValue: number) => {
+    const employeeId = employeeDatabaseIdByCode.get(empId)
+    const row = rows[empId]
+    if (!employeeId || !row || field === 'empId' || field === 'customIncome' || field === 'customDeduction') {
+      showToast('ไม่พบข้อมูลช่องที่ต้องการแก้ไข', 'error')
+      setResetVersion(version => version + 1)
+      return
+    }
+    const fieldCode = PAYROLL_FIELD_CODES[field]
+    setPendingCellChange({
+      empId, employeeId, fieldCode, field, label: fieldLabel(fieldCode),
+      oldValue: Number(row[field]), newValue,
+    })
+    setChangeReason('')
+  }, [employeeDatabaseIdByCode, fieldLabel, rows, showToast])
+
+  const requestCustomCellChange = useCallback((empId: string, category: 'EARNING' | 'DEDUCTION', code: string, newValue: number) => {
+    const employeeId = employeeDatabaseIdByCode.get(empId)
+    const row = rows[empId]
+    if (!employeeId || !row) {
+      showToast('ไม่พบข้อมูลช่องที่ต้องการแก้ไข', 'error')
+      setResetVersion(version => version + 1)
+      return
+    }
+    const values = category === 'EARNING' ? row.customIncome : row.customDeduction
+    setPendingCellChange({
+      empId, employeeId, fieldCode: code, category, label: fieldLabel(code),
+      oldValue: values?.[code] ?? 0, newValue,
+    })
+    setChangeReason('')
+  }, [employeeDatabaseIdByCode, fieldLabel, rows, showToast])
+
+  const initialValueForChange = (change: PendingPayrollCellChange) => {
+    const original = initialRows.current[change.empId]
+    if (!original) return 0
+    if (change.field && change.field !== 'empId' && change.field !== 'customIncome' && change.field !== 'customDeduction') {
+      return Number(original[change.field])
+    }
+    const values = change.category === 'EARNING' ? original.customIncome : original.customDeduction
+    return values?.[change.fieldCode] ?? 0
+  }
+
+  const confirmCellChange = () => {
+    const change = pendingCellChange
+    const reason = changeReason.trim()
+    if (!change) return
+    if (!reason) {
+      showToast('กรุณาระบุเหตุผลการเปลี่ยนแปลง', 'error')
+      return
+    }
+    if (change.field) setCell(change.empId, change.field, change.newValue)
+    else if (change.category) setCustomCell(change.empId, change.category, change.fieldCode, change.newValue)
+    setPendingNotes(current => {
+      const appended = [...current, {
+        employee_id: change.employeeId,
+        field_code: change.fieldCode,
+        old_value: change.oldValue,
+        new_value: change.newValue,
+        reason,
+      }]
+      if (change.newValue === initialValueForChange(change)) {
+        return appended.filter(note => !(note.employee_id === change.employeeId && note.field_code === change.fieldCode))
+      }
+      return appended
+    })
+    setPendingCellChange(null)
+    setChangeReason('')
+    setResetVersion(version => version + 1)
+  }
+
+  const cancelCellChange = () => {
+    setPendingCellChange(null)
+    setChangeReason('')
+    setResetVersion(version => version + 1)
+  }
+
   const addPayItemType = async () => {
     if (!newItemName.trim()) { showToast('กรุณาระบุชื่อรายการ', 'error'); return }
     setCreatingItemType(true)
@@ -2041,18 +2220,20 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
 
   const persistRows = async () => {
     if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
-    const byCode = new Map(databaseEmployees.map(employee => [employee.employee_code, employee.id]))
     const payload = includedEmployeeIds.map(employeeCode => {
       const row = rows[employeeCode]
-      const employeeId = byCode.get(employeeCode)
+      const employeeId = employeeDatabaseIdByCode.get(employeeCode)
       if (!employeeId || !row) throw new Error('ไม่พบข้อมูลพนักงาน')
       return { employee_id: employeeId, lines: {
         EXTRA_PAY: row.extra, POS_ALLOW: row.posAllowance, KTB_LOAN: row.debtKTB,
-        TAX: row.tax, SSF: row.social, FUNERAL_FUND: row.funeral, SAVINGS_BANK_LOAN: row.gsb,
+        TAX: row.tax, SSF: row.social, FUNERAL_FUND: row.funeral,
+        KTB_BANK: row.ktb, SAVINGS_BANK_LOAN: row.gsb,
         ...row.customIncome, ...row.customDeduction,
       } }
     })
-    await savePayrollBatchItems(dept.databaseId, payload)
+    const result = await savePayrollBatchItems(dept.databaseId, payload, pendingNotes, editVersion)
+    setEditVersion(result.edit_version)
+    return result.edit_version
   }
 
   const closeEditor = () => {
@@ -2073,6 +2254,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
         .map(id => [id, { ...initialRows.current[id] }])
     ))
     setExcludedEmployeeIds(dept.excludedEmployeeIds ?? [])
+    setPendingNotes([])
+    setResetVersion(version => version + 1)
     setDirty(false)
     setShowDiscardModal(false)
     closeEditor()
@@ -2093,15 +2276,22 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       await persistRows()
       initialIncludedEmployeeIds.current = [...includedEmployeeIds]
       initialRows.current = Object.fromEntries(includedEmployeeIds.map(id => [id, { ...rows[id] }]))
+      setPendingNotes([])
       setDirty(false)
       closeEditor()
       showToast('บันทึกข้อมูลแบบร่างเรียบร้อยแล้ว', 'success')
       // The table is already in its confirmed local state.  Refresh the rest of
       // the page in the background so saving is not delayed by several read APIs.
       void reloadPayroll().catch(() => undefined)
+      void loadChangeLog()
       return true
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'บันทึกข้อมูลไม่สำเร็จ', 'error')
+      if (error instanceof Error && error.message.includes('ผู้ใช้อื่น')) {
+        closeEditor()
+        setPendingNotes([])
+        void reloadPayroll()
+      }
       return false
     } finally {
       setSaving(false)
@@ -2188,10 +2378,27 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     return { base, extra, pos, gross, debtKTB, tax, social, funeral, ktb, gsb, deduct, net }
   }, [rows, emps])
 
+  const previousEmployeeIds = useMemo(() => new Set(
+    Object.keys(previousValues).map(key => Number(key.split(':', 1)[0])),
+  ), [previousValues])
+  const getRowDeltas = (employee: Employee, row: PayrollRow) => {
+    const employeeId = employeeDatabaseIdByCode.get(employee.id)
+    if (!employeeId || !previousEmployeeIds.has(employeeId)) return []
+    const currentValues: Record<string, number> = {
+      EXTRA_PAY: row.extra, POS_ALLOW: row.posAllowance, KTB_LOAN: row.debtKTB,
+      TAX: row.tax, SSF: row.social, FUNERAL_FUND: row.funeral,
+      KTB_BANK: row.ktb, SAVINGS_BANK_LOAN: row.gsb,
+      ...row.customIncome, ...row.customDeduction,
+    }
+    return Object.entries(currentValues)
+      .map(([code, value]) => ({ code, label: fieldLabel(code), delta: value - (previousValues[`${employeeId}:${code}`] ?? 0) }))
+      .filter(item => item.delta !== 0)
+  }
+
   const handleFocus = useCallback((id: string) => setFocusRow(id), [])
   const handleCommit = useCallback((id: string, field: keyof PayrollRow, val: number) => {
-    setCell(id, field, val)
-  }, [setCell])
+    requestStandardCellChange(id, field, val)
+  }, [requestStandardCellChange])
 
   const exportExcel = () => {
     const entries = emps.map(employee => ({ employee, row: rows[employee.id] }))
@@ -2357,7 +2564,10 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       <div className="payroll-period-meta">
         <span>📅 วันที่จ่าย {formatBuddhistDate(period.payDate)}</span>
         <span>👥 {emps.length} คน</span>
-        <span>🕘 แก้ไขล่าสุด {formatBuddhistDateTime(dept.updatedAt)}</span>
+        <span>🕘 แก้ไขล่าสุดโดย {dept.lastEditedBy ?? dept.submittedBy ?? '–'} · {formatBuddhistDateTime(dept.lastEditedAt ?? dept.updatedAt)}</span>
+        <button className="btn btn-ghost btn-sm" aria-busy={changeLogLoading} onClick={() => setNoteOpen(true)} title="ดูรายละเอียดการแก้ไข">
+          <BusyLabel busy={changeLogLoading} label="กำลังโหลด…">📒 Note{pendingNotes.length ? ` · ${pendingNotes.length}` : ''}</BusyLabel>
+        </button>
         <StatusBadge s={dept.status} />
       </div>
 
@@ -2367,9 +2577,10 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           <thead>
             <tr>
               <th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
-              <th colSpan={3 + customIncomeTypes.length} className="th-group th-group-income">รายการรับ {editing && !isReadonly && <button type="button" className="payroll-add-item-button" onClick={() => { setNewItemCategory('EARNING'); setShowAddItemModal(true) }} title="เพิ่มประเภทรายการรับ">+ เพิ่มประเภทรายการรับ</button>}</th>
-              <th colSpan={7 + customDeductionTypes.length} className="th-group th-group-deduct">รายการหัก {editing && !isReadonly && <button type="button" className="payroll-add-item-button" onClick={() => { setNewItemCategory('DEDUCTION'); setShowAddItemModal(true) }} title="เพิ่มประเภทรายการหัก">+ เพิ่มประเภทรายการหัก</button>}</th>
+              <th colSpan={3 + customIncomeTypes.length} className="th-group th-group-income">รายการรับ</th>
+              <th colSpan={7 + customDeductionTypes.length} className="th-group th-group-deduct">รายการหัก {editing && !isReadonly && <button type="button" className="payroll-add-item-button" onClick={() => setShowAddItemModal(true)} title="เพิ่มประเภทรายการรับหรือรายการหัก">+ เพิ่มประเภทรายการรับ/หัก</button>}</th>
               <th colSpan={1} className="th-group th-group-net">ยอดรับสุทธิ</th>
+              <th rowSpan={2} className="th-group th-group-net" style={{ minWidth: 190 }}>เพิ่ม/ลด</th>
               {editing && !isReadonly && <th rowSpan={2} className="th-group th-group-emp" style={{ minWidth: 88 }}>ดำเนินการ</th>}
             </tr>
             <tr>
@@ -2401,6 +2612,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             {visibleEmployees.map((e, idx) => {
               const r = rows[e.id]
               const g = rowGross(e, r), d = rowDeduct(r), n = rowNet(e, r)
+              const deltas = getRowDeltas(e, r)
+              const employeeDatabaseId = employeeDatabaseIdByCode.get(e.id)
               const isActive = focusRow === e.id
               return (
                 <tr key={e.id} className={isActive ? 'editing' : ''}>
@@ -2409,19 +2622,26 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.position}</td>
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.organization}</td>
                   <td className="num readonly">{thb(e.baseSalary)}</td>
-                  <CellInput empId={e.id} field="extra"        value={r.extra}        isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="posAllowance" value={r.posAllowance} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
-                  {customIncomeTypes.map(item => <CustomPayItemCell key={item.code} empId={e.id} code={item.code} category="EARNING" value={r.customIncome?.[item.code] ?? 0} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={setCustomCell} />)}
+                  <CellInput empId={e.id} field="extra" value={r.extra} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:EXTRA_PAY`)} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="posAllowance" value={r.posAllowance} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:POS_ALLOW`)} onFocus={handleFocus} onCommit={handleCommit} />
+                  {customIncomeTypes.map(item => <CustomPayItemCell key={item.code} empId={e.id} code={item.code} category="EARNING" value={r.customIncome?.[item.code] ?? 0} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:${item.code}`)} onFocus={handleFocus} onCommit={requestCustomCellChange} />)}
                   <td className="num total" style={{ background: '#F0FDF4', color: '#15803D' }}>{thb(g)}</td>
-                  <CellInput empId={e.id} field="debtKTB" value={r.debtKTB} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="tax"     value={r.tax}     isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="social"  value={r.social}  isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="funeral" value={r.funeral} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="ktb"     value={r.ktb}     isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="gsb"     value={r.gsb}     isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={handleCommit} />
-                  {customDeductionTypes.map(item => <CustomPayItemCell key={item.code} empId={e.id} code={item.code} category="DEDUCTION" value={r.customDeduction?.[item.code] ?? 0} isReadonly={isReadonly || !editing} onFocus={handleFocus} onCommit={setCustomCell} />)}
+                  <CellInput empId={e.id} field="debtKTB" value={r.debtKTB} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:KTB_LOAN`)} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="tax" value={r.tax} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:TAX`)} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="social" value={r.social} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:SSF`)} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="funeral" value={r.funeral} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:FUNERAL_FUND`)} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="ktb" value={r.ktb} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:KTB_BANK`)} onFocus={handleFocus} onCommit={handleCommit} />
+                  <CellInput empId={e.id} field="gsb" value={r.gsb} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:SAVINGS_BANK_LOAN`)} onFocus={handleFocus} onCommit={handleCommit} />
+                  {customDeductionTypes.map(item => <CustomPayItemCell key={item.code} empId={e.id} code={item.code} category="DEDUCTION" value={r.customDeduction?.[item.code] ?? 0} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:${item.code}`)} onFocus={handleFocus} onCommit={requestCustomCellChange} />)}
                   <td className="num total" style={{ background: '#FFF8F6', color: '#B91C1C' }}>{thb(d)}</td>
                   <td className="num total" style={{ background: '#F5F3FF', color: 'var(--purple-600)', fontFamily: 'var(--font-display)' }}>{thb(n)}</td>
+                  <td className="readonly" style={{ minWidth: 190, padding: '6px 8px' }}>
+                    {deltas.length === 0 ? <span style={{ color: 'var(--text-muted)' }}>–</span> : deltas.map(item => (
+                      <div key={item.code} title={item.label} style={{ color: item.delta > 0 ? '#15803D' : '#B42318', fontSize: 11.5, fontWeight: 700, whiteSpace: 'nowrap', margin: '2px 0' }}>
+                        <span style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>{item.label}: </span>{item.delta > 0 ? '+' : ''}{thb(item.delta)}
+                      </div>
+                    ))}
+                  </td>
                   {editing && !isReadonly && (
                     <td className="readonly" style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>
                       <button className="btn btn-danger btn-xs" onClick={() => removeEmployeeFromTable(e)}>ลบ</button>
@@ -2445,7 +2665,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                     />
                   </div>
                 </td>
-                <td colSpan={14 + customIncomeTypes.length + customDeductionTypes.length} />
+                <td colSpan={16 + customIncomeTypes.length + customDeductionTypes.length} />
               </tr>
             )}
           </tbody>
@@ -2466,6 +2686,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               {customDeductionTypes.map(item => <td key={item.code} className="num">{thb(emps.reduce((sum, employee) => sum + (rows[employee.id].customDeduction?.[item.code] ?? 0), 0))}</td>)}
               <td className="num" style={{ color: '#B91C1C' }}>{thb(totals.deduct)}</td>
               <td className="num" style={{ color: 'var(--purple-600)' }}>{thb(totals.net)}</td>
+              <td />
               {editing && !isReadonly && <td />}
             </tr>
           </tfoot>
@@ -2501,6 +2722,52 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           ))}
         </div>,
         document.body,
+      )}
+
+      {pendingCellChange && (
+        <Modal title="ระบุเหตุผลการเปลี่ยนแปลงยอด" onClose={cancelCellChange}>
+          <div className="flex flex-col gap-4">
+            <div style={{ background: '#F7F4FF', border: '1px solid #E2D8FF', borderRadius: 12, padding: '13px 15px', fontSize: 13, lineHeight: 1.7 }}>
+              <div style={{ fontWeight: 700 }}>{pendingCellChange.label}</div>
+              <div>เดิม: <strong>{thb(pendingCellChange.oldValue)} บาท</strong> → ใหม่: <strong>{thb(pendingCellChange.newValue)} บาท</strong></div>
+              <div style={{ color: pendingCellChange.newValue - pendingCellChange.oldValue >= 0 ? '#15803D' : '#B42318', fontWeight: 700 }}>
+                ส่วนต่าง: {pendingCellChange.newValue - pendingCellChange.oldValue > 0 ? '+' : ''}{thb(pendingCellChange.newValue - pendingCellChange.oldValue)} บาท
+              </div>
+            </div>
+            <FormField label="เหตุผลการแก้ไข" required>
+              <textarea className="inp" rows={3} autoFocus maxLength={1000} value={changeReason} onChange={event => setChangeReason(event.target.value)} placeholder="ระบุเหตุผลที่เปลี่ยนแปลงยอด" />
+            </FormField>
+            <div className="flex justify-end gap-3">
+              <button className="btn btn-secondary" onClick={cancelCellChange}>ยกเลิก</button>
+              <button className="btn btn-primary" disabled={!changeReason.trim()} onClick={confirmCellChange}>ยืนยัน</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {noteOpen && createPortal(
+        <div style={{ position: 'fixed', inset: 0, zIndex: 70, display: 'flex', justifyContent: 'flex-end', background: 'rgba(28, 21, 46, 0.22)' }} onMouseDown={() => setNoteOpen(false)}>
+          <aside role="dialog" aria-modal="true" aria-label="บันทึกการแก้ไข" onMouseDown={event => event.stopPropagation()} style={{ width: 'min(470px, 100%)', height: '100%', background: '#FFFFFF', boxShadow: '-14px 0 36px rgba(36, 25, 66, 0.18)', padding: 22, overflowY: 'auto' }}>
+            <div className="flex justify-between items-start gap-3" style={{ paddingBottom: 15, borderBottom: '1px solid var(--border)' }}>
+              <div><div style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 700 }}>📒 Note การแก้ไข</div><div style={{ marginTop: 3, color: 'var(--text-secondary)', fontSize: 12.5 }}>{dept.department} · {periodLabel(period)}</div></div>
+              <button className="btn btn-ghost btn-sm" aria-label="ปิด" onClick={() => setNoteOpen(false)}>✕</button>
+            </div>
+            {changeLogLoading ? <div className="flex items-center gap-2" style={{ padding: '26px 0', color: 'var(--purple-600)', fontSize: 13, fontWeight: 600 }}><span className="btn-spinner" />กำลังโหลดรายการแก้ไข…</div>
+              : pendingNotes.length === 0 && savedNotes.length === 0 ? <div style={{ padding: '30px 8px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>ยังไม่มีรายการแก้ไข</div>
+              : <div className="flex flex-col gap-3" style={{ marginTop: 16 }}>
+                {[...pendingNotes.map(note => ({ ...note, pending: true })), ...savedNotes.map(note => ({ ...note, pending: false }))].map((note, index) => {
+                  const employee = allDepartmentEmployees.find(item => employeeDatabaseIdByCode.get(item.id) === note.employee_id)
+                  const rowNumber = employee ? emps.findIndex(item => item.id === employee.id) + 1 : 0
+                  return <div key={`${note.id ?? 'pending'}-${index}`} style={{ border: `1px solid ${note.pending ? '#CDBBFF' : '#E5E3EB'}`, background: note.pending ? '#F8F5FF' : '#FFF', borderRadius: 12, padding: 13 }}>
+                    <div className="flex justify-between gap-3"><strong style={{ fontSize: 13 }}>{rowNumber > 0 ? `แถวที่ ${rowNumber} · ` : ''}{note.employee_name ?? (employee ? `${employee.title}${employee.firstName} ${employee.lastName}` : 'พนักงาน')}</strong>{note.pending && <span style={{ color: '#7651DC', fontSize: 11, fontWeight: 700 }}>รอบันทึก</span>}</div>
+                    <div style={{ marginTop: 5, fontSize: 12.5 }}><strong>{fieldLabel(note.field_code)}</strong> · {thb(Number(note.old_value))} → {thb(Number(note.new_value))}</div>
+                    <div style={{ marginTop: 5, color: 'var(--text-secondary)', fontSize: 12.5, lineHeight: 1.55 }}>เหตุผล: {note.reason}</div>
+                    <div style={{ marginTop: 7, color: 'var(--text-muted)', fontSize: 11.5 }}>{note.pending ? 'ผู้แก้ไข: กำลังแก้ไขในหน้านี้' : `ผู้แก้ไข: ${note.changed_by_name ?? '–'} · ${note.changed_at ? formatBuddhistDateTime(note.changed_at) : '–'}`}</div>
+                  </div>
+                })}
+              </div>}
+          </aside>
+        </div>, document.body
       )}
 
       {showAddItemModal && (
@@ -2718,6 +2985,9 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
   const [historyError, setHistoryError] = useState('')
   const [historyBatches, setHistoryBatches] = useState<DeptPayroll[]>([])
   const [historicBatch, setHistoricBatch] = useState<DeptPayroll | null>(null)
+  const [noteOpen, setNoteOpen] = useState(false)
+  const [changeNotes, setChangeNotes] = useState<PayrollChangeNote[]>([])
+  const [changeNotesLoading, setChangeNotesLoading] = useState(false)
 
   const t = useMemo(() => deptTotals(dept), [dept])
   const visibleEmployees = useMemo(() => {
@@ -2825,6 +3095,20 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
     }
   }
 
+  const openChangeNotes = async () => {
+    if (!dept.databaseId) return
+    setNoteOpen(true)
+    setChangeNotesLoading(true)
+    try {
+      const result = await getPayrollChangeNotes(dept.databaseId)
+      setChangeNotes(result.notes)
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'โหลดรายการแก้ไขไม่สำเร็จ', 'error')
+    } finally {
+      setChangeNotesLoading(false)
+    }
+  }
+
   if (historicBatch) {
     return <HistoricPayrollView period={period} dept={historicBatch} onBack={() => setHistoricBatch(null)} />
   }
@@ -2872,7 +3156,8 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
       <div className="payroll-period-meta">
         <span>📅 วันที่จ่าย {formatBuddhistDate(period.payDate)}</span>
         <span>👥 {emps.length} คน</span>
-        <span>🕘 แก้ไขล่าสุด {formatBuddhistDateTime(dept.updatedAt)}</span>
+        <span>🕘 แก้ไขล่าสุดโดย {dept.lastEditedBy ?? dept.submittedBy ?? '–'} · {formatBuddhistDateTime(dept.lastEditedAt ?? dept.updatedAt)}</span>
+        <button className="btn btn-ghost btn-sm" aria-busy={changeNotesLoading} onClick={() => void openChangeNotes()}><BusyLabel busy={changeNotesLoading} label="กำลังโหลด…">📒 Note</BusyLabel></button>
         <StatusBadge s={dept.status} />
       </div>
 
@@ -3017,6 +3302,17 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
                   </div>
                 })}
               </div>}
+          </aside>
+        </div>, document.body
+      )}
+
+      {noteOpen && createPortal(
+        <div style={{ position: 'fixed', inset: 0, zIndex: 70, display: 'flex', justifyContent: 'flex-end', background: 'rgba(28, 21, 46, 0.22)' }} onMouseDown={() => setNoteOpen(false)}>
+          <aside role="dialog" aria-modal="true" aria-label="บันทึกการแก้ไข" onMouseDown={event => event.stopPropagation()} style={{ width: 'min(470px, 100%)', height: '100%', background: '#FFFFFF', boxShadow: '-14px 0 36px rgba(36, 25, 66, 0.18)', padding: 22, overflowY: 'auto' }}>
+            <div className="flex justify-between items-start gap-3" style={{ paddingBottom: 15, borderBottom: '1px solid var(--border)' }}><div><div style={{ fontFamily: 'var(--font-display)', fontSize: 18, fontWeight: 700 }}>📒 Note การแก้ไข</div><div style={{ marginTop: 3, color: 'var(--text-secondary)', fontSize: 12.5 }}>{dept.department} · {periodLabel(period)}</div></div><button className="btn btn-ghost btn-sm" onClick={() => setNoteOpen(false)}>✕</button></div>
+            {changeNotesLoading ? <div className="flex items-center gap-2" style={{ padding: '26px 0', color: 'var(--purple-600)', fontSize: 13, fontWeight: 600 }}><span className="btn-spinner" />กำลังโหลดรายการแก้ไข…</div>
+              : changeNotes.length === 0 ? <div style={{ padding: '30px 8px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>ยังไม่มีรายการแก้ไข</div>
+              : <div className="flex flex-col gap-3" style={{ marginTop: 16 }}>{changeNotes.map((note, index) => <div key={`${note.id ?? index}`} style={{ border: '1px solid #E5E3EB', borderRadius: 12, padding: 13 }}><strong style={{ fontSize: 13 }}>{note.employee_name ?? 'พนักงาน'}</strong><div style={{ marginTop: 5, fontSize: 12.5 }}><strong>{PAYROLL_FIELD_LABELS[note.field_code] ?? note.field_code}</strong> · {thb(Number(note.old_value))} → {thb(Number(note.new_value))}</div><div style={{ marginTop: 5, color: 'var(--text-secondary)', fontSize: 12.5 }}>เหตุผล: {note.reason}</div><div style={{ marginTop: 7, color: 'var(--text-muted)', fontSize: 11.5 }}>ผู้แก้ไข: {note.changed_by_name ?? '–'} · {note.changed_at ? formatBuddhistDateTime(note.changed_at) : '–'}</div></div>)}</div>}
           </aside>
         </div>, document.body
       )}
@@ -4228,7 +4524,7 @@ export default function App() {
   const [activePeriodId, setActivePeriodId] = useState<string>('')
   const [activeDeptId, setActiveDeptId] = useState<string>('')
   const [editEmpId, setEditEmpId] = useState<number | null>(null)
-  const [toast, setToast] = useState<{ msg: string; type?: 'success' | 'error'; key: number } | null>(null)
+  const [toast, setToast] = useState<{ msg: string; type?: 'success' | 'error' | 'info'; key: number } | null>(null)
   const toastKey = useRef(0)
 
   const syncPayrollEmployeeEmails = useCallback((employees: DatabaseEmployee[]) => {
@@ -4322,7 +4618,7 @@ export default function App() {
     if (loggedIn) loadEmployeeData()
   }, [loggedIn, loadEmployeeData])
 
-  const showToast = useCallback((msg: string, type?: 'success' | 'error') => {
+  const showToast = useCallback((msg: string, type?: 'success' | 'error' | 'info') => {
     setToast({ msg, type, key: ++toastKey.current })
   }, [])
 

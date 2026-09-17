@@ -33,6 +33,9 @@ export interface PayrollBatchRecord {
   revision_reason?: string | null
   revision_created_by_name?: string | null
   is_current?: boolean
+  edit_version?: number
+  last_edited_at?: string | null
+  last_edited_by_name?: string | null
   payroll_items: PayrollItemRecord[]
   excluded_employee_codes?: string[]
 }
@@ -45,6 +48,7 @@ export interface PayrollItemRecord {
   first_name: string
   last_name: string
   position_name: string | null
+  organization_name?: string | null
   base_salary: string | number
   email_status?: 'PENDING' | 'SENT' | 'FAILED' | null
   email_sent_at?: string | null
@@ -74,10 +78,65 @@ export async function deletePayrollPeriod(periodId: number): Promise<void> {
   if (!response.ok) return parseError(response, `ลบรอบเงินเดือนไม่สำเร็จ: ${response.status}`)
 }
 
-export async function savePayrollBatchItems(batchId: number, rows: { employee_id: number; lines: Record<string, number> }[]): Promise<void> {
-  const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/items`, { method: 'PUT', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ rows }) })
-  if (!response.ok) return parseError(response, `บันทึกตารางเงินเดือนไม่สำเร็จ: ${response.status}`)
+export type PayrollChangeNote = {
+  id?: number
+  employee_id: number
+  field_code: string
+  old_value: number
+  new_value: number
+  reason: string
+  employee_name?: string
+  changed_by_name?: string
+  changed_at?: string
 }
+
+export type PayrollPreviousValue = {
+  employee_id: number
+  field_code: string
+  amount: string | number
+}
+
+export type PayrollChangeLog = {
+  notes: PayrollChangeNote[]
+  previous_values: PayrollPreviousValue[]
+}
+
+export async function savePayrollBatchItems(
+  batchId: number,
+  rows: { employee_id: number; lines: Record<string, number> }[],
+  change_notes: PayrollChangeNote[] = [],
+  expected_version?: number,
+): Promise<{ edit_version: number }> {
+  const response = await fetch(
+    `${API_URL}/payroll_department_batches/${batchId}/items`,
+    {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...authorizationHeaders(),
+      },
+      body: JSON.stringify({ rows, change_notes, expected_version }),
+    },
+  )
+  if (!response.ok) {
+    return parseError(response, `บันทึกตารางเงินเดือนไม่สำเร็จ: ${response.status}`)
+  }
+  return (await response.json()).data as { edit_version: number }
+}
+
+export async function getPayrollChangeNotes(
+  batchId: number,
+): Promise<PayrollChangeLog> {
+  const response = await fetch(
+    `${API_URL}/payroll_department_batches/${batchId}/change-notes`,
+    { headers: authorizationHeaders() },
+  )
+  if (!response.ok) {
+    return parseError(response, `โหลดรายการแก้ไขไม่สำเร็จ: ${response.status}`)
+  }
+  return (await response.json()).data as PayrollChangeLog
+}
+
 export async function createPayrollRevision(batchId: number, revision_type: string, reason: string): Promise<{ batch_id: number }> {
   const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/revisions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ revision_type, reason }) })
   if (!response.ok) return parseError(response, `สร้างฉบับแก้ไขไม่สำเร็จ: ${response.status}`)

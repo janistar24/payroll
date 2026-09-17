@@ -83,16 +83,17 @@ class PayslipEmailService:
         if not data:
             raise ValueError("ไม่พบรายการสลิปเงินเดือน")
         item = dict(zip(columns, data[0]))
-        lines, _ = self.db.fetch(
+        lines, line_columns = self.db.fetch(
             """
-            SELECT item_type.code, line.amount
+            SELECT item_type.code, item_type.name, item_type.category, line.amount
             FROM public.payroll_item_lines line
             JOIN public.pay_item_types item_type ON item_type.id = line.pay_item_type_id
             WHERE line.payroll_item_id = %s
             """,
             (payroll_item_id,),
         )
-        item["lines"] = dict(lines)
+        item["line_items"] = [dict(zip(line_columns, row)) for row in lines]
+        item["lines"] = {row["code"]: row["amount"] for row in item["line_items"]}
         return item
 
     @staticmethod
@@ -158,6 +159,18 @@ class PayslipEmailService:
                 pdf.drawString(cursor_x, y, run)
                 cursor_x += pdf.stringWidth(run, run_font, size)
 
+        def fitted_text(x, y, value, max_width, size=9, align="left"):
+            fitted_size = size
+            while fitted_size > 5.5:
+                measured = sum(
+                    pdf.stringWidth(character, latin_font_name if ord(character) < 128 else font_name, fitted_size)
+                    for character in str(value)
+                )
+                if measured <= max_width:
+                    break
+                fitted_size -= 0.4
+            text(x, y, value, fitted_size, align)
+
         def rule(x1, y1, x2, y2, rule_width=0.7):
             pdf.setLineWidth(rule_width)
             pdf.line(x1, y1, x2, y2)
@@ -197,9 +210,22 @@ class PayslipEmailService:
             text(x2 + 6, y, values[2], 9)
             text(x3 + 6, y, values[3], 9)
 
-        # Income and deduction table.  All values come from the saved payroll lines.
-        table_top, header_height, row_height, total_height = details_bottom - 18, 24, 25, 25
-        item_rows = 5
+        # Build both sides from the saved item types. Newly added columns are
+        # therefore included automatically without changing this PDF code.
+        income_rows = [("เงินเดือน", item["base_salary"])] + [
+            (line["name"], line["amount"])
+            for line in item["line_items"] if line["category"] == "EARNING"
+        ]
+        deduction_rows = [
+            (line["name"], line["amount"])
+            for line in item["line_items"] if line["category"] == "DEDUCTION"
+        ]
+        item_rows = max(1, len(income_rows), len(deduction_rows))
+        table_top, header_height, total_height = details_bottom - 18, 24, 25
+        # Keep one readable page: rows become gradually tighter only when more
+        # item types exist, with a lower bound that remains legible in print.
+        row_height = max(7, min(25, 350 / item_rows))
+        row_font = max(4.5, min(9, row_height * 0.38))
         table_bottom = table_top - header_height - row_height * item_rows - total_height
         lx0, lx1, lx2, lx3, lx4 = 38, 210, 298, 470, width - 38
         pdf.rect(lx0, table_bottom, lx4 - lx0, table_top - table_bottom)
@@ -213,26 +239,16 @@ class PayslipEmailService:
             rule(lx0, table_top - header_height - row_height * index, lx4, table_top - header_height - row_height * index)
         text((lx0 + lx2) / 2, table_top - 16, "เงินได้", 11, "center")
         text((lx2 + lx4) / 2, table_top - 16, "เงินหัก", 11, "center")
-        income_rows = [
-            ("เงินเดือน", item["base_salary"]),
-            ("เงินประจำตำแหน่ง", line_amount("POS_ALLOW")),
-            ("เงินเพิ่ม", line_amount("EXTRA_PAY")),
-            ("ตกเบิก", 0),
-            ("รายได้อื่น ๆ", 0),
-        ]
-        deduction_rows = [
-            ("ชำระหนี้ธนาคารกรุงไทย", line_amount("KTB_LOAN")),
-            ("ภาษีหัก ณ ที่จ่าย", line_amount("TAX")),
-            ("ประกันสังคม", line_amount("SSF")),
-            ("ฌาปนกิจ", line_amount("FUNERAL_FUND")),
-            ("ธนาคารออมสิน", line_amount("SAVINGS_BANK_LOAN")),
-        ]
-        for index, ((income_label, income_value), (deduct_label, deduct_value)) in enumerate(zip(income_rows, deduction_rows)):
-            y = table_top - header_height - row_height * (index + 1) + 8
-            text(lx0 + 7, y, income_label, 9)
-            text(lx2 - 7, y, f"{self._money(income_value)} บาท", 9, "right")
-            text(lx2 + 7, y, deduct_label, 9)
-            text(lx4 - 7, y, f"{self._money(deduct_value)} บาท", 9, "right")
+        for index in range(item_rows):
+            y = table_top - header_height - row_height * (index + 1) + max(1.5, (row_height - row_font) / 2)
+            if index < len(income_rows):
+                income_label, income_value = income_rows[index]
+                fitted_text(lx0 + 7, y, income_label, lx1 - lx0 - 12, row_font)
+                fitted_text(lx2 - 7, y, f"{self._money(income_value)} บาท", lx2 - lx1 - 12, row_font, "right")
+            if index < len(deduction_rows):
+                deduct_label, deduct_value = deduction_rows[index]
+                fitted_text(lx2 + 7, y, deduct_label, lx3 - lx2 - 12, row_font)
+                fitted_text(lx4 - 7, y, f"{self._money(deduct_value)} บาท", lx4 - lx3 - 12, row_font, "right")
         # Use a light-gray summary band with black text: suitable for on-screen
         # reading and office printing while still separating the totals clearly.
         summary_gray = (0.90, 0.91, 0.93)
@@ -290,6 +306,32 @@ class PayslipEmailService:
                 (payroll_item_id, status, status, error_message),
             )
 
+    def _claim_send(self, payroll_item_id):
+        """Reserve one delivery so concurrent button clicks cannot send twice."""
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                """INSERT INTO public.payslip_email_deliveries
+                   (payroll_item_id,status,created_at,updated_at)
+                   VALUES (%s,'PENDING',NOW(),NOW())
+                   ON CONFLICT (payroll_item_id) DO NOTHING""",
+                (payroll_item_id,),
+            )
+            cursor.execute(
+                "SELECT status, updated_at FROM public.payslip_email_deliveries WHERE payroll_item_id=%s FOR UPDATE",
+                (payroll_item_id,),
+            )
+            status, updated_at = cursor.fetchone()
+            if status == "SENDING" and updated_at is not None:
+                cursor.execute("SELECT %s > NOW() - INTERVAL '5 minutes'", (updated_at,))
+                if cursor.fetchone()[0]:
+                    raise ValueError("สลิปนี้กำลังถูกส่งโดยผู้ใช้อื่น กรุณารอสักครู่")
+            cursor.execute(
+                """UPDATE public.payslip_email_deliveries
+                   SET status='SENDING', error_message=NULL, updated_at=NOW()
+                   WHERE payroll_item_id=%s""",
+                (payroll_item_id,),
+            )
+
     def send_payslip(self, payroll_item_id):
         self._ensure_configured()
         item = self._load_item(payroll_item_id)
@@ -336,6 +378,7 @@ class PayslipEmailService:
         message.add_attachment(
             pdf_data, maintype="application", subtype="pdf", filename=filename,
         )
+        self._claim_send(payroll_item_id)
         try:
             if self.port == 465:
                 with smtplib.SMTP_SSL(self.host, self.port, timeout=30) as smtp:

@@ -1,6 +1,7 @@
 import os
 import hashlib
 import secrets
+from uuid import uuid4
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
@@ -243,12 +244,33 @@ class AuthService:
         if not data: raise ValueError("ลิงก์เชิญไม่ถูกต้อง หมดอายุ หรือถูกใช้แล้ว")
         return dict(zip(cols,data[0]))
 
-    def submit_access_request(self, token, username, password, employee_data):
+    def submit_access_request(self, token, username, password, employee_data, position_name=None, organization_name=None):
         invite = self.validate_invite(token)
         if (employee_data.get("email") or "").strip().lower() != invite["email"]:
             raise ValueError("อีเมลต้องตรงกับอีเมลที่ได้รับคำเชิญ")
         password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
         with self.db.transaction() as cursor:
+            if position_name and position_name.strip():
+                normalized_position = " ".join(position_name.split())
+                cursor.execute("SELECT id FROM public.positions WHERE LOWER(BTRIM(name)) = LOWER(BTRIM(%s)) LIMIT 1", (normalized_position,))
+                position = cursor.fetchone()
+                if position is None:
+                    cursor.execute(
+                        """INSERT INTO public.positions (code, name, level, is_active)
+                           VALUES ('POS-' || UPPER(SUBSTRING(MD5(%s || CLOCK_TIMESTAMP()::TEXT), 1, 12)), %s, NULL, TRUE)
+                           RETURNING id""",
+                        (normalized_position, normalized_position),
+                    )
+                    position = cursor.fetchone()
+                employee_data["position_id"] = position[0]
+            if organization_name and organization_name.strip():
+                normalized_organization = " ".join(organization_name.split())
+                cursor.execute("SELECT id FROM public.organizations WHERE LOWER(BTRIM(name)) = LOWER(BTRIM(%s)) LIMIT 1", (normalized_organization,))
+                organization = cursor.fetchone()
+                if organization is None:
+                    cursor.execute("INSERT INTO public.organizations (name, is_active) VALUES (%s, TRUE) RETURNING id", (normalized_organization,))
+                    organization = cursor.fetchone()
+                employee_data["organization_id"] = organization[0]
             cursor.execute("SELECT id FROM public.users WHERE username = %s", (username,))
             if cursor.fetchone() is not None:
                 raise ValueError("ชื่อผู้ใช้นี้ถูกใช้แล้ว")
@@ -271,6 +293,89 @@ class AuthService:
                 (invite["id"], username.strip(), password_hash, self.password_vault.encrypt(password.encode("utf-8")).decode("utf-8"), invite["requested_role"], __import__("json").dumps(employee_data, default=str)),
             )
             cursor.execute("UPDATE public.user_invites SET used_at = NOW() WHERE id = %s", (invite["id"],))
+
+    def approve_access_request_with_employee(self, request_id, actor_id, actual_role):
+        """Create/update the employee, account and request status atomically."""
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                """SELECT username, password_hash, status, employee_data
+                   FROM public.access_requests WHERE id = %s FOR UPDATE""",
+                (request_id,),
+            )
+            request = cursor.fetchone()
+            if request is None or request[2] != "PENDING":
+                raise ValueError("ไม่พบคำขอที่รออนุมัติ")
+            username, password_hash, _, employee = request
+            cursor.execute("SELECT id FROM public.users WHERE username = %s", (username,))
+            if cursor.fetchone() is not None:
+                raise ValueError("ชื่อผู้ใช้นี้ถูกใช้แล้ว")
+            cursor.execute("SELECT id FROM public.roles WHERE code = %s", (actual_role,))
+            role = cursor.fetchone()
+            if role is None:
+                raise ValueError("ไม่พบสิทธิ์ผู้ใช้งาน")
+
+            for table, key in (("departments", "department_id"), ("positions", "position_id"), ("organizations", "organization_id")):
+                reference_id = employee.get(key)
+                if reference_id is not None:
+                    cursor.execute(f"SELECT id FROM public.{table} WHERE id = %s AND is_active = TRUE", (reference_id,))
+                    if cursor.fetchone() is None:
+                        raise ValueError("ข้อมูลฝ่าย ตำแหน่ง หรือหน่วยงานที่เลือกไม่สามารถใช้งานได้")
+
+            cursor.execute(
+                """SELECT employee.id, linked_user.id
+                   FROM public.employees employee
+                   LEFT JOIN public.users linked_user ON linked_user.employee_id = employee.id
+                   WHERE employee.national_id = %s
+                   ORDER BY employee.id DESC FOR UPDATE OF employee""",
+                ((employee.get("national_id") or "").strip(),),
+            )
+            existing = cursor.fetchone()
+            if existing and existing[1] is not None:
+                raise ValueError("เลขประจำตัวประชาชนนี้มีบัญชีผู้ใช้แล้ว")
+
+            values = (
+                (employee.get("national_id") or "").strip(), employee.get("prefix"),
+                (employee.get("first_name") or "").strip(), (employee.get("last_name") or "").strip(),
+                employee.get("department_id"), employee.get("organization_id"), employee.get("position_id"),
+                employee.get("employee_type"), employee.get("employee_type_other"), employee.get("status") or "ACTIVE",
+                employee.get("birth_date"), employee.get("start_date"), employee.get("end_date"),
+                employee.get("email"), employee.get("phone"), employee.get("bank_name"),
+                employee.get("bank_account_no"), employee.get("base_salary") or 0,
+            )
+            if existing:
+                employee_id = existing[0]
+                cursor.execute(
+                    """UPDATE public.employees SET national_id=%s, prefix=%s, first_name=%s, last_name=%s,
+                              department_id=%s, organization_id=%s, position_id=%s, employee_type=%s,
+                              employee_type_other=%s, status=%s, birth_date=%s, start_date=%s, end_date=%s,
+                              email=%s, phone=%s, bank_name=%s, bank_account_no=%s, base_salary=%s
+                       WHERE id=%s""",
+                    (*values, employee_id),
+                )
+            else:
+                technical_code = (employee.get("employee_code") or "").strip() or f"SYS-{uuid4().hex[:24].upper()}"
+                cursor.execute(
+                    """INSERT INTO public.employees
+                       (employee_code,national_id,prefix,first_name,last_name,department_id,organization_id,position_id,
+                        employee_type,employee_type_other,status,birth_date,start_date,end_date,email,phone,bank_name,
+                        bank_account_no,base_salary)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (technical_code, *values),
+                )
+                employee_id = cursor.fetchone()[0]
+
+            full_name = f"{employee.get('prefix') or ''}{employee.get('first_name') or ''} {employee.get('last_name') or ''}".strip()
+            cursor.execute(
+                """INSERT INTO public.users (username,password_hash,full_name,email,role_id,employee_id,is_active,created_at)
+                   VALUES (%s,%s,%s,%s,%s,%s,TRUE,NOW())""",
+                (username, password_hash, full_name, employee.get("email"), role[0], employee_id),
+            )
+            cursor.execute(
+                """UPDATE public.access_requests SET status='APPROVED', employee_id=%s,
+                          reviewed_by_id=%s, reviewed_at=NOW() WHERE id=%s""",
+                (employee_id, actor_id, request_id),
+            )
+            return employee_id
 
     def list_access_requests(self):
         data, cols = self.db.fetch(

@@ -379,13 +379,26 @@ class PayrollWorkflow:
             )
             return new_version
 
-    def change_batch_status(self, batch_id, action, user_id, reject_reason=None):
+    def current_batch_version(self, batch_id):
+        data, _ = self.db.fetch(
+            "SELECT edit_version FROM public.payroll_department_batches WHERE id = %s",
+            (batch_id,),
+        )
+        if not data:
+            raise ValueError("ไม่พบรายการฝ่ายของรอบเงินเดือน")
+        return int(data[0][0] or 0)
+
+    def change_batch_status(self, batch_id, action, user_id, reject_reason=None, expected_version=None):
         with self.db.transaction() as cursor:
-            cursor.execute("SELECT status FROM public.payroll_department_batches WHERE id = %s FOR UPDATE", (batch_id,))
+            cursor.execute("SELECT status, edit_version, is_current FROM public.payroll_department_batches WHERE id = %s FOR UPDATE", (batch_id,))
             record = cursor.fetchone()
             if record is None:
                 raise ValueError("ไม่พบรายการฝ่ายของรอบเงินเดือน")
             current_status = record[0]
+            if not record[2]:
+                raise ValueError("ฉบับนี้ไม่ใช่ฉบับล่าสุด กรุณาเปิดฉบับปัจจุบัน")
+            if expected_version is None or int(expected_version) != int(record[1] or 0):
+                raise StalePayrollVersionError("มีผู้ใช้อื่นบันทึกข้อมูลใหม่แล้ว กรุณาตรวจสอบฉบับล่าสุดก่อนดำเนินการ")
             if action == "submit":
                 if current_status not in {"DRAFT", "REJECTED"}:
                     raise ValueError("รายการนี้ไม่สามารถส่งอนุมัติได้")

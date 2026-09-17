@@ -19,7 +19,7 @@ import { getAppData } from './api/bootstrap'
 import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
 import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, revealAccessRequestPassword, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
-import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollChangeNotes, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
+import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
 import { createPayItemType, type PayItemType } from './api/payItemTypes'
 import { createOrganization, type Organization } from './api/organizations'
 import { getAnnualTaxReport, type AnnualTaxRow } from './api/annualTax'
@@ -349,7 +349,7 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
             firstName: item.first_name,
             lastName: item.last_name,
             position: item.position_name ?? currentEmployee.position,
-            organization: currentEmployee.organization,
+          organization: item.organization_name ?? currentEmployee.organization,
             department: batch.department_name,
             baseSalary: Number(item.base_salary),
           }
@@ -1859,11 +1859,11 @@ type PendingPayrollCellChange = {
   category?: 'EARNING' | 'DEDUCTION'
 }
 
-function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, departments, positions, payItemTypes, setPayItemTypes, reloadPayroll }: {
+function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, departments, positions, payItemTypes, setPayItemTypes, reloadPayroll, payrollReferenceReady }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
   setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void;
   databaseEmployees: DatabaseEmployee[]; departments: Department[]; positions: Position[]; payItemTypes: PayItemType[];
-  setPayItemTypes: React.Dispatch<React.SetStateAction<PayItemType[]>>; reloadPayroll: () => Promise<void>;
+  setPayItemTypes: React.Dispatch<React.SetStateAction<PayItemType[]>>; reloadPayroll: () => Promise<void>; payrollReferenceReady: boolean;
 }) {
   // Combine the payroll snapshot with the live employee directory.  A staff member
   // added after this payroll period was first loaded must be available immediately.
@@ -1873,7 +1873,9 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       .filter(employee => employee.status === 'ACTIVE')
       .map(employee => databaseEmployeeToPayrollEmployee(employee, departments, positions))
       .filter(employee => employee.department === dept.department)
-      .forEach(employee => byCode.set(employee.id, employee))
+      .forEach(employee => {
+        if (!byCode.has(employee.id)) byCode.set(employee.id, employee)
+      })
     return Array.from(byCode.values())
   }, [databaseEmployees, departments, dept, positions])
   const [includedEmployeeIds, setIncludedEmployeeIds] = useState<string[]>(() => {
@@ -1927,6 +1929,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const [previousValues, setPreviousValues] = useState<Record<string, number>>({})
   const [noteOpen, setNoteOpen] = useState(false)
   const [changeLogLoading, setChangeLogLoading] = useState(false)
+  const [latestVersionAvailable, setLatestVersionAvailable] = useState<number | null>(null)
+  const [showLatestVersionModal, setShowLatestVersionModal] = useState(false)
   const loadedPropVersion = useRef(dept.editVersion ?? 0)
   const [focusRow, setFocusRow] = useState<string | null>(null)
   const [editing, setEditing] = useState(false)
@@ -1959,9 +1963,9 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       false
     ).slice(0, 8)
   }, [availableEmployees, inlineAddSearch])
-  const loadChangeLog = useCallback(async () => {
+  const loadChangeLog = useCallback(async (silent = false) => {
     if (!dept.databaseId) return
-    setChangeLogLoading(true)
+    if (!silent) setChangeLogLoading(true)
     try {
       const result = await getPayrollChangeNotes(dept.databaseId)
       setSavedNotes(result.notes)
@@ -1969,12 +1973,13 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
         `${value.employee_id}:${value.field_code}`,
         Number(value.amount),
       ])))
+      setLatestVersionAvailable(result.current_version > editVersion ? result.current_version : null)
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'โหลดประวัติการแก้ไขไม่สำเร็จ', 'error')
+      if (!silent) showToast(error instanceof Error ? error.message : 'โหลดประวัติการแก้ไขไม่สำเร็จ', 'error')
     } finally {
-      setChangeLogLoading(false)
+      if (!silent) setChangeLogLoading(false)
     }
-  }, [dept.databaseId, showToast])
+  }, [dept.databaseId, editVersion, showToast])
 
   useEffect(() => {
     const incomingVersion = dept.editVersion ?? 0
@@ -2006,6 +2011,16 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   useEffect(() => {
     void loadChangeLog()
   }, [loadChangeLog, dept.editVersion])
+
+  useEffect(() => {
+    if (!dept.databaseId) return
+    const timer = window.setInterval(() => {
+      void getPayrollBatchVersion(dept.databaseId!).then(version => {
+        setLatestVersionAvailable(version > editVersion ? version : null)
+      }).catch(() => undefined)
+    }, 20000)
+    return () => window.clearInterval(timer)
+  }, [dept.databaseId, editVersion])
 
   const updateInlineAddPosition = useCallback(() => {
     const rect = inlineAddRef.current?.getBoundingClientRect()
@@ -2219,6 +2234,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const hasPendingChanges = pendingChangeCount > 0
 
   const persistRows = async () => {
+    if (!payrollReferenceReady) throw new Error('ข้อมูลประเภทรายการรับ/หักยังโหลดไม่ครบ กรุณารีเฟรชก่อนบันทึก')
     if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
     const payload = includedEmployeeIds.map(employeeCode => {
       const row = rows[employeeCode]
@@ -2348,8 +2364,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     setSubmitting(true)
     try {
       if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
-      await persistRows()
-      await payrollBatchAction(dept.databaseId, 'submit')
+      const submittedVersion = await persistRows()
+      await payrollBatchAction(dept.databaseId, 'submit', submittedVersion)
       setPeriods(current => current.map(savedPeriod => savedPeriod.id !== period.id ? savedPeriod : {
         ...savedPeriod,
         depts: savedPeriod.depts.map(savedDept => savedDept.id === dept.id ? { ...savedDept, status: 'pending' } : savedDept),
@@ -2484,7 +2500,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   }
 
   if (historicBatch) {
-    return <HistoricPayrollView period={period} dept={historicBatch} onBack={() => setHistoricBatch(null)} />
+    return <HistoricPayrollView period={period} dept={historicBatch} payItemTypes={payItemTypes} onBack={() => setHistoricBatch(null)} />
   }
 
   return (
@@ -2515,6 +2531,15 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           {dept.revisionType ? <> · {dept.revisionType}</> : null}
           {dept.revisionReason ? <><br />เหตุผล: {dept.revisionReason}</> : null}
           {dept.revisionCreatedBy ? <> · สร้างโดย {dept.revisionCreatedBy}</> : null}
+        </div>
+      )}
+      {latestVersionAvailable !== null && (
+        <div style={{ background: '#FFF8E8', border: '1px solid #E9C96B', borderRadius: 'var(--radius-sm)', padding: '11px 14px', marginBottom: 16, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+          <span><strong>มีผู้ใช้อื่นบันทึกฉบับใหม่แล้ว</strong> ข้อมูลที่เปิดอยู่อาจไม่ใช่ฉบับล่าสุด</span>
+          <div className="flex gap-2">
+            <button className="btn btn-secondary" onClick={() => setNoteOpen(true)}>📒 ดูรายการแก้ไข</button>
+            <button className="btn btn-primary" onClick={() => setShowLatestVersionModal(true)}>ดูฉบับล่าสุด</button>
+          </div>
         </div>
       )}
 
@@ -2724,6 +2749,20 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
         document.body,
       )}
 
+      {showLatestVersionModal && (
+        <Modal title="พบข้อมูลฉบับใหม่" onClose={() => setShowLatestVersionModal(false)}>
+          <p style={{ marginTop: 0 }}>มีผู้ใช้อื่นบันทึกข้อมูลหลังจากที่คุณเปิดหน้านี้</p>
+          {hasPendingChanges && <div className="alert alert-warning">หากใช้ฉบับล่าสุด ข้อมูลที่คุณกำลังแก้แต่ยังไม่ได้บันทึกจะถูกยกเลิก</div>}
+          <div className="flex justify-end gap-2" style={{ marginTop: 18 }}>
+            <button className="btn btn-secondary" onClick={() => setShowLatestVersionModal(false)}>กลับไปตรวจสอบ</button>
+            <button className="btn btn-primary" onClick={() => {
+              setShowLatestVersionModal(false)
+              setLatestVersionAvailable(null)
+              void reloadPayroll().catch(() => showToast('โหลดฉบับล่าสุดไม่สำเร็จ', 'error'))
+            }}>ใช้ฉบับล่าสุด</button>
+          </div>
+        </Modal>
+      )}
       {pendingCellChange && (
         <Modal title="ระบุเหตุผลการเปลี่ยนแปลงยอด" onClose={cancelCellChange}>
           <div className="flex flex-col gap-4">
@@ -2970,9 +3009,9 @@ function DirectorApprovals({ periods, setPage, setActivePeriodId, setActiveDeptI
 
 // ─── Director Detail ──────────────────────────────────────────────────────────
 
-function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPayroll }: {
+function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPayroll, payItemTypes }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
-  setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void; reloadPayroll: () => Promise<void>;
+  setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void; reloadPayroll: () => Promise<void>; payItemTypes: PayItemType[];
 }) {
   const emps = useMemo(() => deptEmps(dept), [dept])
   const [showApproveModal, setShowApproveModal] = useState(false)
@@ -2996,10 +3035,11 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
     return emps.filter(employee => `${employee.firstName} ${employee.lastName}`.toLowerCase().includes(keyword))
   }, [emps, search])
 
-  const exportExcel = () => exportPayrollWorkbook({
+  const exportExcel = () => exportPayrollWorkbookWithCustomItems({
     period,
     department: dept.department,
     entries: visibleEmployees.map(employee => ({ employee, row: dept.rows[employee.id] ?? makeDefaultRow(employee) })),
+    payItemTypes,
   })
 
   const legacyExportExcel = () => {
@@ -3019,7 +3059,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
   }
 
   const printPayrollTable = () => {
-    if (!printPayrollTemplateExact({ period, department: dept.department, status: dept.status, entries: visibleEmployees.map(employee => ({ employee, row: dept.rows[employee.id] ?? makeDefaultRow(employee) })) })) {
+    if (!printPayrollWithCustomItems({ period, department: dept.department, entries: visibleEmployees.map(employee => ({ employee, row: dept.rows[employee.id] ?? makeDefaultRow(employee) })), payItemTypes })) {
       showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error')
     }
   }
@@ -3042,7 +3082,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
     setProcessingDecision(true)
     try {
       if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
-      await payrollBatchAction(dept.databaseId, 'approve')
+      await payrollBatchAction(dept.databaseId, 'approve', dept.editVersion ?? 0)
       setPeriods(current => current.map(savedPeriod => savedPeriod.id !== period.id ? savedPeriod : {
         ...savedPeriod,
         depts: savedPeriod.depts.map(savedDept => savedDept.id === dept.id ? { ...savedDept, status: 'approved' } : savedDept),
@@ -3064,7 +3104,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
     setProcessingDecision(true)
     try {
       if (!dept.databaseId) throw new Error('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล')
-      await payrollBatchAction(dept.databaseId, 'reject', rejectReason)
+      await payrollBatchAction(dept.databaseId, 'reject', dept.editVersion ?? 0, rejectReason)
       setPeriods(current => current.map(savedPeriod => savedPeriod.id !== period.id ? savedPeriod : {
         ...savedPeriod,
         depts: savedPeriod.depts.map(savedDept => savedDept.id === dept.id ? { ...savedDept, status: 'rejected', rejectionReason: rejectReason } : savedDept),
@@ -3110,7 +3150,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
   }
 
   if (historicBatch) {
-    return <HistoricPayrollView period={period} dept={historicBatch} onBack={() => setHistoricBatch(null)} />
+    return <HistoricPayrollView period={period} dept={historicBatch} payItemTypes={payItemTypes} onBack={() => setHistoricBatch(null)} />
   }
 
   return (
@@ -3320,23 +3360,58 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
   )
 }
 
-function HistoricPayrollView({ period, dept, onBack }: { period: PayrollPeriod; dept: DeptPayroll; onBack: () => void }) {
+function HistoricPayrollView({ period, dept, payItemTypes, onBack }: { period: PayrollPeriod; dept: DeptPayroll; payItemTypes: PayItemType[]; onBack: () => void }) {
   const employees = useMemo(() => deptEmps(dept), [dept])
   const totals = useMemo(() => deptTotals(dept), [dept])
   const entries = employees.map(employee => ({ employee, row: dept.rows[employee.id] ?? makeDefaultRow(employee) }))
   const print = () => {
-    if (!printPayrollTemplateExact({ period, department: dept.department, status: dept.status, entries })) window.alert('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up')
+    if (!printPayrollWithCustomItems({ period, department: dept.department, entries, payItemTypes })) window.alert('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up')
   }
   return <div className="anim">
     <button type="button" onClick={onBack} style={{ border: 0, background: 'transparent', color: '#4A3A78', cursor: 'pointer', fontSize: 14, fontWeight: 700, padding: '2px 0', display: 'inline-flex', alignItems: 'center', gap: 6, marginBottom: 14 }}><span style={{ fontSize: 20, lineHeight: 1 }}>←</span>กลับไปฉบับปัจจุบัน</button>
     <PageHeader title={`${dept.department} · ฉบับเดิม`} subtitle={`${periodLabel(period)} · ${dept.approvedAt ? `อนุมัติเมื่อ ${formatBuddhistDateTime(dept.approvedAt)}` : `สร้างเมื่อ ${formatBuddhistDateTime(dept.updatedAt)}`}`} breadcrumb={<Crumb items={[{ label: 'อนุมัติเงินเดือน' }, { label: 'ประวัติฉบับเงินเดือน' }]} />} actions={<StatusBadge s={dept.status} />} />
     <div style={{ background: '#F6F3FF', border: '1px solid #D9CBFF', borderRadius: 'var(--radius-sm)', padding: '12px 16px', marginBottom: 16, fontSize: 13, color: '#4D3A78' }}><strong>{(dept.revisionNumber ?? 0) === 0 ? 'รอบปกติ (ฉบับเดิม)' : `ฉบับแก้ไขเพิ่มเติม ครั้งที่ ${dept.revisionNumber}`}</strong><br />ข้อมูลฉบับนี้เป็นประวัติ เปิดดู พิมพ์ และส่งออกได้เท่านั้น ไม่สามารถแก้ไขได้</div>
-    <div className="card" style={{ padding: '12px 14px', marginBottom: 16 }}><div className="flex justify-between items-center gap-3 flex-wrap"><span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>👥 {employees.length} คน · ข้อมูล ณ เวลาของฉบับนี้</span><div className="flex gap-2"><button className="btn btn-secondary" onClick={print}>🖨️ พิมพ์ตาราง</button><button className="btn btn-secondary" onClick={() => exportPayrollWorkbook({ period, department: dept.department, entries })}>📥 ส่งออก Excel</button></div></div></div>
+    <div className="card" style={{ padding: '12px 14px', marginBottom: 16 }}><div className="flex justify-between items-center gap-3 flex-wrap"><span style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>👥 {employees.length} คน · ข้อมูล ณ เวลาของฉบับนี้</span><div className="flex gap-2"><button className="btn btn-secondary" onClick={print}>🖨️ พิมพ์ตาราง</button><button className="btn btn-secondary" onClick={() => exportPayrollWorkbookWithCustomItems({ period, department: dept.department, entries, payItemTypes })}>📥 ส่งออก Excel</button></div></div></div>
     <div className="card" style={{ padding: 0, overflow: 'auto', maxHeight: 'calc(100vh - 310px)' }}><table className="tbl payroll-detail-table" style={{ minWidth: 1200 }}><thead><tr><th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th><th colSpan={3} className="th-group th-group-income">รายการรับ</th><th colSpan={7} className="th-group th-group-deduct">รายการหัก</th><th className="th-group th-group-net">ยอดรับสุทธิ</th></tr><tr><th className="th-emp">#</th><th className="th-emp">รหัส</th><th className="th-emp">ชื่อ–นามสกุล</th><th className="th-emp">ตำแหน่ง</th><th className="th-emp" style={{ textAlign: 'right' }}>ฐานเงินเดือน</th><th className="th-income" style={{ textAlign: 'right' }}>เงินเพิ่ม</th><th className="th-income" style={{ textAlign: 'right' }}>เงินประจำตำแหน่ง</th><th className="th-income" style={{ textAlign: 'right' }}>รวมรายการรับ</th><th className="th-deduct" style={{ textAlign: 'right' }}>ชำระหนี้ KTB</th><th className="th-deduct" style={{ textAlign: 'right' }}>ภาษีหัก ณ ที่จ่าย</th><th className="th-deduct" style={{ textAlign: 'right' }}>ประกันสังคม</th><th className="th-deduct" style={{ textAlign: 'right' }}>ฌาปนกิจ</th><th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารกรุงไทย</th><th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารออมสิน</th><th className="th-deduct" style={{ textAlign: 'right' }}>รวมรายการหัก</th><th className="th-net" style={{ textAlign: 'right' }}>ยอดรับสุทธิ</th></tr></thead><tbody>{employees.map((employee, index) => { const row = dept.rows[employee.id] ?? makeDefaultRow(employee); return <tr key={employee.id}><td className="readonly" style={{ textAlign: 'center' }}>{index + 1}</td><td className="readonly">{employee.id}</td><td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{employee.title}{employee.firstName} {employee.lastName}</td><td className="readonly">{employee.position}</td><td className="num readonly">{thb(employee.baseSalary)}</td><td className="num readonly">{thb(row.extra)}</td><td className="num readonly">{thb(row.posAllowance)}</td><td className="num total" style={{ background: '#F0FDF4', color: '#15803D' }}>{thb(rowGross(employee, row))}</td><td className="num readonly">{thb(row.debtKTB)}</td><td className="num readonly">{thb(row.tax)}</td><td className="num readonly">{thb(row.social)}</td><td className="num readonly">{thb(row.funeral)}</td><td className="num readonly">{thb(row.ktb)}</td><td className="num readonly">{thb(row.gsb)}</td><td className="num total" style={{ background: '#FFF8F6', color: '#B91C1C' }}>{thb(rowDeduct(row))}</td><td className="num total" style={{ background: '#F5F3FF', color: 'var(--purple-600)' }}>{thb(rowNet(employee, row))}</td></tr> })}</tbody><tfoot><tr><td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td><td className="num">{thb(totals.totalBase)}</td><td className="num">{thb(totals.totalExtra)}</td><td className="num">{thb(totals.totalPos)}</td><td className="num" style={{ color: '#15803D' }}>{thb(totals.totalGross)}</td><td className="num">{thb(totals.totalDebtKTB)}</td><td className="num">{thb(totals.totalTax)}</td><td className="num">{thb(totals.totalSocial)}</td><td className="num">{thb(totals.totalFuneral)}</td><td className="num">{thb(totals.totalKTB)}</td><td className="num">{thb(totals.totalGSB)}</td><td className="num" style={{ color: '#B91C1C' }}>{thb(totals.totalDeduct)}</td><td className="num" style={{ color: 'var(--purple-600)' }}>{thb(totals.totalNet)}</td></tr></tfoot></table></div>
   </div>
 }
 
 // ─── Employees ────────────────────────────────────────────────────────────────
+
+const exportEmployeesExcel = async (employees: DatabaseEmployee[], departmentById: Map<number, string>, positionById: Map<number, string>, statusLabel: Record<DatabaseEmployee['status'], string>) => {
+  const ExcelJS = (await import('exceljs')).default
+  const workbook = new ExcelJS.Workbook()
+  workbook.creator = 'PayFlow'
+  const sheet = workbook.addWorksheet('ข้อมูลพนักงาน')
+  const headers = ['ลำดับ', 'ชื่อ-นามสกุล', 'ตำแหน่ง', 'ฝ่าย', 'หน่วยงาน', 'ฐานเงินเดือน', 'อีเมล', 'สถานะ']
+  const border = { top: { style: 'thin' as const }, left: { style: 'thin' as const }, bottom: { style: 'thin' as const }, right: { style: 'thin' as const } }
+  const headerFill = { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FFE5E7EB' } }
+  sheet.pageSetup = { paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: .3, right: .3, top: .4, bottom: .4, header: .2, footer: .2 } }
+  sheet.columns = [{ width: 8 }, { width: 30 }, { width: 24 }, { width: 24 }, { width: 25 }, { width: 16 }, { width: 30 }, { width: 16 }]
+  sheet.mergeCells('A1:H1'); sheet.getCell('A1').value = 'เทศบาลเมืองตาคลี'; sheet.getCell('A1').font = { name: 'Tahoma', size: 15, bold: true }; sheet.getCell('A1').alignment = { horizontal: 'center' }
+  sheet.mergeCells('A2:H2'); sheet.getCell('A2').value = 'รายงานข้อมูลพนักงาน'; sheet.getCell('A2').font = { name: 'Tahoma', size: 12, bold: true }; sheet.getCell('A2').alignment = { horizontal: 'center' }
+  sheet.mergeCells('A3:H3'); sheet.getCell('A3').value = `วันที่พิมพ์ ${formatBuddhistDate(new Date(), true)} · จำนวน ${employees.length} ราย`; sheet.getCell('A3').font = { name: 'Tahoma', size: 9 }; sheet.getCell('A3').alignment = { horizontal: 'center' }
+  const headerRow = sheet.addRow(headers)
+  headerRow.height = 24
+  headerRow.eachCell(cell => { cell.font = { name: 'Tahoma', size: 10, bold: true }; cell.fill = headerFill; cell.border = border; cell.alignment = { horizontal: 'center', vertical: 'middle' } })
+  employees.forEach((employee, index) => {
+    const row = sheet.addRow([index + 1, `${employee.prefix ?? ''}${employee.first_name} ${employee.last_name}`, employee.position_id ? positionById.get(employee.position_id) ?? '–' : '–', employee.department_id ? departmentById.get(employee.department_id) ?? '–' : '–', employee.organization_name ?? '–', Number(employee.base_salary), employee.email ?? '–', statusLabel[employee.status]])
+    row.height = 30
+    row.eachCell({ includeEmpty: true }, (cell, column) => { cell.font = { name: 'Tahoma', size: 9 }; cell.border = border; cell.alignment = { horizontal: column === 1 ? 'center' : column === 6 ? 'right' : 'left', vertical: 'middle', wrapText: column !== 1 && column !== 6 }; if (column === 6) cell.numFmt = '#,##0.00' })
+  })
+  const raw = await workbook.xlsx.writeBuffer()
+  const url = URL.createObjectURL(new Blob([raw], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }))
+  const anchor = document.createElement('a'); anchor.href = url; anchor.download = `รายงานข้อมูลพนักงาน_${new Date().toISOString().slice(0, 10)}.xlsx`; anchor.click(); URL.revokeObjectURL(url)
+}
+
+const printEmployeesReport = (employees: DatabaseEmployee[], departmentById: Map<number, string>, positionById: Map<number, string>, statusLabel: Record<DatabaseEmployee['status'], string>) => {
+  const printWindow = window.open('', '_blank', 'noopener,noreferrer')
+  if (!printWindow) return false
+  const rows = employees.map((employee, index) => `<tr><td class="center">${index + 1}</td><td>${escapeMarkup(`${employee.prefix ?? ''}${employee.first_name} ${employee.last_name}`)}</td><td>${escapeMarkup(employee.position_id ? positionById.get(employee.position_id) ?? '–' : '–')}</td><td>${escapeMarkup(employee.department_id ? departmentById.get(employee.department_id) ?? '–' : '–')}</td><td>${escapeMarkup(employee.organization_name ?? '–')}</td><td class="num">${thb(Number(employee.base_salary))}</td><td>${escapeMarkup(employee.email ?? '–')}</td><td class="center">${escapeMarkup(statusLabel[employee.status])}</td></tr>`).join('') || '<tr><td colspan="8" class="empty">ไม่พบข้อมูลพนักงานตามเงื่อนไขที่เลือก</td></tr>'
+  printWindow.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานข้อมูลพนักงาน</title><style>@page{size:A4 landscape;margin:10mm 8mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;font-family:Tahoma,sans-serif;color:#111;font-size:7.4pt}.head{text-align:center;margin-bottom:5mm}.head h1,.head h2,.head p{margin:0}.head h1{font-size:15pt}.head h2{font-size:12pt;margin-top:1mm}.head p{font-size:8pt;margin-top:2mm}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:.45pt solid #555;padding:3px;vertical-align:middle;line-height:1.2;white-space:normal;overflow-wrap:anywhere}th{background:#e5e7eb;font-size:7.4pt;text-align:center}td.center{text-align:center;white-space:nowrap}td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}.empty{text-align:center;padding:14px;color:#64748b}.c-no{width:4%}.c-name{width:19%}.c-pos{width:15%}.c-dept{width:14%}.c-org{width:15%}.c-salary{width:11%}.c-email{width:15%}.c-status{width:8%}</style></head><body><div class="head"><h1>เทศบาลเมืองตาคลี</h1><h2>รายงานข้อมูลพนักงาน</h2><p>วันที่พิมพ์ ${escapeMarkup(formatBuddhistDate(new Date(), true))} · จำนวน ${employees.length} ราย</p></div><table><colgroup><col class="c-no"><col class="c-name"><col class="c-pos"><col class="c-dept"><col class="c-org"><col class="c-salary"><col class="c-email"><col class="c-status"></colgroup><thead><tr><th>ลำดับ</th><th>ชื่อ-นามสกุล</th><th>ตำแหน่ง</th><th>ฝ่าย</th><th>หน่วยงาน</th><th>ฐานเงินเดือน</th><th>อีเมล</th><th>สถานะ</th></tr></thead><tbody>${rows}</tbody></table><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.close())})<\/script></body></html>`)
+  printWindow.document.close()
+  return true
+}
 
 function EmployeesPage({ employees, departments, positions, loading, error, role, setPage, setEditEmpId, onChanged, showToast }: {
   employees: DatabaseEmployee[]
@@ -3356,6 +3431,7 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
   const [employeeToDeactivate, setEmployeeToDeactivate] = useState<DatabaseEmployee | null>(null)
   const [deactivating, setDeactivating] = useState(false)
   const [deactivateError, setDeactivateError] = useState('')
+  const [exporting, setExporting] = useState(false)
 
   const departmentById = useMemo(
     () => new Map(departments.map(department => [department.id, department.name])),
@@ -3388,6 +3464,14 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
       ? employee.employee_type_other || 'อื่นๆ'
       : EMPLOYEE_TYPE_OPTIONS.find(option => option.value === employee.employee_type)?.label || employee.employee_type
 
+  const handleExportExcel = async () => {
+    if (exporting || loading || error) return
+    setExporting(true)
+    try { await exportEmployeesExcel(filtered, departmentById, positionById, statusLabel) }
+    catch { showToast('ส่งออก Excel ไม่สำเร็จ', 'error') }
+    finally { setExporting(false) }
+  }
+
   const handleDeactivate = async () => {
     if (!employeeToDeactivate) return
     try {
@@ -3411,7 +3495,7 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
       <PageHeader
         title="พนักงาน"
         subtitle={`พนักงานที่ใช้งานอยู่ ${activeCount} คน จากทั้งหมด ${employees.length} คน`}
-        actions={<button className="btn btn-primary" onClick={() => { setEditEmpId(null); setPage('employee-form') }}>+ เพิ่มพนักงาน</button>}
+        actions={<div className="flex gap-2 flex-wrap"><button className="btn btn-secondary" disabled={loading || Boolean(error)} onClick={() => { if (!printEmployeesReport(filtered, departmentById, positionById, statusLabel)) showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error') }}>🖨️ พิมพ์</button><button className="btn btn-secondary" aria-busy={exporting} disabled={loading || Boolean(error) || exporting} onClick={() => void handleExportExcel()}><BusyLabel busy={exporting} label="กำลังส่งออก…">📥 ส่งออก Excel</BusyLabel></button><button className="btn btn-primary" onClick={() => { setEditEmpId(null); setPage('employee-form') }}>+ เพิ่มพนักงาน</button></div>}
       />
       <div className="card" style={{ padding: '14px 18px', marginBottom: 14 }}>
         <div className="flex items-center gap-3">
@@ -4082,6 +4166,7 @@ function AnnualTaxReportPage({ role, periods, departments, userDepartment, showT
   const [rows, setRows] = useState<AnnualTaxRow[]>([])
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
+  const [exporting, setExporting] = useState(false)
   const scopedDepartmentId = role === 'hr' ? departments.find(department => department.name === userDepartment)?.id : undefined
   const selectedDepartmentId = scopedDepartmentId ?? (departmentValue ? Number(departmentValue) : undefined)
   const selectedDepartmentLabel = role === 'hr' ? userDepartment ?? 'ฝ่ายของฉัน' : departments.find(department => department.id === selectedDepartmentId)?.name ?? 'ทุกฝ่าย'
@@ -4097,10 +4182,10 @@ function AnnualTaxReportPage({ role, periods, departments, userDepartment, showT
 
   const monthlyTotals = Array.from({ length: 12 }, (_, month) => rows.reduce((sum, row) => sum + (row.months[month] || 0), 0))
   const total = monthlyTotals.reduce((sum, amount) => sum + amount, 0)
-  const exportExcel = async () => { try { await downloadAnnualTaxExcel(yearBE, selectedDepartmentLabel, reportLabel, rows) } catch { showToast('ส่งออก Excel ไม่สำเร็จ', 'error') } }
+  const exportExcel = async () => { if (exporting || loading || loadError) return; setExporting(true); try { await downloadAnnualTaxExcel(yearBE, selectedDepartmentLabel, reportLabel, rows) } catch { showToast('ส่งออก Excel ไม่สำเร็จ', 'error') } finally { setExporting(false) } }
 
   return <div className="anim">
-    <PageHeader title="รายงานประจำปี" subtitle="สรุปรายการนำส่งภาษีหรือรายได้รวมจากรอบเงินเดือนที่อนุมัติแล้ว" actions={<div className="flex gap-2"><button className="btn btn-secondary" onClick={() => { if (!printAnnualTaxReport(yearBE, selectedDepartmentLabel, reportLabel, rows)) showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error') }}>🖨️ พิมพ์รายงาน</button><button className="btn btn-primary" onClick={() => void exportExcel()}>📥 ส่งออก Excel</button></div>} />
+    <PageHeader title="รายงานประจำปี" subtitle="สรุปรายการนำส่งภาษีหรือรายได้รวมจากรอบเงินเดือนที่อนุมัติแล้ว" actions={<div className="flex gap-2"><button className="btn btn-secondary" disabled={loading || Boolean(loadError)} onClick={() => { if (!printAnnualTaxReport(yearBE, selectedDepartmentLabel, reportLabel, rows)) showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error') }}>🖨️ พิมพ์รายงาน</button><button className="btn btn-primary" aria-busy={exporting} disabled={loading || Boolean(loadError) || exporting} onClick={() => void exportExcel()}><BusyLabel busy={exporting} label="กำลังส่งออก…">📥 ส่งออก Excel</BusyLabel></button></div>} />
     <div className="card" style={{ padding: '14px 18px', marginBottom: 16 }}><div className="flex items-end gap-3 flex-wrap"><FormField label="ประเภทรายงาน"><AppSelect className="inp" style={{ width: 220 }} value={reportType} onChange={event => setReportType(event.target.value as 'tax' | 'income')}><option value="tax">รายการนำส่งภาษี</option><option value="income">รายได้รวมทั้งปี</option></AppSelect></FormField><FormField label="ปี (พ.ศ.)"><AppSelect className="inp" style={{ width: 180 }} value={String(yearBE)} onChange={event => setYearBE(Number(event.target.value))}>{(reportYears.length ? reportYears : [yearBE]).map(year => <option key={year} value={year}>{year}</option>)}</AppSelect></FormField><FormField label="หน่วยงาน"><AppSelect className="inp" style={{ width: 260 }} value={role === 'hr' ? String(scopedDepartmentId ?? '') : departmentValue} onChange={event => setDepartmentValue(event.target.value)} disabled={role === 'hr'}><option value="">ทุกฝ่าย</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField><span style={{ fontSize: 12.5, color: 'var(--text-secondary)', paddingBottom: 10 }}>แสดงเฉพาะรอบเงินเดือนที่อนุมัติแล้ว</span></div></div>
     <div className="card" style={{ padding: 0, overflowX: 'auto' }}><div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(0,0,0,.07)' }}><div><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 16 }}>{reportLabel}</div><div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>ปี พ.ศ. {yearBE} · {selectedDepartmentLabel}</div></div><div style={{ fontWeight: 700, color: 'var(--purple-600)' }}>รวม {thb(total)} บาท</div></div><table className="tbl" style={{ minWidth: 1480 }}><thead><tr><th rowSpan={2} style={{ width: 52 }}>ที่</th><th rowSpan={2} style={{ minWidth: 190 }}>ชื่อ-นามสกุล</th><th rowSpan={2} style={{ minWidth: 145 }}>หน่วยงาน</th><th rowSpan={2} style={{ minWidth: 190 }}>ตำแหน่ง</th><th colSpan={12} style={{ textAlign: 'center' }}>{reportLabel}</th><th rowSpan={2} style={{ minWidth: 115, textAlign: 'right' }}>รวม</th></tr><tr>{TAX_MONTH_LABELS.map(label => <th key={label} style={{ minWidth: 77, textAlign: 'right' }}>{label}</th>)}</tr></thead><tbody>{loading ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>กำลังโหลดรายงาน…</td></tr> : loadError ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: '#B91C1C' }}>{loadError}</td></tr> : rows.length === 0 ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>ยังไม่มีข้อมูล{reportLabel}จากรอบเงินเดือนที่อนุมัติแล้ว</td></tr> : rows.map((row, index) => <tr key={`${row.employee_id}-${row.department_name}`}><td style={{ textAlign: 'center' }}>{index + 1}</td><td>{row.full_name}</td><td>{row.department_name}</td><td>{row.position_name}</td>{row.months.map((amount, month) => <td key={month} style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{amount ? thb(amount) : '–'}</td>)}<td style={{ textAlign: 'right', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{thb(row.total)}</td></tr>)}</tbody><tfoot>{!loading && !loadError && <tr><td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>{monthlyTotals.map((amount, month) => <td key={month} style={{ textAlign: 'right', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{thb(amount)}</td>)}<td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--purple-600)', fontVariantNumeric: 'tabular-nums' }}>{thb(total)}</td></tr>}</tfoot></table></div>
   </div>
@@ -4507,6 +4592,7 @@ export default function App() {
   const [employeeLoading, setEmployeeLoading] = useState(true)
   const [employeeError, setEmployeeError] = useState('')
   const [payrollError, setPayrollError] = useState('')
+  const [payrollReferenceReady, setPayrollReferenceReady] = useState(false)
   const [loggedIn, setLoggedIn] = useState(false)
   const [role, setRole] = useState<Role>('hr')
   const [userName, setUserName] = useState('')
@@ -4594,20 +4680,30 @@ export default function App() {
         setEmployeeError('')
         // One authenticated request avoids duplicate token checks and a second
         // browser round-trip on every login or full refresh.
-        const { employees: employeeData, departments: departmentData, positions: positionData, payroll_periods: payrollData, pay_item_types: itemTypeData, organizations: organizationData } = await getAppData()
+        const { employees: employeeData, departments: departmentData, positions: positionData, payroll_periods: payrollData, pay_item_types: itemTypeData, organizations: organizationData, warnings } = await getAppData()
         setDatabaseEmployees(employeeData)
         setDepartments(departmentData)
         setPositions(positionData)
-        setPayItemTypes(itemTypeData)
-        setOrganizations(organizationData)
-        setEmployeeLoading(false)
+        if (!warnings?.pay_item_types) setPayItemTypes(itemTypeData)
+        setPayrollReferenceReady(!warnings?.pay_item_types)
+        if (!warnings?.organizations) setOrganizations(organizationData)
+        if (warnings?.pay_item_types || warnings?.organizations) {
+          setEmployeeError('ข้อมูลประกอบบางส่วนโหลดไม่สำเร็จ ระบบเก็บข้อมูลเดิมไว้และจะไม่แสดงเป็นรายการว่าง กรุณากดรีเฟรชอีกครั้ง')
+        }
 
-        const mappedPeriods = mapPayrollPeriods(payrollData, employeeData, departmentData, positionData)
-        setPeriods(mappedPeriods)
-        setPayrollError('')
-        setActivePeriodId(current => current && mappedPeriods.some(period => period.id === current) ? current : mappedPeriods[0]?.id ?? '')
-        setActiveDeptId(current => current && mappedPeriods.some(period => period.depts.some(department => department.id === current)) ? current : mappedPeriods[0]?.depts[0]?.id ?? '')
+        if (warnings?.payroll_periods) {
+          // Preserve the last known payroll state. Replacing it with [] would
+          // make a temporary API failure look like the database was erased.
+          setPayrollError('ไม่สามารถโหลดข้อมูลรอบเงินเดือนได้ ระบบยังคงแสดงข้อมูลเดิม กรุณากดรีเฟรชอีกครั้ง')
+        } else {
+          const mappedPeriods = mapPayrollPeriods(payrollData, employeeData, departmentData, positionData)
+          setPeriods(mappedPeriods)
+          setPayrollError('')
+          setActivePeriodId(current => current && mappedPeriods.some(period => period.id === current) ? current : mappedPeriods[0]?.id ?? '')
+          setActiveDeptId(current => current && mappedPeriods.some(period => period.depts.some(department => department.id === current)) ? current : mappedPeriods[0]?.depts[0]?.id ?? '')
+        }
       } catch (loadError) {
+        setPayrollReferenceReady(false)
         setEmployeeError(loadError instanceof Error ? loadError.message : 'เกิดข้อผิดพลาดในการโหลดข้อมูล')
       } finally {
         setEmployeeLoading(false)
@@ -4713,13 +4809,13 @@ export default function App() {
           )}
           {(page === 'dept-table' || (page === 'period-detail' && role === 'hr')) && activePeriod && activeDept && (
             <DeptPayrollTable period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast}
-              databaseEmployees={visibleEmployees} departments={departments} positions={positions} payItemTypes={payItemTypes} setPayItemTypes={setPayItemTypes} reloadPayroll={loadEmployeeData} />
+              databaseEmployees={visibleEmployees} departments={departments} positions={positions} payItemTypes={payItemTypes} setPayItemTypes={setPayItemTypes} reloadPayroll={loadEmployeeData} payrollReferenceReady={payrollReferenceReady} />
           )}
           {page === 'director-approvals' && (
             <DirectorApprovals periods={visiblePeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
           )}
           {page === 'director-detail' && activePeriod && activeDept && (
-            <DirectorDetail period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} reloadPayroll={loadEmployeeData} />
+            <DirectorDetail period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} reloadPayroll={loadEmployeeData} payItemTypes={payItemTypes} />
           )}
           {page === 'employees' && (
             <EmployeesPage

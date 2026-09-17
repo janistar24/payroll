@@ -99,6 +99,7 @@ export type PayrollPreviousValue = {
 export type PayrollChangeLog = {
   notes: PayrollChangeNote[]
   previous_values: PayrollPreviousValue[]
+  current_version: number
 }
 
 export async function savePayrollBatchItems(
@@ -137,6 +138,12 @@ export async function getPayrollChangeNotes(
   return (await response.json()).data as PayrollChangeLog
 }
 
+export async function getPayrollBatchVersion(batchId: number): Promise<number> {
+  const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/version`, { headers: authorizationHeaders() })
+  if (!response.ok) return parseError(response, `ตรวจสอบฉบับล่าสุดไม่สำเร็จ: ${response.status}`)
+  return Number((await response.json()).data.edit_version)
+}
+
 export async function createPayrollRevision(batchId: number, revision_type: string, reason: string): Promise<{ batch_id: number }> {
   const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/revisions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ revision_type, reason }) })
   if (!response.ok) return parseError(response, `สร้างฉบับแก้ไขไม่สำเร็จ: ${response.status}`)
@@ -149,8 +156,8 @@ export async function getPayrollBatchHistory(batchId: number): Promise<PayrollBa
   return (await response.json()).data as PayrollBatchRecord[]
 }
 
-export async function payrollBatchAction(batchId: number, action: 'submit' | 'approve' | 'reject', reject_reason?: string): Promise<void> {
-  const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ action, reject_reason }) })
+export async function payrollBatchAction(batchId: number, action: 'submit' | 'approve' | 'reject', expected_version: number, reject_reason?: string): Promise<void> {
+  const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ action, reject_reason, expected_version }) })
   if (!response.ok) return parseError(response, `เปลี่ยนสถานะเงินเดือนไม่สำเร็จ: ${response.status}`)
 }
 

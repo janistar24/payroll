@@ -58,7 +58,7 @@ class Payroll_periods:
                    item.department_id, item.employee_id, employee.employee_code,
                    employee.prefix, employee.first_name, employee.last_name,
                    employee.position_id, position.name AS position_name,
-                   employee.organization_name,
+                   organization.name AS organization_name,
                    item.base_salary, item.total_earnings, item.total_deductions,
                    item.net_pay, item.created_at, line.pay_item_type_id,
                    item_type.code AS pay_item_code, item_type.name AS pay_item_name,
@@ -68,6 +68,7 @@ class Payroll_periods:
             JOIN public.payroll_department_batches batch ON batch.id = item.department_batch_id
             JOIN public.employees employee ON employee.id = item.employee_id
             LEFT JOIN public.positions position ON position.id = employee.position_id
+            LEFT JOIN public.organizations organization ON organization.id = employee.organization_id
             LEFT JOIN public.payroll_item_lines line ON line.payroll_item_id = item.id
             LEFT JOIN public.pay_item_types item_type ON item_type.id = line.pay_item_type_id
             LEFT JOIN public.payslip_email_deliveries delivery ON delivery.payroll_item_id = item.id
@@ -164,13 +165,16 @@ class Payroll_periods:
         item_query = """
             SELECT item.id, item.department_batch_id, item.employee_id, employee.employee_code,
                    employee.prefix, employee.first_name, employee.last_name,
-                   position.name AS position_name, employee.organization_name,
+                   position.name AS position_name, organization.name AS organization_name,
                    item.base_salary,
-                   line.pay_item_type_id, item_type.code AS pay_item_code, line.amount
+                   line.pay_item_type_id, item_type.code AS pay_item_code,
+                   item_type.name AS pay_item_name, item_type.category AS pay_item_category,
+                   line.amount
             FROM public.payroll_items item
             JOIN public.payroll_department_batches batch ON batch.id = item.department_batch_id
             JOIN public.employees employee ON employee.id = item.employee_id
             LEFT JOIN public.positions position ON position.id = employee.position_id
+            LEFT JOIN public.organizations organization ON organization.id = employee.organization_id
             LEFT JOIN public.payroll_item_lines line ON line.payroll_item_id = item.id
             LEFT JOIN public.pay_item_types item_type ON item_type.id = line.pay_item_type_id
             WHERE batch.payroll_period_id = (SELECT payroll_period_id FROM public.payroll_department_batches WHERE id = %s)
@@ -186,7 +190,7 @@ class Payroll_periods:
             for row in batch_rows
         }
         items = {}
-        line_keys = {"pay_item_type_id", "pay_item_code", "amount"}
+        line_keys = {"pay_item_type_id", "pay_item_code", "pay_item_name", "pay_item_category", "amount"}
         for row in item_rows:
             record = dict(zip(item_columns, row))
             item = items.get(record["id"])
@@ -196,7 +200,12 @@ class Payroll_periods:
                 items[item["id"]] = item
                 batches[item["department_batch_id"]]["payroll_items"].append(item)
             if record["pay_item_type_id"] is not None:
-                item["lines"].append({"code": record["pay_item_code"], "amount": record["amount"]})
+                item["lines"].append({
+                    "code": record["pay_item_code"],
+                    "name": record["pay_item_name"],
+                    "category": record["pay_item_category"],
+                    "amount": record["amount"],
+                })
         return list(batches.values())
 
     def read(self, payroll_period_id):

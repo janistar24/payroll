@@ -23,6 +23,7 @@ from payroll_items import PayrollItems
 from payroll_department_batches import PayrollDepartmentBatches
 from pay_item_types import PayItemTypes
 from payroll_workflow import PayrollWorkflow, StalePayrollVersionError
+from schema_checks import validate_required_schema
 from email_service import PayslipEmailService
 from auth import auth_service, get_current_user
 from audit import AuditLogger
@@ -81,10 +82,13 @@ def warm_database_connections():
     """Move connection setup out of the first login request."""
     try:
         db.warm_pool()
+        validate_required_schema(db)
     except Exception:
         # Keep local development bootable when the database is temporarily
         # offline; healthcheck and the request handlers still report the error.
-        logging.warning("Database pool warm-up was not ready at startup", exc_info=True)
+        logging.warning("Database pool warm-up or schema check was not ready at startup", exc_info=True)
+        if environment == "production":
+            raise
 
 
 @app.on_event("shutdown")
@@ -221,12 +225,25 @@ def get_app_data(user=Depends(get_current_user)):
             payroll_future = executor.submit(payroll_periods_service.dump, department_id)
             pay_item_types_future = executor.submit(pay_item_types_service.dump)
             organizations_future = executor.submit(organizations_service.dump)
+            # Employee directory data is required for the application shell.
+            # Optional payroll-related reads are isolated below so one broken
+            # report query cannot make the Employees page fail with the same 500.
             employees = employees_future.result()
             departments = departments_future.result()
             positions = positions_future.result()
-            payroll_periods = payroll_future.result()
-            pay_item_types = pay_item_types_future.result()
-            organizations = organizations_future.result()
+            warnings = {}
+
+            def optional_result(name, future):
+                try:
+                    return future.result()
+                except Exception as optional_error:
+                    logging.exception("Unable to load optional app-data section: %s", name)
+                    warnings[name] = str(optional_error)
+                    return []
+
+            payroll_periods = optional_result("payroll_periods", payroll_future)
+            pay_item_types = optional_result("pay_item_types", pay_item_types_future)
+            organizations = optional_result("organizations", organizations_future)
         return {
             "success": True,
             "data": {
@@ -236,6 +253,7 @@ def get_app_data(user=Depends(get_current_user)):
                 "payroll_periods": payroll_periods,
                 "pay_item_types": pay_item_types,
                 "organizations": organizations,
+                "warnings": warnings,
             },
         }
     except HTTPException:
@@ -393,6 +411,10 @@ class AccessRequestSubmit(BaseModel):
     def validate_required_invite_employee_data(self):
         if self.employee.birth_date is None:
             raise ValueError("กรุณากรอกวันเดือนปีเกิดให้ครบถ้วน")
+        if self.employee.department_id is None:
+            raise ValueError("กรุณาเลือกฝ่าย")
+        if not self.employee.first_name.strip() or not self.employee.last_name.strip():
+            raise ValueError("กรุณากรอกชื่อและนามสกุล")
         return self
 
 
@@ -448,7 +470,7 @@ class PayrollChangeNoteSave(BaseModel):
 class PayrollBatchSave(BaseModel):
     rows: list[PayrollRowSave]
     change_notes: list[PayrollChangeNoteSave] = Field(default_factory=list)
-    expected_version: int | None = Field(default=None, ge=0)
+    expected_version: int = Field(ge=0)
 
 
 class PayItemTypeCreate(BaseModel):
@@ -466,6 +488,7 @@ class PayItemTypeCreate(BaseModel):
 class PayrollBatchAction(BaseModel):
     action: str
     reject_reason: str | None = Field(default=None, max_length=500)
+    expected_version: int = Field(ge=0)
 
     @model_validator(mode="after")
     def validate_rejection_reason(self):
@@ -664,13 +687,11 @@ def get_invite(token: str):
 @app.post("/api/invites/{token}/submit", status_code=201)
 def submit_access_request(token: str, request: AccessRequestSubmit):
     try:
-        # An applicant can type a new position. Positions.create normalizes the
-        # name and returns an existing row when it already exists, avoiding duplicates.
-        if request.position_name and request.position_name.strip():
-            request.employee.position_id = positions_service.create(request.position_name)["id"]
-        if request.organization_name and request.organization_name.strip():
-            request.employee.organization_id = organizations_service.create(request.organization_name)["id"]
-        auth_service.submit_access_request(token, request.username, request.password, request.employee.model_dump(mode="json"))
+        auth_service.submit_access_request(
+            token, request.username, request.password,
+            request.employee.model_dump(mode="json"),
+            request.position_name, request.organization_name,
+        )
         return {"success": True, "message": "ส่งคำขอเรียบร้อยแล้ว"}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -703,14 +724,10 @@ def approve_access_request(request_id: int, request: AccessRequestApprove, user=
     if item is None or item["status"] != "PENDING":
         raise HTTPException(status_code=404, detail="ไม่พบคำขอที่รออนุมัติ")
     try:
-        employee = EmployeeSave(**item["employee_data"])
-        # Validate the username before adding an employee.  A failed account
-        # creation must never leave duplicate employee data behind.
-        auth_service.ensure_username_available(item["username"])
-        employee_id = auth_service.find_unlinked_employee(employee.employee_code, employee.national_id)
-        if employee_id is None:
-            employee_id = employees_service.create(employee)
-        auth_service.approve_access_request(request_id, employee_id, user["id"], request.actual_role)
+        # Re-validate stored form data before entering the transaction. The
+        # service then creates employee + account + approval in one commit.
+        EmployeeSave(**item["employee_data"])
+        employee_id = auth_service.approve_access_request_with_employee(request_id, user["id"], request.actual_role)
         audit_logger.log(user["id"], "APPROVE_ACCESS_REQUEST", "access_request", request_id, {"employee_id": employee_id, "role": request.actual_role})
         return {"success": True}
     except ValueError as error:
@@ -1072,7 +1089,9 @@ def create_payroll_revision(batch_id: int, request: PayrollRevisionCreate, user=
 
 @app.get("/api/payroll_department_batches/{batch_id}/history")
 def get_payroll_batch_history(batch_id: int, user=Depends(get_current_user)):
-    _ensure_batch_access(batch_id, user, allow_approval=True)
+    # HR users may inspect previous versions of their own department. Global
+    # roles keep access to every department through the normal scope helper.
+    _ensure_batch_access(batch_id, user)
     try:
         return {"success": True, "data": payroll_periods_service.batch_history(batch_id)}
     except Exception:
@@ -1159,8 +1178,15 @@ def get_payroll_change_notes(batch_id: int, user=Depends(get_current_user)):
         "data": {
             "notes": [dict(zip(note_columns, row)) for row in note_data],
             "previous_values": [dict(zip(previous_columns, row)) for row in previous_data],
+            "current_version": payroll_workflow_service.current_batch_version(batch["id"]),
         },
     }
+
+
+@app.get("/api/payroll_department_batches/{batch_id}/version")
+def get_payroll_batch_version(batch_id: int, user=Depends(get_current_user)):
+    batch = _ensure_batch_access(batch_id, user)
+    return {"success": True, "data": {"edit_version": payroll_workflow_service.current_batch_version(batch["id"])}}
 
 
 @app.post("/api/payroll_department_batches/{batch_id}/action")
@@ -1170,12 +1196,15 @@ def change_payroll_batch_status(batch_id: int, request: PayrollBatchAction, user
         if request.action in {"approve", "reject"} and batch.get("submitted_by_id") == user["id"]:
             raise HTTPException(status_code=403, detail="ไม่สามารถอนุมัติหรือส่งกลับแก้ไขรายการที่ตนเองส่งอนุมัติได้")
         payroll_workflow_service.change_batch_status(
-            batch_id, request.action, user["id"], request.reject_reason.strip() if request.reject_reason else None
+            batch_id, request.action, user["id"], request.reject_reason.strip() if request.reject_reason else None,
+            request.expected_version,
         )
         audit_logger.log(user["id"], request.action.upper(), "payroll_batch", batch_id)
         return {"success": True, "data": {"department_id": batch["department_id"]}}
     except HTTPException:
         raise
+    except StalePayrollVersionError as error:
+        raise HTTPException(status_code=409, detail=str(error))
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:

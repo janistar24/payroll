@@ -920,6 +920,35 @@ def get_payroll_periods(user=Depends(get_current_user)):
         )
 
 
+@app.get("/api/payroll-sync-version")
+def get_payroll_sync_version(user=Depends(get_current_user)):
+    """Return a tiny change token so open browsers can refresh only when needed."""
+    try:
+        department_id = _department_scope(user)
+        rows, _ = db.fetch(
+            """SELECT COALESCE(
+                       MD5(STRING_AGG(
+                           CONCAT_WS(':', batch.id, batch.status, batch.edit_version,
+                               batch.is_current, batch.submitted_at, batch.approved_at,
+                               batch.reject_reason),
+                           '|' ORDER BY batch.id
+                       )),
+                       MD5('')
+                   ) AS version
+               FROM public.payroll_department_batches batch
+               WHERE (%s::INTEGER IS NULL OR batch.department_id = %s::INTEGER)""",
+            (department_id, department_id),
+        )
+        return {"success": True, "data": {"version": rows[0][0]}}
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail={"message": "ไม่สามารถตรวจสอบสถานะรอบเงินเดือนได้", "error": str(error)},
+        )
+
+
 @app.get("/api/reports/annual-tax")
 def get_annual_tax_report(year: int, department_id: int | None = None, report_type: str = "tax", user=Depends(get_current_user)):
     """Read annual tax or income data directly from approved payroll snapshots.

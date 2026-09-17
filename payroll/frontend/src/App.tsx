@@ -19,7 +19,7 @@ import { getAppData } from './api/bootstrap'
 import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
 import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, revealAccessRequestPassword, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
-import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
+import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
 import { createPayItemType, type PayItemType } from './api/payItemTypes'
 import { createOrganization, type Organization } from './api/organizations'
 import { getAnnualTaxReport, type AnnualTaxRow } from './api/annualTax'
@@ -4626,6 +4626,8 @@ export default function App() {
   const [editEmpId, setEditEmpId] = useState<number | null>(null)
   const [toast, setToast] = useState<{ msg: string; type?: 'success' | 'error' | 'info'; key: number } | null>(null)
   const toastKey = useRef(0)
+  const payrollSyncVersionRef = useRef<string | null>(null)
+  const payrollSyncCheckingRef = useRef(false)
 
   const syncPayrollEmployeeEmails = useCallback((employees: DatabaseEmployee[]) => {
     const emailByCode = new Map(employees.map(employee => [employee.employee_code, employee.email ?? '']))
@@ -4725,8 +4727,62 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (loggedIn) loadEmployeeData()
+    if (!loggedIn) {
+      payrollSyncVersionRef.current = null
+      return
+    }
+    let cancelled = false
+    const loadInitialData = async () => {
+      await loadEmployeeData()
+      try {
+        const version = await getPayrollSyncVersion()
+        if (!cancelled) payrollSyncVersionRef.current = version
+      } catch {
+        // The normal data loader already displays actionable loading errors.
+        // A background sync check must never replace the current screen.
+      }
+    }
+    void loadInitialData()
+    return () => { cancelled = true }
   }, [loggedIn, loadEmployeeData])
+
+  const checkPayrollSync = useCallback(async () => {
+    if (!loggedIn || payrollSyncCheckingRef.current) return
+    payrollSyncCheckingRef.current = true
+    try {
+      const version = await getPayrollSyncVersion()
+      const previousVersion = payrollSyncVersionRef.current
+      payrollSyncVersionRef.current = version
+      if (previousVersion !== null && previousVersion !== version) {
+        await loadEmployeeData()
+      }
+    } catch {
+      // Keep the last successfully loaded data visible. The next scheduled
+      // check retries automatically without repeatedly disturbing the user.
+    } finally {
+      payrollSyncCheckingRef.current = false
+    }
+  }, [loggedIn, loadEmployeeData])
+
+  useEffect(() => {
+    if (!loggedIn) return
+    const timer = window.setInterval(() => { void checkPayrollSync() }, 3000)
+    const checkWhenVisible = () => {
+      if (document.visibilityState === 'visible') void checkPayrollSync()
+    }
+    const checkWhenFocused = () => { void checkPayrollSync() }
+    document.addEventListener('visibilitychange', checkWhenVisible)
+    window.addEventListener('focus', checkWhenFocused)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', checkWhenVisible)
+      window.removeEventListener('focus', checkWhenFocused)
+    }
+  }, [loggedIn, checkPayrollSync])
+
+  useEffect(() => {
+    if (loggedIn) void checkPayrollSync()
+  }, [page, loggedIn, checkPayrollSync])
 
   const showToast = useCallback((msg: string, type?: 'success' | 'error' | 'info') => {
     setToast({ msg, type, key: ++toastKey.current })

@@ -8,6 +8,7 @@ export type AnnualTaxRow = {
   department_name: string
   position_name: string
   months: number[]
+  approved_months: boolean[]
   total: number
 }
 

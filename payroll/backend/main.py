@@ -979,6 +979,10 @@ def get_annual_tax_report(year: int, department_id: int | None = None, report_ty
             f"COALESCE(SUM(CASE WHEN period.month = {month} THEN {amount_expression} ELSE 0 END), 0) AS month_{month}"
             for month in range(1, 13)
         )
+        monthly_presence_columns = ",\n                   ".join(
+            f"COUNT(*) FILTER (WHERE period.month = {month}) > 0 AS has_month_{month}"
+            for month in range(1, 13)
+        )
         query = """
             SELECT employee.id AS employee_id,
                    COALESCE(employee.prefix, '') AS prefix,
@@ -986,7 +990,8 @@ def get_annual_tax_report(year: int, department_id: int | None = None, report_ty
                    employee.last_name,
                    department.name AS department_name,
                    COALESCE(position.name, '–') AS position_name,
-                   {monthly_columns}
+                   {monthly_columns},
+                   {monthly_presence_columns}
             FROM public.payroll_items item
             JOIN public.payroll_department_batches batch ON batch.id = item.department_batch_id
             JOIN public.payroll_periods period ON period.id = item.payroll_period_id
@@ -1001,18 +1006,24 @@ def get_annual_tax_report(year: int, department_id: int | None = None, report_ty
             GROUP BY employee.id, employee.prefix, employee.first_name, employee.last_name,
                      department.name, position.name
             ORDER BY department.name, employee.first_name, employee.last_name, employee.id
-        """.format(monthly_columns=monthly_columns, amount_join=amount_join)
+        """.format(
+            monthly_columns=monthly_columns,
+            monthly_presence_columns=monthly_presence_columns,
+            amount_join=amount_join,
+        )
         data, columns = db.fetch(query, (year, effective_department_id, effective_department_id))
         rows = []
         for value in data:
             record = dict(zip(columns, value))
             months = [float(record[f"month_{month}"] or 0) for month in range(1, 13)]
+            approved_months = [bool(record[f"has_month_{month}"]) for month in range(1, 13)]
             rows.append({
                 "employee_id": record["employee_id"],
                 "full_name": f"{record['prefix']}{record['first_name']} {record['last_name']}",
                 "department_name": record["department_name"],
                 "position_name": record["position_name"],
                 "months": months,
+                "approved_months": approved_months,
                 "total": sum(months),
             })
         return {"success": True, "data": {"year": year, "department_id": effective_department_id, "report_type": report_type, "rows": rows}}

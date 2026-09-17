@@ -31,3 +31,33 @@ def validate_required_schema(db) -> None:
     )
     if not constraints or "SENDING" not in constraints[0][0]:
         raise RuntimeError("ฐานข้อมูลยังไม่พร้อม กรุณารัน migration 016_payslip_sending_lock.sql")
+    standard_categories = {
+        "EXTRA_PAY": "EARNING",
+        "POS_ALLOW": "EARNING",
+        "KTB_LOAN": "DEDUCTION",
+        "TAX": "DEDUCTION",
+        "SSF": "DEDUCTION",
+        "FUNERAL_FUND": "DEDUCTION",
+        "KTB_BANK": "DEDUCTION",
+        "SAVINGS_BANK_LOAN": "DEDUCTION",
+    }
+    pay_item_rows, _ = db.fetch(
+        "SELECT code, category::text FROM public.pay_item_types WHERE code = ANY(%s) AND is_active = TRUE",
+        (list(standard_categories),),
+    )
+    actual_categories = dict(pay_item_rows)
+    missing_standard_codes = sorted(set(standard_categories) - set(actual_categories))
+    if missing_standard_codes:
+        raise RuntimeError(
+            "ฐานข้อมูลยังไม่พร้อม กรุณารัน migration 017_activate_standard_pay_item_types.sql: "
+            + ", ".join(missing_standard_codes)
+        )
+    wrong_categories = sorted(
+        code for code, expected in standard_categories.items()
+        if actual_categories.get(code) != expected
+    )
+    if wrong_categories:
+        raise RuntimeError(
+            "ฐานข้อมูลจัดหมวดรายการรับ/หักไม่ถูกต้อง กรุณารัน migration 017_activate_standard_pay_item_types.sql: "
+            + ", ".join(wrong_categories)
+        )

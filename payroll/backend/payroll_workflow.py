@@ -4,6 +4,19 @@ from decimal import Decimal
 from DBHelper import DBHelper
 
 
+STANDARD_PAY_ITEM_CATEGORIES = {
+    "EXTRA_PAY": "EARNING",
+    "POS_ALLOW": "EARNING",
+    "KTB_LOAN": "DEDUCTION",
+    "TAX": "DEDUCTION",
+    "SSF": "DEDUCTION",
+    "FUNERAL_FUND": "DEDUCTION",
+    "KTB_BANK": "DEDUCTION",
+    "SAVINGS_BANK_LOAN": "DEDUCTION",
+}
+STANDARD_PAY_ITEM_CODES = set(STANDARD_PAY_ITEM_CATEGORIES)
+
+
 class StalePayrollVersionError(ValueError):
     """Raised when another user saved a newer version of the same batch."""
 
@@ -185,12 +198,25 @@ class PayrollWorkflow:
             all_line_codes = {code for row in rows for code in row.get("lines", {})}
             if all_line_codes:
                 cursor.execute(
-                    "SELECT code, category FROM public.pay_item_types WHERE is_active = TRUE AND code = ANY(%s)",
-                    (list(all_line_codes),),
+                    """SELECT code, category
+                       FROM public.pay_item_types
+                       WHERE code = ANY(%s)
+                         AND (is_active = TRUE OR code = ANY(%s))""",
+                    (list(all_line_codes), list(STANDARD_PAY_ITEM_CODES)),
                 )
                 line_categories = dict(cursor.fetchall())
                 if len(line_categories) != len(all_line_codes):
-                    raise ValueError("พบประเภทรายการรับหรือรายการหักที่ไม่ถูกต้อง")
+                    invalid_codes = sorted(all_line_codes - set(line_categories))
+                    raise ValueError(f"พบประเภทรายการรับหรือรายการหักที่ไม่ถูกต้อง: {', '.join(invalid_codes)}")
+                wrong_standard_categories = sorted(
+                    code for code, expected_category in STANDARD_PAY_ITEM_CATEGORIES.items()
+                    if code in line_categories and line_categories[code] != expected_category
+                )
+                if wrong_standard_categories:
+                    raise ValueError(
+                        "การตั้งค่ารายการรับหรือรายการหักไม่ถูกต้อง กรุณาติดต่อผู้ดูแลระบบ: "
+                        + ", ".join(wrong_standard_categories)
+                    )
             else:
                 line_categories = {}
 

@@ -1122,11 +1122,12 @@ function DashboardAnalogClock() {
   )
 }
 
-function Dashboard({ role, userName, userDepartment, periods, employees, departments, setPage, setActivePeriodId, setActiveDeptId, showToast }: {
+function Dashboard({ role, userName, userDepartment, periods, employees, departments, setPage, setActivePeriodId, setActiveDeptId, showToast, announcementOpenSignal }: {
   role: Role; userName: string; userDepartment: string | null; periods: PayrollPeriod[];
   employees: DatabaseEmployee[]; departments: Department[];
   setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; setActiveDeptId: (id: string) => void;
   showToast: (message: string, type?: 'success' | 'error') => void;
+  announcementOpenSignal: number;
 }) {
   const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>([])
   const [showAnnouncementModal, setShowAnnouncementModal] = useState(false)
@@ -1137,12 +1138,15 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
   const [announcementSaving, setAnnouncementSaving] = useState(false)
   const [closingAnnouncementId, setClosingAnnouncementId] = useState<number | null>(null)
   useEffect(() => {
-    void getAnnouncements().then(setAnnouncements).catch(() => showToast('ไม่สามารถโหลดประกาศได้', 'error'))
+    void getAnnouncements().then(setAnnouncements).catch(() => setAnnouncements([]))
     const timer = window.setInterval(() => {
       void getAnnouncements().then(setAnnouncements).catch(() => undefined)
     }, 60_000)
     return () => window.clearInterval(timer)
   }, [])
+  useEffect(() => {
+    if (role === 'admin' && announcementOpenSignal > 0) setShowAnnouncementModal(true)
+  }, [announcementOpenSignal, role])
 
   const publishAnnouncement = async () => {
     if (!announcementTitle.trim() || !announcementContent.trim() || !announcementDate || !announcementTime) {
@@ -1362,7 +1366,6 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
             )}
           </div>
           <div className="flex items-start gap-3">
-            {role === 'admin' && <button className="btn btn-primary dashboard-announcement-button" onClick={() => setShowAnnouncementModal(true)}>📣 ประกาศ</button>}
             <button className="btn btn-secondary dashboard-print-button" onClick={printDashboard}>🖨️ พิมพ์รายงาน</button>
             <DashboardAnalogClock />
           </div>
@@ -4732,6 +4735,7 @@ export default function App() {
   const [accountUsername, setAccountUsername] = useState('')
   const [userDepartment, setUserDepartment] = useState<string | null>(null)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const [announcementOpenSignal, setAnnouncementOpenSignal] = useState(0)
   const [showMyInfo, setShowMyInfo] = useState(false)
   const [showPasswordReset, setShowPasswordReset] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
@@ -4981,7 +4985,7 @@ export default function App() {
           <div className="flex items-center gap-3" style={{ position: 'relative' }}>
             <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>รอบปัจจุบัน: <strong style={{ color: '#1A1A1A' }}>{visiblePeriods[0] ? periodLabel(visiblePeriods[0]) : 'ยังไม่มีรอบเงินเดือน'}</strong></div>
             <button type="button" aria-label="เมนูผู้ใช้งาน" title="เมนูผู้ใช้งาน" onClick={() => setProfileMenuOpen(open => !open)} style={{ width: 34, height: 34, borderRadius: '50%', border: '1px solid #DCD7EC', background: '#FFFFFF', color: '#6C52D9', display: 'grid', placeItems: 'center', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.05)' }}><PersonIcon /></button>
-            {profileMenuOpen && <div style={{ position: 'absolute', top: 43, right: 0, width: 218, background: '#FFFFFF', border: '1px solid rgba(89,68,140,.14)', borderRadius: 12, boxShadow: '0 12px 28px rgba(39,28,66,.16)', padding: 6, zIndex: 30 }}><div style={{ padding: '9px 11px 10px', borderBottom: '1px solid rgba(0,0,0,.06)', marginBottom: 4 }}><div style={{ fontWeight: 700, fontSize: 13 }}>{userName}</div><div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>{roleLabel[role]}</div></div><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setShowMyInfo(true) }}>ข้อมูลของฉัน</button><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setShowPasswordReset(true) }}>รีเซ็ตรหัสผ่าน</button><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', color: '#C2413A', fontSize: 13 }} onClick={handleLogout}>ออกจากระบบ</button></div>}
+            {profileMenuOpen && <div style={{ position: 'absolute', top: 43, right: 0, width: 218, background: '#FFFFFF', border: '1px solid rgba(89,68,140,.14)', borderRadius: 12, boxShadow: '0 12px 28px rgba(39,28,66,.16)', padding: 6, zIndex: 30 }}><div style={{ padding: '9px 11px 10px', borderBottom: '1px solid rgba(0,0,0,.06)', marginBottom: 4 }}><div style={{ fontWeight: 700, fontSize: 13 }}>{userName}</div><div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>{roleLabel[role]}</div></div><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setShowMyInfo(true) }}>ข้อมูลของฉัน</button><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setShowPasswordReset(true) }}>รีเซ็ตรหัสผ่าน</button>{role === 'admin' && <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setPage('dashboard'); setAnnouncementOpenSignal(value => value + 1) }}>ประกาศ</button>}<button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', color: '#C2413A', fontSize: 13 }} onClick={handleLogout}>ออกจากระบบ</button></div>}
           </div>
         </header>
 
@@ -4993,7 +4997,7 @@ export default function App() {
           {page === 'dashboard' && (
             <Dashboard role={role} userName={userName} userDepartment={userDepartment} periods={visiblePeriods}
               employees={visibleEmployees} departments={visibleDepartments} setPage={setPage}
-              setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} showToast={showToast} />
+              setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} showToast={showToast} announcementOpenSignal={announcementOpenSignal} />
           )}
           {page === 'periods' && (
             <PeriodsPage periods={visiblePeriods} departments={visibleDepartments} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} reloadPayroll={loadEmployeeData} error={payrollError} showToast={showToast} />

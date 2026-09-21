@@ -1124,12 +1124,13 @@ function DashboardAnalogClock() {
   )
 }
 
-function Dashboard({ role, userName, userDepartment, periods, employees, departments, setPage, setActivePeriodId, setActiveDeptId, showToast, announcementOpenSignal }: {
+function Dashboard({ role, userName, userDepartment, periods, employees, departments, setPage, setActivePeriodId, setActiveDeptId, showToast, announcementOpenSignal, onAnnouncementOpenConsumed }: {
   role: Role; userName: string; userDepartment: string | null; periods: PayrollPeriod[];
   employees: DatabaseEmployee[]; departments: Department[];
   setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; setActiveDeptId: (id: string) => void;
   showToast: (message: string, type?: 'success' | 'error') => void;
   announcementOpenSignal: number;
+  onAnnouncementOpenConsumed: () => void;
 }) {
   const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>([])
   const [showAnnouncementModal, setShowAnnouncementModal] = useState(false)
@@ -1147,8 +1148,11 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
     return () => window.clearInterval(timer)
   }, [])
   useEffect(() => {
-    if (role === 'admin' && announcementOpenSignal > 0) setShowAnnouncementModal(true)
-  }, [announcementOpenSignal, role])
+    if (role === 'admin' && announcementOpenSignal > 0) {
+      setShowAnnouncementModal(true)
+      onAnnouncementOpenConsumed()
+    }
+  }, [announcementOpenSignal, onAnnouncementOpenConsumed, role])
 
   const publishAnnouncement = async () => {
     if (!announcementTitle.trim() || !announcementContent.trim() || !announcementDate || !announcementTime) {
@@ -5002,7 +5006,7 @@ export default function App() {
           {page === 'dashboard' && (
             <Dashboard role={role} userName={userName} userDepartment={userDepartment} periods={visiblePeriods}
               employees={visibleEmployees} departments={visibleDepartments} setPage={setPage}
-              setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} showToast={showToast} announcementOpenSignal={announcementOpenSignal} />
+              setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} showToast={showToast} announcementOpenSignal={announcementOpenSignal} onAnnouncementOpenConsumed={() => setAnnouncementOpenSignal(0)} />
           )}
           {page === 'periods' && (
             <PeriodsPage periods={visiblePeriods} departments={visibleDepartments} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} reloadPayroll={loadEmployeeData} error={payrollError} showToast={showToast} />

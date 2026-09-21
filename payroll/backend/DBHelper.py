@@ -41,6 +41,14 @@ class DBHelper:
                         min_size=max(1, min_size),
                         max_size=max_size,
                         timeout=int(os.getenv("POSTGRES_POOL_TIMEOUT_SECONDS", "10")),
+                        # Hosted PostgreSQL may close idle sockets while the
+                        # application is sleeping. Validate every checked-out
+                        # connection so a dead socket is replaced before a
+                        # user request reaches a cursor.
+                        check=ConnectionPool.check_connection,
+                        max_idle=float(os.getenv("POSTGRES_POOL_MAX_IDLE_SECONDS", "300")),
+                        max_lifetime=float(os.getenv("POSTGRES_POOL_MAX_LIFETIME_SECONDS", "1800")),
+                        reconnect_timeout=float(os.getenv("POSTGRES_POOL_RECONNECT_TIMEOUT_SECONDS", "30")),
                         kwargs={
                             "connect_timeout": int(os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS", "5")),
                             "options": f"-c statement_timeout={int(os.getenv('POSTGRES_STATEMENT_TIMEOUT_MS', '15000'))}",

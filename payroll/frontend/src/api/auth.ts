@@ -29,12 +29,34 @@ export function authorizationHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+const wait = (milliseconds: number) => new Promise(resolve => window.setTimeout(resolve, milliseconds))
+
+async function postLoginWithWakeRetry(username: string, password: string): Promise<Response> {
+  let lastResponse: Response | null = null
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(`${API_URL}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+        cache: 'no-store',
+      })
+      // Never retry invalid credentials or validation errors. Retry only a
+      // temporarily unavailable/cold backend.
+      if (response.status < 500) return response
+      lastResponse = response
+    } catch (error) {
+      lastError = error
+    }
+    if (attempt < 2) await wait((attempt + 1) * 1000)
+  }
+  if (lastResponse) return lastResponse
+  throw lastError instanceof Error ? lastError : new Error('ไม่สามารถเชื่อมต่อระบบได้')
+}
+
 export async function loginWithDatabase(username: string, password: string): Promise<AuthUser> {
-  const response = await fetch(`${API_URL}/auth/login`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, password }),
-  })
+  const response = await postLoginWithWakeRetry(username, password)
 
   if (!response.ok) {
     throw new Error(response.status === 401 ? 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' : `เข้าสู่ระบบไม่สำเร็จ: ${response.status}`)

@@ -750,10 +750,10 @@ function Toast({ msg, type, onClose }: { msg: string; type?: 'success' | 'error'
 
 // ─── Modal ────────────────────────────────────────────────────────────────────
 
-function Modal({ title, children, onClose, size }: { title: string; children: React.ReactNode; onClose: () => void; size?: 'lg' }) {
+function Modal({ title, children, onClose, size }: { title: string; children: React.ReactNode; onClose: () => void; size?: 'lg' | 'xl' }) {
   return (
     <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className={`modal ${size === 'lg' ? 'modal-lg' : ''}`}>
+      <div className={`modal ${size === 'lg' ? 'modal-lg' : size === 'xl' ? 'modal-xl' : ''}`}>
         <div className="flex items-center justify-between px-6 py-5" style={{ borderBottom: '1px solid rgba(0,0,0,0.07)' }}>
           <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 17, color: '#1A1A1A' }}>{title}</div>
           <button className="btn btn-ghost btn-sm" style={{ borderRadius: '50%', width: 32, height: 32, padding: 0 }} onClick={onClose}>✕</button>
@@ -1172,13 +1172,14 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
   }
 
   const dismissAnnouncement = async (id: number) => {
+    if (!window.confirm('ยืนยันการลบประกาศนี้ออกจากระบบหรือไม่')) return
     setClosingAnnouncementId(id)
     try {
       await closeAnnouncement(id)
       setAnnouncements(current => current.filter(item => item.id !== id))
-      showToast('ปิดประกาศแล้ว', 'success')
+      showToast('ลบประกาศแล้ว', 'success')
     } catch (error) {
-      showToast(error instanceof Error ? error.message : 'ปิดประกาศไม่สำเร็จ', 'error')
+      showToast(error instanceof Error ? error.message : 'ลบประกาศไม่สำเร็จ', 'error')
     } finally {
       setClosingAnnouncementId(null)
     }
@@ -1383,7 +1384,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
                   <div style={{ marginTop: 7, fontSize: 13.5, lineHeight: 1.65, whiteSpace: 'pre-wrap', color: 'var(--text-secondary)' }}>{announcement.content}</div>
                   <div style={{ marginTop: 9, fontSize: 12, color: 'var(--text-muted)' }}>กำหนดเริ่มอัปเดต: <strong style={{ color: '#4A3A78' }}>{formatBuddhistDateTime(announcement.starts_at)}</strong> · ประกาศโดย {announcement.created_by_name}</div>
                 </div>
-                {role === 'admin' && <button className="btn btn-secondary btn-sm" aria-busy={closingAnnouncementId === announcement.id} disabled={closingAnnouncementId === announcement.id} onClick={() => void dismissAnnouncement(announcement.id)}><BusyLabel busy={closingAnnouncementId === announcement.id} label="กำลังปิด…">ปิดประกาศ</BusyLabel></button>}
+                {role === 'admin' && <button className="btn btn-danger btn-sm" aria-busy={closingAnnouncementId === announcement.id} disabled={closingAnnouncementId === announcement.id} onClick={() => void dismissAnnouncement(announcement.id)}><BusyLabel busy={closingAnnouncementId === announcement.id} label="กำลังลบ…">ลบประกาศ</BusyLabel></button>}
               </div>
             </article>
           ))}
@@ -1391,12 +1392,12 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
       )}
 
       {showAnnouncementModal && (
-        <Modal title="สร้างประกาศการอัปเดตระบบ" onClose={() => !announcementSaving && setShowAnnouncementModal(false)}>
-          <div className="flex flex-col gap-4" style={{ minWidth: 'min(560px, 80vw)' }}>
+        <Modal size="xl" title="สร้างประกาศการอัปเดตระบบ" onClose={() => !announcementSaving && setShowAnnouncementModal(false)}>
+          <div className="flex flex-col gap-4">
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>ประกาศนี้จะแสดงบนหน้าหลักของพนักงานฝ่ายธุรการ ผู้บริหาร และแอดมินทุกคน</div>
             <FormField label="หัวข้อประกาศ" required><input className="inp" autoFocus maxLength={200} value={announcementTitle} onChange={event => setAnnouncementTitle(event.target.value)} placeholder="เช่น อัปเดตระบบ PayFlow เวอร์ชันใหม่" /></FormField>
             <FormField label="เนื้อหาประกาศ" required><textarea className="inp" rows={5} maxLength={3000} value={announcementContent} onChange={event => setAnnouncementContent(event.target.value)} placeholder="ระบุฟีเจอร์ใหม่ ผลกระทบ และสิ่งที่ผู้ใช้งานควรทราบ" /></FormField>
-            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 150px', gap: 12 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(180px, .45fr)', gap: 16 }}>
               <FormField label="วันที่เริ่มอัปเดต (พ.ศ.)" required><BuddhistDateInput value={announcementDate} onChange={setAnnouncementDate} required /></FormField>
               <FormField label="เวลาเริ่มอัปเดต" required><input className="inp" type="time" value={announcementTime} onChange={event => setAnnouncementTime(event.target.value)} required /></FormField>
             </div>
@@ -2910,35 +2911,38 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       )}
 
       {showAddItemModal && (
-        <Modal title="แก้ไขประเภทรายการรับ/หัก" onClose={() => !creatingItemType && !savingColumns && setShowAddItemModal(false)}>
-          <div className="flex flex-col gap-4" style={{ minWidth: 'min(560px, 80vw)' }}>
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65 }}>ติ๊กรายการที่ต้องการให้แสดงในตาราง หรือกด <strong>−</strong> เพื่อนำรายการออกจากตารางรอบนี้ โดยข้อมูลเดิมจะไม่ถูกลบ</div>
-            <div style={{ maxHeight: 300, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 12 }}>
-              {(['EARNING', 'DEDUCTION'] as const).map(category => (
-                <div key={category} style={{ padding: '12px 14px', borderBottom: category === 'EARNING' ? '1px solid var(--border)' : undefined }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: category === 'EARNING' ? '#15803D' : '#B91C1C', marginBottom: 8 }}>{category === 'EARNING' ? 'รายการรับ' : 'รายการหัก'}</div>
-                  <div className="flex flex-col gap-2">
-                    {payItemTypes.filter(item => item.is_active && item.category === category).map(item => {
-                      const checked = draftPayItemCodes.includes(item.code)
-                      return <label key={item.code} className="flex items-center justify-between gap-3" style={{ padding: '8px 10px', borderRadius: 9, background: checked ? '#F7F4FF' : '#FAFAFC', cursor: 'pointer' }}>
-                        <span className="flex items-center gap-3"><input type="checkbox" checked={checked} onChange={() => setDraftPayItemCodes(current => checked ? current.filter(code => code !== item.code) : [...current, item.code])} /><span>{item.name}</span></span>
-                        <button type="button" className="btn btn-danger btn-xs" aria-label={`นำ ${item.name} ออกจากตาราง`} title="นำออกจากตาราง" onClick={event => { event.preventDefault(); setDraftPayItemCodes(current => current.filter(code => code !== item.code)) }}>−</button>
-                      </label>
-                    })}
+        <Modal size="xl" title="แก้ไขประเภทรายการรับ/หัก" onClose={() => !creatingItemType && !savingColumns && setShowAddItemModal(false)}>
+          <div className="flex flex-col gap-4">
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65 }}>จัดรายการระหว่างสองฝั่งเพื่อกำหนดคอลัมน์ของตารางรอบเงินเดือนนี้ การนำออกจะไม่ลบยอดหรือประวัติเดิม</div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 16 }}>
+              {[
+                { title: 'รายการที่แสดงในตาราง', selected: true },
+                { title: 'รายการที่ยังไม่แสดง', selected: false },
+              ].map(group => {
+                const items = payItemTypes.filter(item => item.is_active && draftPayItemCodes.includes(item.code) === group.selected)
+                return <section key={group.title} style={{ border: '1px solid var(--border)', borderRadius: 12, minWidth: 0, overflow: 'hidden' }}>
+                  <div style={{ padding: '11px 13px', background: group.selected ? '#F3EEFF' : '#F7F7FA', fontWeight: 700, fontSize: 13 }}>{group.title} <span style={{ color: 'var(--text-muted)', fontWeight: 500 }}>({items.length})</span></div>
+                  <div className="flex flex-col gap-2" style={{ padding: 10, minHeight: 210, maxHeight: 330, overflowY: 'auto' }}>
+                    {items.length === 0 ? <div style={{ padding: '34px 10px', textAlign: 'center', fontSize: 12.5, color: 'var(--text-muted)' }}>ไม่มีรายการ</div> : items.map(item => (
+                      <div key={item.code} className="flex items-center justify-between gap-3" style={{ minHeight: 42, padding: '7px 9px', borderRadius: 9, background: '#FAFAFC' }}>
+                        <div style={{ minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</div><div style={{ fontSize: 11, color: item.category === 'EARNING' ? '#15803D' : '#B91C1C' }}>{item.category === 'EARNING' ? 'รายการรับ' : 'รายการหัก'}</div></div>
+                        <button type="button" className={group.selected ? 'btn btn-danger btn-xs' : 'btn btn-secondary btn-xs'} style={{ minWidth: 32 }} aria-label={group.selected ? `นำ ${item.name} ออกจากตาราง` : `เพิ่ม ${item.name} เข้าตาราง`} onClick={() => setDraftPayItemCodes(current => group.selected ? current.filter(code => code !== item.code) : [...current, item.code])}>{group.selected ? '−' : '+'}</button>
+                      </div>
+                    ))}
                   </div>
-                </div>
-              ))}
+                </section>
+              })}
             </div>
             <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
               <div style={{ fontWeight: 700, marginBottom: 10 }}>เพิ่มประเภทรายการใหม่</div>
-              <div className="flex gap-2 items-end flex-wrap">
-                <FormField label="ชื่อรายการ" required><input className="inp" value={newItemName} maxLength={100} onChange={event => setNewItemName(event.target.value)} placeholder="เช่น เงินพิเศษ" /></FormField>
-                <FormField label="ประเภท" required><AppSelect className="inp" value={newItemCategory} onChange={event => setNewItemCategory(event.target.value as PayItemType['category'])}><option value="EARNING">รายการรับ</option><option value="DEDUCTION">รายการหัก</option></AppSelect></FormField>
-                <button className="btn btn-secondary" aria-busy={creatingItemType} disabled={creatingItemType || !newItemName.trim()} onClick={() => void addPayItemType()}><BusyLabel busy={creatingItemType} label="กำลังเพิ่ม…">+ เพิ่ม</BusyLabel></button>
+              <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 220px 110px', gap: 12, alignItems: 'end' }}>
+                <FormField label="ชื่อรายการ" required><input className="inp" style={{ height: 42 }} value={newItemName} maxLength={100} onChange={event => setNewItemName(event.target.value)} placeholder="เช่น เงินพิเศษ" /></FormField>
+                <FormField label="ประเภท" required><AppSelect className="inp" style={{ height: 42 }} value={newItemCategory} onChange={event => setNewItemCategory(event.target.value as PayItemType['category'])}><option value="EARNING">รายการรับ</option><option value="DEDUCTION">รายการหัก</option></AppSelect></FormField>
+                <button className="btn btn-secondary" style={{ height: 42 }} aria-busy={creatingItemType} disabled={creatingItemType || !newItemName.trim()} onClick={() => void addPayItemType()}><BusyLabel busy={creatingItemType} label="กำลังเพิ่ม…">+ เพิ่ม</BusyLabel></button>
               </div>
             </div>
             <div className="flex justify-between items-center gap-3">
-              <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>เลือกแสดง {draftPayItemCodes.filter(code => allActivePayItemCodes.includes(code)).length} คอลัมน์</span>
+              <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>แสดงในตาราง {draftPayItemCodes.filter(code => allActivePayItemCodes.includes(code)).length} คอลัมน์</span>
               <div className="flex gap-3"><button className="btn btn-secondary" disabled={creatingItemType || savingColumns} onClick={() => setShowAddItemModal(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={savingColumns} disabled={creatingItemType || savingColumns} onClick={() => void finishEditingPayItemColumns()}><BusyLabel busy={savingColumns} label="กำลังบันทึก…">เสร็จสิ้น</BusyLabel></button></div>
             </div>
           </div>

@@ -699,6 +699,11 @@ select.inp {
   animation: slideUp 0.25s ease;
 }
 .modal-lg { max-width: 680px; }
+.modal-xl { max-width: 960px; }
+@media (max-width: 720px) {
+  .modal-overlay { padding: 12px; }
+  .modal-xl { max-width: 100%; }
+}
 
 /* ── Orbs ──────────────────────────────────────────────────── */
 .orb {

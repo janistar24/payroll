@@ -682,31 +682,37 @@ def _require_admin(user):
 @app.get("/api/announcements")
 def get_announcements(user=Depends(get_current_user)):
     _require_payroll_role(user)
-    rows, columns = db.fetch(
-        """SELECT announcement.id, announcement.title, announcement.content,
-                  announcement.starts_at, announcement.created_at,
-                  COALESCE(author.full_name, author.username, 'ผู้ดูแลระบบ') AS created_by_name
-           FROM public.system_announcements announcement
-           LEFT JOIN public.users author ON author.id = announcement.created_by_id
-           WHERE announcement.is_active = TRUE
-           ORDER BY announcement.created_at DESC
-           LIMIT 10"""
-    )
+    try:
+        rows, columns = db.fetch(
+            """SELECT announcement.id, announcement.title, announcement.content,
+                      announcement.starts_at, announcement.created_at,
+                      COALESCE(author.full_name, author.username, 'ผู้ดูแลระบบ') AS created_by_name
+               FROM public.system_announcements announcement
+               LEFT JOIN public.users author ON author.id = announcement.created_by_id
+               WHERE announcement.is_active = TRUE
+               ORDER BY announcement.created_at DESC
+               LIMIT 10"""
+        )
+    except psycopg.errors.UndefinedTable:
+        return {"success": True, "data": []}
     return {"success": True, "data": [dict(zip(columns, row)) for row in rows]}
 
 
 @app.post("/api/announcements", status_code=201)
 def create_announcement(request: AnnouncementCreate, user=Depends(get_current_user)):
     _require_admin(user)
-    with db.transaction() as cursor:
-        cursor.execute(
-            """INSERT INTO public.system_announcements(title, content, starts_at, created_by_id)
-               VALUES (%s, %s, %s, %s)
-               RETURNING id, title, content, starts_at, created_at""",
-            (request.title.strip(), request.content.strip(), request.starts_at, user["id"]),
-        )
-        row = cursor.fetchone()
-        columns = tuple(desc.name for desc in cursor.description)
+    try:
+        with db.transaction() as cursor:
+            cursor.execute(
+                """INSERT INTO public.system_announcements(title, content, starts_at, created_by_id)
+                   VALUES (%s, %s, %s, %s)
+                   RETURNING id, title, content, starts_at, created_at""",
+                (request.title.strip(), request.content.strip(), request.starts_at, user["id"]),
+            )
+            row = cursor.fetchone()
+            columns = tuple(desc.name for desc in cursor.description)
+    except psycopg.errors.UndefinedTable:
+        raise HTTPException(status_code=503, detail="ฐานข้อมูลยังไม่พร้อม กรุณารัน migration 019_system_announcements.sql")
     result = {**dict(zip(columns, row)), "created_by_name": user.get("full_name") or user.get("username") or "ผู้ดูแลระบบ"}
     audit_logger.log(user["id"], "CREATE_ANNOUNCEMENT", "system_announcement", result["id"], {"title": result["title"]})
     return {"success": True, "data": result}
@@ -716,15 +722,10 @@ def create_announcement(request: AnnouncementCreate, user=Depends(get_current_us
 def close_announcement(announcement_id: int, user=Depends(get_current_user)):
     _require_admin(user)
     with db.transaction() as cursor:
-        cursor.execute(
-            """UPDATE public.system_announcements
-               SET is_active=FALSE, closed_at=NOW()
-               WHERE id=%s AND is_active=TRUE RETURNING id""",
-            (announcement_id,),
-        )
+        cursor.execute("DELETE FROM public.system_announcements WHERE id=%s RETURNING id", (announcement_id,))
         if cursor.fetchone() is None:
             raise HTTPException(status_code=404, detail="ไม่พบประกาศที่เปิดใช้งาน")
-    audit_logger.log(user["id"], "CLOSE_ANNOUNCEMENT", "system_announcement", announcement_id, {})
+    audit_logger.log(user["id"], "DELETE_ANNOUNCEMENT", "system_announcement", announcement_id, {})
     return {"success": True}
 
 

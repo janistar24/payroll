@@ -12,7 +12,9 @@ export type AnnualTaxRow = {
   total: number
 }
 
-export async function getAnnualTaxReport(year: number, departmentId?: number, reportType: 'tax' | 'income' = 'tax'): Promise<AnnualTaxRow[]> {
+export type AnnualReportType = 'tax' | 'income' | 'social_security'
+
+export async function getAnnualTaxReport(year: number, departmentId?: number, reportType: AnnualReportType = 'tax'): Promise<AnnualTaxRow[]> {
   const query = new URLSearchParams({ year: String(year), report_type: reportType })
   if (departmentId) query.set('department_id', String(departmentId))
   const response = await fetch(`${API_URL}/reports/annual-tax?${query.toString()}`, { headers: authorizationHeaders(), cache: 'no-store' })

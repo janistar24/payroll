@@ -46,9 +46,18 @@ class Employees:
     def read(self, employee_id):
         data, columns = self.db.fetch(
             """
-            SELECT *
-            FROM public.employees
-            WHERE id = %s
+            SELECT employee.*,
+                   department.code AS department_code,
+                   department.name AS department_name,
+                   organization.name AS organization_name,
+                   position.code AS position_code,
+                   position.name AS position_name,
+                   position.level AS position_level
+            FROM public.employees employee
+            LEFT JOIN public.departments department ON department.id = employee.department_id
+            LEFT JOIN public.organizations organization ON organization.id = employee.organization_id
+            LEFT JOIN public.positions position ON position.id = employee.position_id
+            WHERE employee.id = %s
             """,
             (employee_id,)
         )

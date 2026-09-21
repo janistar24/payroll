@@ -22,7 +22,7 @@ import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
 import { createPayItemType, type PayItemType } from './api/payItemTypes'
 import { createOrganization, type Organization } from './api/organizations'
-import { getAnnualTaxReport, type AnnualTaxRow } from './api/annualTax'
+import { getAnnualTaxReport, type AnnualReportType, type AnnualTaxRow } from './api/annualTax'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Role = 'hr' | 'director' | 'admin'
@@ -2581,7 +2581,22 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             <tr>
               <th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
               <th colSpan={3 + customIncomeTypes.length} className="th-group th-group-income">รายการรับ</th>
-              <th colSpan={7 + customDeductionTypes.length} className="th-group th-group-deduct">รายการหัก {editing && !isReadonly && <button type="button" className="payroll-add-item-button" onClick={() => setShowAddItemModal(true)} title="เพิ่มประเภทรายการรับหรือรายการหัก">+ เพิ่มประเภทรายการรับ/หัก</button>}</th>
+              <th colSpan={7 + customDeductionTypes.length} className="th-group th-group-deduct">
+                รายการหัก
+                {!isReadonly && (
+                  <button
+                    type="button"
+                    className="payroll-add-item-button"
+                    onClick={() => {
+                      setEditing(true)
+                      setShowAddItemModal(true)
+                    }}
+                    title="เพิ่มประเภทรายการรับหรือรายการหัก"
+                  >
+                    + เพิ่มประเภทรายการรับ/หัก
+                  </button>
+                )}
+              </th>
               <th colSpan={1} className="th-group th-group-net">ยอดรับสุทธิ</th>
               {editing && !isReadonly && <th rowSpan={2} className="th-group th-group-emp" style={{ minWidth: 88 }}>ดำเนินการ</th>}
             </tr>
@@ -3676,19 +3691,10 @@ function EmployeeForm({ empId, employees, departments, positions, organizations,
         bank_account_no: bankAccountNo.trim() || null,
         base_salary: baseSalary,
       }
-      const createdEmployee = empId ? null : await createEmployee(payload)
-      const savedEmployeeId = empId ?? createdEmployee!.id
-      if (empId) await updateEmployee(empId, payload)
-      const savedAt = new Date().toISOString()
-      const optimisticEmployee: DatabaseEmployee = {
-        id: savedEmployeeId,
-        ...payload,
-        employee_code: emp?.employee_code ?? createdEmployee!.employee_code,
-        base_salary: String(payload.base_salary),
-        created_at: emp?.created_at ?? savedAt,
-        updated_at: savedAt,
-      }
-      onSaved(optimisticEmployee, resolvedPosition && !existingPosition ? resolvedPosition : undefined)
+      const savedEmployee = empId
+        ? await updateEmployee(empId, payload)
+        : await createEmployee(payload)
+      onSaved(savedEmployee, resolvedPosition && !existingPosition ? resolvedPosition : undefined)
       showToast(empId ? 'อัปเดตข้อมูลพนักงานแล้ว' : 'เพิ่มพนักงานใหม่แล้ว', 'success')
       setPage('employees')
     } catch (error) {
@@ -4138,14 +4144,15 @@ const printAnnualTaxReport = (yearBE: number, departmentLabel: string, reportLab
     return `<tr><td class="center">${index + 1}</td><td>${escapeMarkup(entry.full_name)}</td><td>${escapeMarkup(entry.department_name)}</td><td>${escapeMarkup(entry.position_name)}</td>${entry.months.map((amount, month) => `<td class="num">${entry.approved_months?.[month] ? thb(amount) : '–'}</td>`).join('')}<td class="num">${thb(entry.total)}</td></tr>`
   }).join('') || `<tr><td colspan="17" class="empty">ยังไม่มีข้อมูล${escapeMarkup(reportLabel)}จากรอบเงินเดือนที่อนุมัติแล้ว</td></tr>`
   const grandTotal = totals.reduce((sum, amount) => sum + amount, 0)
-  return printHtmlInHiddenFrame(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${escapeMarkup(reportLabel)}ประจำปี ${yearBE}</title><style>@page{size:A4 landscape;margin:9mm 7mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;font-family:Tahoma,sans-serif;color:#111;font-size:7pt}.head{text-align:center;margin-bottom:4mm}.head h1,.head h2,.head p{margin:0}.head h1{font-size:15pt}.head h2{font-size:11pt;margin-top:1mm}.head p{font-size:8pt;margin-top:1.5mm}table{border-collapse:collapse;width:100%;table-layout:fixed}th,td{border:.45pt solid #555;padding:3px 2px;vertical-align:middle;line-height:1.2}thead th{background:#e5e7eb;text-align:center;font-weight:700;font-size:7pt}tbody td{white-space:nowrap}td.center{text-align:center}td.num{text-align:right;font-variant-numeric:tabular-nums}td.empty{text-align:center;padding:12px;color:#64748b}tfoot td{background:#e5e7eb;font-weight:700}.c-no{width:3%}.c-name{width:14%}.c-dept{width:9%}.c-pos{width:13%}.c-month{width:4.2%}.c-total{width:7.6%}</style></head><body><div class="head"><h1>เทศบาลเมืองตาคลี</h1><h2>${escapeMarkup(reportLabel)}ประจำปี พ.ศ. ${yearBE}</h2><p>ฝ่าย: ${escapeMarkup(departmentLabel)} · วันที่พิมพ์ ${escapeMarkup(formatBuddhistDate(new Date(), true))}</p></div><table><colgroup><col class="c-no"><col class="c-name"><col class="c-dept"><col class="c-pos">${Array.from({ length: 12 }, () => '<col class="c-month">').join('')}<col class="c-total"></colgroup><thead><tr><th rowspan="2">ที่</th><th rowspan="2">ชื่อ-นามสกุล</th><th rowspan="2">หน่วยงาน</th><th rowspan="2">ตำแหน่ง</th><th colspan="12">${escapeMarkup(reportLabel)}</th><th rowspan="2">รวม</th></tr><tr>${TAX_MONTH_LABELS.map(label => `<th>${label}</th>`).join('')}</tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${totals.map(amount => `<td class="num">${thb(amount)}</td>`).join('')}<td class="num">${thb(grandTotal)}</td></tr></tfoot></table></body></html>`)
+  const printedAt = formatBuddhistDate(new Date(), true)
+  return printHtmlInHiddenFrame(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>${escapeMarkup(reportLabel)} ประจำปี ${yearBE}</title><style>@page{size:A4 landscape;margin:9mm 7mm 15mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}.report-footer{display:block}}*{box-sizing:border-box}body{margin:0;font-family:Tahoma,sans-serif;color:#111;font-size:7pt;padding-bottom:7mm}.report-header{display:grid;grid-template-columns:1fr 1.4fr 1fr;align-items:end;min-height:22mm;margin-bottom:3mm}.header-left{font-size:7.5pt;line-height:1.45}.header-left div{white-space:nowrap}.header-center{text-align:center}.municipality{display:flex;align-items:center;justify-content:center;gap:3mm}.municipality img{width:12mm;height:12mm;object-fit:contain}.municipality h1{margin:0;font-size:15pt;line-height:1.2}.header-center h2{margin:1px 0 0;font-size:10.5pt;line-height:1.25}.header-center h3{margin:1px 0 0;font-size:9pt;line-height:1.25}.header-center p{margin:1px 0 0;font-size:8pt;font-weight:700}.report-footer{position:fixed;right:0;bottom:-10mm;text-align:right;font-size:6.5pt;color:#555;white-space:nowrap}table{border-collapse:collapse;width:100%;table-layout:fixed}thead{display:table-header-group}tfoot{display:table-row-group}tr{break-inside:avoid;page-break-inside:avoid}th,td{border:.45pt solid #555;padding:3px 2px;vertical-align:middle;line-height:1.2}thead th{background:#e5e7eb;text-align:center;font-weight:700;font-size:7pt}tbody td{white-space:nowrap}td.center{text-align:center}td.num{text-align:right;font-variant-numeric:tabular-nums}td.empty{text-align:center;padding:12px;color:#64748b}tfoot td{background:#e5e7eb;font-weight:700}.c-no{width:3%}.c-name{width:14%}.c-dept{width:9%}.c-pos{width:13%}.c-month{width:4.2%}.c-total{width:7.6%}</style></head><body><header class="report-header"><div class="header-left"><div><b>วันที่พิมพ์ :</b> ${escapeMarkup(printedAt)}</div><div>1 ซ.ประชาตาคลี 3 ต.ตาคลี</div><div>อ.ตาคลี จ.นครสวรรค์&nbsp;&nbsp;60140</div></div><div class="header-center"><div class="municipality"><img src="${takhliLogo}" alt="ตราเทศบาลเมืองตาคลี"><h1>เทศบาลเมืองตาคลี</h1></div><h2>${escapeMarkup(reportLabel)}</h2><h3>${escapeMarkup(departmentLabel)}</h3><p>ประจำปี พ.ศ. ${yearBE}</p></div><div></div></header><div class="report-footer">เอกสารรายงานนี้ออกโดยระบบจัดทำสลิปเงินเดือน PayFlow</div><table><colgroup><col class="c-no"><col class="c-name"><col class="c-dept"><col class="c-pos">${Array.from({ length: 12 }, () => '<col class="c-month">').join('')}<col class="c-total"></colgroup><thead><tr><th rowspan="2">ที่</th><th rowspan="2">ชื่อ-นามสกุล</th><th rowspan="2">หน่วยงาน</th><th rowspan="2">ตำแหน่ง</th><th colspan="12">${escapeMarkup(reportLabel)}</th><th rowspan="2">รวม</th></tr><tr>${TAX_MONTH_LABELS.map(label => `<th>${label}</th>`).join('')}</tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td>${totals.map(amount => `<td class="num">${thb(amount)}</td>`).join('')}<td class="num">${thb(grandTotal)}</td></tr></tfoot></table></body></html>`)
 }
 
 function AnnualTaxReportPage({ role, periods, departments, userDepartment, showToast }: { role: Role; periods: PayrollPeriod[]; departments: Department[]; userDepartment: string | null; showToast: (msg: string, type?: 'success' | 'error') => void }) {
   const reportYears = useMemo(() => Array.from(new Set(periods.map(period => period.year + 543))).sort((a, b) => b - a), [periods])
   const [yearBE, setYearBE] = useState(reportYears[0] ?? new Date().getFullYear() + 543)
   const [departmentValue, setDepartmentValue] = useState('')
-  const [reportType, setReportType] = useState<'tax' | 'income'>('tax')
+  const [reportType, setReportType] = useState<AnnualReportType>('tax')
   const [rows, setRows] = useState<AnnualTaxRow[]>([])
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
@@ -4153,7 +4160,11 @@ function AnnualTaxReportPage({ role, periods, departments, userDepartment, showT
   const scopedDepartmentId = role === 'hr' ? departments.find(department => department.name === userDepartment)?.id : undefined
   const selectedDepartmentId = scopedDepartmentId ?? (departmentValue ? Number(departmentValue) : undefined)
   const selectedDepartmentLabel = role === 'hr' ? userDepartment ?? 'ฝ่ายของฉัน' : departments.find(department => department.id === selectedDepartmentId)?.name ?? 'ทุกฝ่าย'
-  const reportLabel = reportType === 'tax' ? 'รายการนำส่งภาษี' : 'รายได้รวมทั้งปี'
+  const reportLabel = reportType === 'tax'
+    ? 'รายการนำส่งภาษี'
+    : reportType === 'social_security'
+      ? 'รายงานสรุปเงินสมทบประกันสังคมประจำปี'
+      : 'รายงานสรุปรายได้ประจำปี'
   const reportDataVersion = useMemo(() => periods.flatMap(period => period.depts.map(department =>
     `${department.databaseId ?? department.id}:${department.status}:${department.editVersion ?? 0}:${department.approvedAt ?? ''}`
   )).join('|'), [periods])
@@ -4169,8 +4180,8 @@ function AnnualTaxReportPage({ role, periods, departments, userDepartment, showT
   const monthlyTotals = Array.from({ length: 12 }, (_, month) => rows.reduce((sum, row) => sum + (row.months[month] || 0), 0))
   const total = monthlyTotals.reduce((sum, amount) => sum + amount, 0)
   return <div className="anim">
-    <PageHeader title="รายงานประจำปี" subtitle="สรุปรายการนำส่งภาษีหรือรายได้รวมจากรอบเงินเดือนที่อนุมัติแล้ว" actions={<button className="btn btn-secondary" disabled={loading || Boolean(loadError)} onClick={() => { if (!printAnnualTaxReport(yearBE, selectedDepartmentLabel, reportLabel, rows)) showToast('ไม่สามารถเปิดหน้าต่างพิมพ์ได้ กรุณาลองใหม่', 'error') }}>🖨️ พิมพ์รายงาน</button>} />
-    <div className="card" style={{ padding: '14px 18px', marginBottom: 16 }}><div className="flex items-end gap-3 flex-wrap"><FormField label="ประเภทรายงาน"><AppSelect className="inp" style={{ width: 220 }} value={reportType} onChange={event => setReportType(event.target.value as 'tax' | 'income')}><option value="tax">รายการนำส่งภาษี</option><option value="income">รายได้รวมทั้งปี</option></AppSelect></FormField><FormField label="ปี (พ.ศ.)"><AppSelect className="inp" style={{ width: 180 }} value={String(yearBE)} onChange={event => setYearBE(Number(event.target.value))}>{(reportYears.length ? reportYears : [yearBE]).map(year => <option key={year} value={year}>{year}</option>)}</AppSelect></FormField><FormField label="ฝ่าย"><AppSelect className="inp" style={{ width: 260 }} value={role === 'hr' ? String(scopedDepartmentId ?? '') : departmentValue} onChange={event => setDepartmentValue(event.target.value)} disabled={role === 'hr'}><option value="">ทุกฝ่าย</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField><span style={{ fontSize: 12.5, color: 'var(--text-secondary)', paddingBottom: 10 }}>แสดงเฉพาะรอบเงินเดือนที่อนุมัติแล้ว</span></div></div>
+    <PageHeader title="รายงานประจำปี" subtitle="สรุปรายการนำส่งภาษี รายได้ และเงินสมทบประกันสังคมจากรอบเงินเดือนที่อนุมัติแล้ว" actions={<button className="btn btn-secondary" disabled={loading || Boolean(loadError)} onClick={() => { if (!printAnnualTaxReport(yearBE, selectedDepartmentLabel, reportLabel, rows)) showToast('ไม่สามารถเปิดหน้าต่างพิมพ์ได้ กรุณาลองใหม่', 'error') }}>🖨️ พิมพ์รายงาน</button>} />
+    <div className="card" style={{ padding: '14px 18px', marginBottom: 16 }}><div className="flex items-end gap-3 flex-wrap"><FormField label="ประเภทรายงาน"><AppSelect className="inp" style={{ width: 290 }} value={reportType} onChange={event => setReportType(event.target.value as AnnualReportType)}><option value="tax">รายการนำส่งภาษี</option><option value="income">รายงานสรุปรายได้ประจำปี</option><option value="social_security">รายงานสรุปเงินสมทบประกันสังคมประจำปี</option></AppSelect></FormField><FormField label="ปี (พ.ศ.)"><AppSelect className="inp" style={{ width: 180 }} value={String(yearBE)} onChange={event => setYearBE(Number(event.target.value))}>{(reportYears.length ? reportYears : [yearBE]).map(year => <option key={year} value={year}>{year}</option>)}</AppSelect></FormField><FormField label="ฝ่าย"><AppSelect className="inp" style={{ width: 260 }} value={role === 'hr' ? String(scopedDepartmentId ?? '') : departmentValue} onChange={event => setDepartmentValue(event.target.value)} disabled={role === 'hr'}><option value="">ทุกฝ่าย</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField><span style={{ fontSize: 12.5, color: 'var(--text-secondary)', paddingBottom: 10 }}>แสดงเฉพาะรอบเงินเดือนที่อนุมัติแล้ว</span></div></div>
     <div className="card" style={{ padding: 0, overflowX: 'auto' }}><div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(0,0,0,.07)' }}><div><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 16 }}>{reportLabel}</div><div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>ปี พ.ศ. {yearBE} · {selectedDepartmentLabel}</div></div><div style={{ fontWeight: 700, color: 'var(--purple-600)' }}>รวม {thb(total)} บาท</div></div><table className="tbl" style={{ minWidth: 1480 }}><thead><tr><th rowSpan={2} style={{ width: 52 }}>ที่</th><th rowSpan={2} style={{ minWidth: 190 }}>ชื่อ-นามสกุล</th><th rowSpan={2} style={{ minWidth: 145 }}>ฝ่าย</th><th rowSpan={2} style={{ minWidth: 190 }}>ตำแหน่ง</th><th colSpan={12} style={{ textAlign: 'center' }}>{reportLabel}</th><th rowSpan={2} style={{ minWidth: 115, textAlign: 'right' }}>รวม</th></tr><tr>{TAX_MONTH_LABELS.map(label => <th key={label} style={{ minWidth: 77, textAlign: 'right' }}>{label}</th>)}</tr></thead><tbody>{loading ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>กำลังโหลดรายงาน…</td></tr> : loadError ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: '#B91C1C' }}>{loadError}</td></tr> : rows.length === 0 ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>ยังไม่มีข้อมูล{reportLabel}จากรอบเงินเดือนที่อนุมัติแล้ว</td></tr> : rows.map((row, index) => <tr key={`${row.employee_id}-${row.department_name}`}><td style={{ textAlign: 'center' }}>{index + 1}</td><td>{row.full_name}</td><td>{row.department_name}</td><td>{row.position_name}</td>{row.months.map((amount, month) => <td key={month} style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{row.approved_months?.[month] ? thb(amount) : '–'}</td>)}<td style={{ textAlign: 'right', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{thb(row.total)}</td></tr>)}</tbody><tfoot>{!loading && !loadError && <tr><td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>{monthlyTotals.map((amount, month) => <td key={month} style={{ textAlign: 'right', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{thb(amount)}</td>)}<td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--purple-600)', fontVariantNumeric: 'tabular-nums' }}>{thb(total)}</td></tr>}</tfoot></table></div>
   </div>
 }

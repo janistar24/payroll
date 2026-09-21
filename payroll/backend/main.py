@@ -781,7 +781,10 @@ def create_employee(request: EmployeeSave, user=Depends(get_current_user)):
             audit_logger.log(user["id"], "CREATE", "employee", employee_id, {"employee_code": request.employee_code})
         except Exception:
             logging.exception("Unable to record employee creation audit event")
-        return {"success": True, "data": {"id": employee_id, "employee_code": request.employee_code}}
+        read_error, saved_employee = employees_service.read(employee_id)
+        if read_error["Is Error"]:
+            raise ValueError("บันทึกแล้วแต่ไม่สามารถอ่านข้อมูลพนักงานกลับมาได้")
+        return {"success": True, "data": saved_employee}
     except Exception as error:
         _employee_database_error(error)
 
@@ -802,7 +805,10 @@ def update_employee(employee_id: int, request: EmployeeSave, user=Depends(get_cu
             audit_logger.log(user["id"], "UPDATE", "employee", employee_id, {"employee_code": request.employee_code})
         except Exception:
             logging.exception("Unable to record employee update audit event")
-        return {"success": True}
+        read_error, saved_employee = employees_service.read(employee_id)
+        if read_error["Is Error"]:
+            raise ValueError("บันทึกแล้วแต่ไม่สามารถอ่านข้อมูลพนักงานกลับมาได้")
+        return {"success": True, "data": saved_employee}
     except HTTPException:
         raise
     except Exception as error:
@@ -959,22 +965,23 @@ def get_annual_tax_report(year: int, department_id: int | None = None, report_ty
     try:
         if year < 2000 or year > 3000:
             raise HTTPException(status_code=400, detail="ปีที่เลือกไม่ถูกต้อง")
-        if report_type not in {"tax", "income"}:
+        if report_type not in {"tax", "income", "social_security"}:
             raise HTTPException(status_code=400, detail="ประเภทรายงานไม่ถูกต้อง")
         scoped_department_id = _department_scope(user)
         effective_department_id = scoped_department_id if scoped_department_id is not None else department_id
         amount_join = ""
         amount_expression = "item.total_earnings"
-        if report_type == "tax":
+        if report_type in {"tax", "social_security"}:
+            pay_item_code = "TAX" if report_type == "tax" else "SSF"
             amount_join = """
                 LEFT JOIN (
                     SELECT line.payroll_item_id, line.amount
                     FROM public.payroll_item_lines line
                     JOIN public.pay_item_types item_type ON item_type.id = line.pay_item_type_id
-                    WHERE item_type.code = 'TAX'
-                ) tax_line ON tax_line.payroll_item_id = item.id
+                    WHERE item_type.code = %s
+                ) selected_line ON selected_line.payroll_item_id = item.id
             """
-            amount_expression = "COALESCE(tax_line.amount, 0)"
+            amount_expression = "COALESCE(selected_line.amount, 0)"
         monthly_columns = ",\n                   ".join(
             f"COALESCE(SUM(CASE WHEN period.month = {month} THEN {amount_expression} ELSE 0 END), 0) AS month_{month}"
             for month in range(1, 13)
@@ -1011,7 +1018,10 @@ def get_annual_tax_report(year: int, department_id: int | None = None, report_ty
             monthly_presence_columns=monthly_presence_columns,
             amount_join=amount_join,
         )
-        data, columns = db.fetch(query, (year, effective_department_id, effective_department_id))
+        query_params = ((pay_item_code,) if report_type in {"tax", "social_security"} else ()) + (
+            year, effective_department_id, effective_department_id,
+        )
+        data, columns = db.fetch(query, query_params)
         rows = []
         for value in data:
             record = dict(zip(columns, value))

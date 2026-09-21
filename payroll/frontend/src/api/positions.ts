@@ -32,11 +32,11 @@ export async function getPositions(): Promise<Position[]> {
 }
 
 export async function createPosition(name: string): Promise<Position> {
-  const response = await fetch(`${API_URL}/positions`, {
+  const response = await idempotentFetch(`${API_URL}/positions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authorizationHeaders() },
     body: JSON.stringify({ name }),
-  })
+  }, `POST:/positions:${name.trim().toLowerCase()}`)
 
   if (!response.ok) {
     const result = await response.json().catch(() => null)
@@ -47,3 +47,4 @@ export async function createPosition(name: string): Promise<Position> {
   return result.data as Position
 }
 import { authorizationHeaders } from './auth'
+import { idempotentFetch } from './idempotency'

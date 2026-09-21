@@ -1,4 +1,5 @@
 import { authorizationHeaders } from './auth'
+import { idempotentFetch } from './idempotency'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
 
@@ -9,7 +10,10 @@ export interface SystemUser {
 }
 
 async function request(path: string, init?: RequestInit) {
-  const response = await fetch(`${API_URL}${path}`, { ...init, headers: { 'Content-Type': 'application/json', ...authorizationHeaders(), ...(init?.headers ?? {}) } })
+  const options = { ...init, headers: { 'Content-Type': 'application/json', ...authorizationHeaders(), ...(init?.headers ?? {}) } }
+  const response = init?.method && init.method !== 'GET'
+    ? await idempotentFetch(`${API_URL}${path}`, options, `${init.method}:${path}`)
+    : await fetch(`${API_URL}${path}`, options)
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : 'ดำเนินการไม่สำเร็จ')
   return body

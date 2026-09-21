@@ -38,7 +38,8 @@ class Payroll_periods:
                    batch.parent_batch_id, batch.revision_type, batch.revision_reason,
                    reviser.full_name AS revision_created_by_name,
                    batch.edit_version, batch.last_edited_at,
-                   COALESCE(editor.full_name, editor.username) AS last_edited_by_name
+                   COALESCE(editor.full_name, editor.username) AS last_edited_by_name,
+                   (to_jsonb(batch) -> 'visible_pay_item_codes') AS visible_pay_item_codes
             FROM public.payroll_department_batches batch
             JOIN public.departments department ON department.id = batch.department_id
             LEFT JOIN public.users submitter ON submitter.id = batch.submitted_by_id
@@ -151,7 +152,8 @@ class Payroll_periods:
                    batch.parent_batch_id, batch.revision_type, batch.revision_reason,
                    reviser.full_name AS revision_created_by_name, batch.is_current,
                    batch.edit_version, batch.last_edited_at,
-                   COALESCE(editor.full_name, editor.username) AS last_edited_by_name
+                   COALESCE(editor.full_name, editor.username) AS last_edited_by_name,
+                   (to_jsonb(batch) -> 'visible_pay_item_codes') AS visible_pay_item_codes
             FROM public.payroll_department_batches batch
             JOIN public.departments department ON department.id = batch.department_id
             LEFT JOIN public.users submitter ON submitter.id = batch.submitted_by_id

@@ -2,15 +2,16 @@ import os
 import time
 import uuid
 import logging
+import json
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from DBHelper import DBHelper
@@ -75,6 +76,74 @@ app.add_middleware(
     allow_headers=["*"]
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
+
+
+@app.middleware("http")
+async def prevent_duplicate_mutations(request: Request, call_next):
+    """Return the first result when a mutation is retried with the same request id."""
+    request_id = request.headers.get("X-Idempotency-Key", "").strip()
+    if request.method not in {"POST", "PUT", "PATCH", "DELETE"} or not request_id:
+        return await call_next(request)
+    try:
+        uuid.UUID(request_id)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"detail": "เลขอ้างอิงคำขอไม่ถูกต้อง"})
+
+    operation_type = f"{request.method} {request.url.path}"[:50]
+    try:
+        with db.transaction() as cursor:
+            cursor.execute(
+                """INSERT INTO public.operation_requests(request_id, operation_type, status)
+                   VALUES (%s, %s, 'PROCESSING')
+                   ON CONFLICT (request_id) DO NOTHING
+                   RETURNING request_id""",
+                (request_id, operation_type),
+            )
+            claimed = cursor.fetchone() is not None
+            if not claimed:
+                cursor.execute(
+                    "SELECT operation_type, status, result_data FROM public.operation_requests WHERE request_id=%s",
+                    (request_id,),
+                )
+                existing = cursor.fetchone()
+                if existing and existing[0] != operation_type:
+                    return JSONResponse(status_code=409, content={"detail": "เลขอ้างอิงนี้ถูกใช้กับคำสั่งอื่นแล้ว"})
+                if existing and existing[1] == "SUCCESS" and existing[2] is not None:
+                    saved = existing[2]
+                    status_code = int(saved.pop("_http_status", 200)) if isinstance(saved, dict) else 200
+                    return JSONResponse(status_code=status_code, content=saved)
+                if existing and existing[1] == "PROCESSING":
+                    return JSONResponse(status_code=409, content={"detail": "คำขอนี้กำลังดำเนินการ กรุณารอสักครู่แล้วตรวจสอบอีกครั้ง", "request_id": request_id})
+                cursor.execute(
+                    "UPDATE public.operation_requests SET status='PROCESSING', result_data=NULL WHERE request_id=%s",
+                    (request_id,),
+                )
+    except psycopg.errors.UndefinedTable:
+        return JSONResponse(status_code=503, content={"detail": "ฐานข้อมูลยังไม่มีตาราง operation_requests กรุณาสร้างตารางก่อนใช้งาน"})
+
+    try:
+        response = await call_next(request)
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        if response.status_code < 500:
+            try:
+                saved_result = json.loads(body.decode("utf-8")) if body else {}
+                if isinstance(saved_result, dict):
+                    saved_result["_http_status"] = response.status_code
+                db.execute(
+                    "UPDATE public.operation_requests SET status='SUCCESS', result_data=%s::jsonb WHERE request_id=%s",
+                    (json.dumps(saved_result), request_id),
+                )
+            except Exception:
+                logging.exception("Could not persist idempotent response for %s", request_id)
+        else:
+            db.execute("UPDATE public.operation_requests SET status='FAILED' WHERE request_id=%s", (request_id,))
+        return Response(content=body, status_code=response.status_code, headers=dict(response.headers), media_type=response.media_type)
+    except Exception:
+        try:
+            db.execute("UPDATE public.operation_requests SET status='FAILED' WHERE request_id=%s", (request_id,))
+        except Exception:
+            logging.exception("Could not mark idempotent request as failed")
+        raise
 
 
 @app.on_event("startup")
@@ -485,6 +554,19 @@ class PayItemTypeCreate(BaseModel):
         return value
 
 
+class PayrollBatchColumnsUpdate(BaseModel):
+    codes: list[str]
+
+    @field_validator("codes")
+    @classmethod
+    def validate_codes(cls, value):
+        if len(value) != len(set(value)):
+            raise ValueError("พบประเภทรายการซ้ำกัน")
+        if any(not code or len(code) > 80 or not code.replace("_", "").isalnum() for code in value):
+            raise ValueError("รหัสประเภทรายการไม่ถูกต้อง")
+        return value
+
+
 class PayrollBatchAction(BaseModel):
     action: str
     reject_reason: str | None = Field(default=None, max_length=500)
@@ -497,6 +579,12 @@ class PayrollBatchAction(BaseModel):
         if self.action == "reject" and not (self.reject_reason or "").strip():
             raise ValueError("กรุณาระบุเหตุผลที่ส่งกลับแก้ไข")
         return self
+
+
+class AnnouncementCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=3000)
+    starts_at: datetime
 
 
 def _require_payroll_role(user):
@@ -589,6 +677,55 @@ def auth_me(user=Depends(get_current_user)):
 def _require_admin(user):
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="เฉพาะผู้ดูแลระบบเท่านั้น")
+
+
+@app.get("/api/announcements")
+def get_announcements(user=Depends(get_current_user)):
+    _require_payroll_role(user)
+    rows, columns = db.fetch(
+        """SELECT announcement.id, announcement.title, announcement.content,
+                  announcement.starts_at, announcement.created_at,
+                  COALESCE(author.full_name, author.username, 'ผู้ดูแลระบบ') AS created_by_name
+           FROM public.system_announcements announcement
+           LEFT JOIN public.users author ON author.id = announcement.created_by_id
+           WHERE announcement.is_active = TRUE
+           ORDER BY announcement.created_at DESC
+           LIMIT 10"""
+    )
+    return {"success": True, "data": [dict(zip(columns, row)) for row in rows]}
+
+
+@app.post("/api/announcements", status_code=201)
+def create_announcement(request: AnnouncementCreate, user=Depends(get_current_user)):
+    _require_admin(user)
+    with db.transaction() as cursor:
+        cursor.execute(
+            """INSERT INTO public.system_announcements(title, content, starts_at, created_by_id)
+               VALUES (%s, %s, %s, %s)
+               RETURNING id, title, content, starts_at, created_at""",
+            (request.title.strip(), request.content.strip(), request.starts_at, user["id"]),
+        )
+        row = cursor.fetchone()
+        columns = tuple(desc.name for desc in cursor.description)
+    result = {**dict(zip(columns, row)), "created_by_name": user.get("full_name") or user.get("username") or "ผู้ดูแลระบบ"}
+    audit_logger.log(user["id"], "CREATE_ANNOUNCEMENT", "system_announcement", result["id"], {"title": result["title"]})
+    return {"success": True, "data": result}
+
+
+@app.delete("/api/announcements/{announcement_id}")
+def close_announcement(announcement_id: int, user=Depends(get_current_user)):
+    _require_admin(user)
+    with db.transaction() as cursor:
+        cursor.execute(
+            """UPDATE public.system_announcements
+               SET is_active=FALSE, closed_at=NOW()
+               WHERE id=%s AND is_active=TRUE RETURNING id""",
+            (announcement_id,),
+        )
+        if cursor.fetchone() is None:
+            raise HTTPException(status_code=404, detail="ไม่พบประกาศที่เปิดใช้งาน")
+    audit_logger.log(user["id"], "CLOSE_ANNOUNCEMENT", "system_announcement", announcement_id, {})
+    return {"success": True}
 
 
 @app.get("/api/users")
@@ -1378,3 +1515,22 @@ def create_pay_item_type(request: PayItemTypeCreate, user=Depends(get_current_us
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
         raise HTTPException(status_code=500, detail={"message": "ไม่สามารถเพิ่มประเภทรายการเงินเดือนได้", "error": str(error)})
+
+
+@app.put("/api/payroll_department_batches/{batch_id}/columns")
+def update_payroll_batch_columns(batch_id: int, request: PayrollBatchColumnsUpdate, user=Depends(get_current_user)):
+    try:
+        batch = _ensure_batch_access(batch_id, user)
+        if user["role"] == "director":
+            raise HTTPException(status_code=403, detail="ผู้บริหารไม่สามารถแก้ไขประเภทรายการเงินเดือนได้")
+        codes = payroll_workflow_service.update_visible_columns(
+            batch_id, batch["department_id"], request.codes, user["id"]
+        )
+        audit_logger.log(user["id"], "UPDATE_PAYROLL_COLUMNS", "payroll_batch", batch_id, {"codes": codes})
+        return {"success": True, "data": {"codes": codes}}
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail={"message": "บันทึกคอลัมน์ไม่สำเร็จ", "error": str(error)})

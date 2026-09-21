@@ -74,22 +74,22 @@ async function parseApiError(response: Response): Promise<string> {
 }
 
 export async function createEmployee(data: EmployeeSaveInput): Promise<Employee> {
-  const response = await fetch(`${API_URL}/employees`, {
+  const response = await idempotentFetch(`${API_URL}/employees`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...authorizationHeaders() },
     body: JSON.stringify(data),
-  })
+  }, 'POST:/employees')
   if (!response.ok) throw new Error(await parseApiError(response))
   const result = await response.json()
   return result.data
 }
 
 export async function updateEmployee(employeeId: number, data: EmployeeSaveInput): Promise<Employee> {
-  const response = await fetch(`${API_URL}/employees/${employeeId}`, {
+  const response = await idempotentFetch(`${API_URL}/employees/${employeeId}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', ...authorizationHeaders() },
     body: JSON.stringify(data),
-  })
+  }, `PUT:/employees/${employeeId}`)
   if (!response.ok) throw new Error(await parseApiError(response))
   const result = await response.json()
   return result.data as Employee
@@ -97,21 +97,22 @@ export async function updateEmployee(employeeId: number, data: EmployeeSaveInput
 
 /** Soft-delete: retain payroll history but remove the employee from active lists. */
 export async function deactivateEmployee(employeeId: number): Promise<void> {
-  const response = await fetch(`${API_URL}/employees/${employeeId}/status`, {
+  const response = await idempotentFetch(`${API_URL}/employees/${employeeId}/status`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', ...authorizationHeaders() },
     body: JSON.stringify({ status: 'TERMINATED' }),
-  })
+  }, `PATCH:/employees/${employeeId}/status`)
   if (!response.ok) throw new Error(await parseApiError(response))
 }
 
 export async function updateEmployeeEmail(employeeId: number, email: string): Promise<void> {
-  const response = await fetch(`${API_URL}/employees/${employeeId}/email`, {
+  const response = await idempotentFetch(`${API_URL}/employees/${employeeId}/email`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', ...authorizationHeaders() },
     body: JSON.stringify({ email }),
-  })
+  }, `PATCH:/employees/${employeeId}/email`)
   if (!response.ok) throw new Error(await parseApiError(response))
 }
 
 import { authorizationHeaders } from './auth'
+import { idempotentFetch } from './idempotency'

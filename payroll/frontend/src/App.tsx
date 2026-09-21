@@ -20,7 +20,8 @@ import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
 import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, revealAccessRequestPassword, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
-import { createPayItemType, type PayItemType } from './api/payItemTypes'
+import { createPayItemType, savePayrollBatchColumns, type PayItemType } from './api/payItemTypes'
+import { closeAnnouncement, createAnnouncement, getAnnouncements, type SystemAnnouncement } from './api/announcements'
 import { createOrganization, type Organization } from './api/organizations'
 import { getAnnualTaxReport, type AnnualReportType, type AnnualTaxRow } from './api/annualTax'
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -142,6 +143,7 @@ interface DeptPayroll {
   editVersion?: number
   lastEditedAt?: string
   lastEditedBy?: string
+  visiblePayItemCodes?: string[]
 }
 
 interface PayrollPeriod {
@@ -390,6 +392,7 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
         editVersion: batch.edit_version ?? 0,
         lastEditedAt: batch.last_edited_at ?? undefined,
         lastEditedBy: batch.last_edited_by_name ?? undefined,
+        visiblePayItemCodes: batch.visible_pay_item_codes ?? undefined,
       }
     }),
   }))
@@ -422,6 +425,7 @@ const mapPayrollHistoryBatch = (batch: PayrollBatchRecord, period: PayrollPeriod
     revisionReason: batch.revision_reason ?? undefined, revisionCreatedBy: batch.revision_created_by_name ?? undefined,
     editVersion: batch.edit_version ?? 0, lastEditedAt: batch.last_edited_at ?? undefined,
     lastEditedBy: batch.last_edited_by_name ?? undefined,
+    visiblePayItemCodes: batch.visible_pay_item_codes ?? undefined,
   }
 }
 
@@ -1118,11 +1122,63 @@ function DashboardAnalogClock() {
   )
 }
 
-function Dashboard({ role, userName, userDepartment, periods, employees, departments, setPage, setActivePeriodId, setActiveDeptId }: {
+function Dashboard({ role, userName, userDepartment, periods, employees, departments, setPage, setActivePeriodId, setActiveDeptId, showToast }: {
   role: Role; userName: string; userDepartment: string | null; periods: PayrollPeriod[];
   employees: DatabaseEmployee[]; departments: Department[];
   setPage: (p: Page) => void; setActivePeriodId: (id: string) => void; setActiveDeptId: (id: string) => void;
+  showToast: (message: string, type?: 'success' | 'error') => void;
 }) {
+  const [announcements, setAnnouncements] = useState<SystemAnnouncement[]>([])
+  const [showAnnouncementModal, setShowAnnouncementModal] = useState(false)
+  const [announcementTitle, setAnnouncementTitle] = useState('')
+  const [announcementContent, setAnnouncementContent] = useState('')
+  const [announcementDate, setAnnouncementDate] = useState('')
+  const [announcementTime, setAnnouncementTime] = useState('')
+  const [announcementSaving, setAnnouncementSaving] = useState(false)
+  const [closingAnnouncementId, setClosingAnnouncementId] = useState<number | null>(null)
+  useEffect(() => {
+    void getAnnouncements().then(setAnnouncements).catch(() => showToast('ไม่สามารถโหลดประกาศได้', 'error'))
+    const timer = window.setInterval(() => {
+      void getAnnouncements().then(setAnnouncements).catch(() => undefined)
+    }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
+  const publishAnnouncement = async () => {
+    if (!announcementTitle.trim() || !announcementContent.trim() || !announcementDate || !announcementTime) {
+      showToast('กรุณากรอกหัวข้อ เนื้อหา และวัน–เวลาเริ่มอัปเดตให้ครบ', 'error')
+      return
+    }
+    setAnnouncementSaving(true)
+    try {
+      const created = await createAnnouncement({
+        title: announcementTitle.trim(),
+        content: announcementContent.trim(),
+        starts_at: new Date(`${announcementDate}T${announcementTime}:00`).toISOString(),
+      })
+      setAnnouncements(current => [created, ...current])
+      setAnnouncementTitle(''); setAnnouncementContent(''); setAnnouncementDate(''); setAnnouncementTime('')
+      setShowAnnouncementModal(false)
+      showToast('บันทึกและประกาศให้ผู้ใช้งานทุก role แล้ว', 'success')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'บันทึกประกาศไม่สำเร็จ', 'error')
+    } finally {
+      setAnnouncementSaving(false)
+    }
+  }
+
+  const dismissAnnouncement = async (id: number) => {
+    setClosingAnnouncementId(id)
+    try {
+      await closeAnnouncement(id)
+      setAnnouncements(current => current.filter(item => item.id !== id))
+      showToast('ปิดประกาศแล้ว', 'success')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'ปิดประกาศไม่สำเร็จ', 'error')
+    } finally {
+      setClosingAnnouncementId(null)
+    }
+  }
   const [dashboardPeriodId, setDashboardPeriodId] = useState(periods[0]?.id ?? '')
   useEffect(() => {
     if (!periods.some(period => period.id === dashboardPeriodId)) setDashboardPeriodId(periods[0]?.id ?? '')
@@ -1306,11 +1362,45 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
             )}
           </div>
           <div className="flex items-start gap-3">
+            {role === 'admin' && <button className="btn btn-primary dashboard-announcement-button" onClick={() => setShowAnnouncementModal(true)}>📣 ประกาศ</button>}
             <button className="btn btn-secondary dashboard-print-button" onClick={printDashboard}>🖨️ พิมพ์รายงาน</button>
             <DashboardAnalogClock />
           </div>
         </div>
       </div>
+
+      {announcements.length > 0 && (
+        <section className="flex flex-col gap-3" aria-label="ประกาศจากผู้ดูแลระบบ">
+          {announcements.map(announcement => (
+            <article key={announcement.id} className="card" style={{ padding: '16px 18px', borderLeft: '4px solid #7651DC', background: 'linear-gradient(100deg, #FBF9FF 0%, #FFFFFF 72%)' }}>
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#7651DC', marginBottom: 4 }}>📣 ประกาศจากผู้ดูแลระบบ</div>
+                  <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, fontWeight: 700 }}>{announcement.title}</div>
+                  <div style={{ marginTop: 7, fontSize: 13.5, lineHeight: 1.65, whiteSpace: 'pre-wrap', color: 'var(--text-secondary)' }}>{announcement.content}</div>
+                  <div style={{ marginTop: 9, fontSize: 12, color: 'var(--text-muted)' }}>กำหนดเริ่มอัปเดต: <strong style={{ color: '#4A3A78' }}>{formatBuddhistDateTime(announcement.starts_at)}</strong> · ประกาศโดย {announcement.created_by_name}</div>
+                </div>
+                {role === 'admin' && <button className="btn btn-secondary btn-sm" aria-busy={closingAnnouncementId === announcement.id} disabled={closingAnnouncementId === announcement.id} onClick={() => void dismissAnnouncement(announcement.id)}><BusyLabel busy={closingAnnouncementId === announcement.id} label="กำลังปิด…">ปิดประกาศ</BusyLabel></button>}
+              </div>
+            </article>
+          ))}
+        </section>
+      )}
+
+      {showAnnouncementModal && (
+        <Modal title="สร้างประกาศการอัปเดตระบบ" onClose={() => !announcementSaving && setShowAnnouncementModal(false)}>
+          <div className="flex flex-col gap-4" style={{ minWidth: 'min(560px, 80vw)' }}>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>ประกาศนี้จะแสดงบนหน้าหลักของพนักงานฝ่ายธุรการ ผู้บริหาร และแอดมินทุกคน</div>
+            <FormField label="หัวข้อประกาศ" required><input className="inp" autoFocus maxLength={200} value={announcementTitle} onChange={event => setAnnouncementTitle(event.target.value)} placeholder="เช่น อัปเดตระบบ PayFlow เวอร์ชันใหม่" /></FormField>
+            <FormField label="เนื้อหาประกาศ" required><textarea className="inp" rows={5} maxLength={3000} value={announcementContent} onChange={event => setAnnouncementContent(event.target.value)} placeholder="ระบุฟีเจอร์ใหม่ ผลกระทบ และสิ่งที่ผู้ใช้งานควรทราบ" /></FormField>
+            <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 150px', gap: 12 }}>
+              <FormField label="วันที่เริ่มอัปเดต (พ.ศ.)" required><BuddhistDateInput value={announcementDate} onChange={setAnnouncementDate} required /></FormField>
+              <FormField label="เวลาเริ่มอัปเดต" required><input className="inp" type="time" value={announcementTime} onChange={event => setAnnouncementTime(event.target.value)} required /></FormField>
+            </div>
+            <div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={announcementSaving} onClick={() => setShowAnnouncementModal(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={announcementSaving} disabled={announcementSaving} onClick={() => void publishAnnouncement()}><BusyLabel busy={announcementSaving} label="กำลังประกาศ…">บันทึกและประกาศ</BusyLabel></button></div>
+          </div>
+        </Modal>
+      )}
 
       <div className="card" aria-label="เลือกเดือน ปี และฝ่ายสำหรับแสดงรายงาน" style={{ padding: '12px 14px', display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
         <AppSelect className="inp" style={{ width: 150 }} value={String(currentPeriod?.month ?? '')} onChange={event => selectDashboardPeriod(currentPeriod?.year ?? 0, Number(event.target.value))}>
@@ -1914,6 +2004,10 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const [newItemName, setNewItemName] = useState('')
   const [newItemCategory, setNewItemCategory] = useState<PayItemType['category']>('EARNING')
   const [creatingItemType, setCreatingItemType] = useState(false)
+  const allActivePayItemCodes = useMemo(() => payItemTypes.filter(item => item.is_active).map(item => item.code), [payItemTypes])
+  const [selectedPayItemCodes, setSelectedPayItemCodes] = useState<string[]>(() => dept.visiblePayItemCodes ?? payItemTypes.filter(item => item.is_active).map(item => item.code))
+  const [draftPayItemCodes, setDraftPayItemCodes] = useState<string[]>(selectedPayItemCodes)
+  const [savingColumns, setSavingColumns] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState('')
@@ -1944,8 +2038,11 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     [databaseEmployees],
   )
   const isReadonly = dept.status === 'pending' || dept.status === 'approved' || dept.status === 'closed'
-  const customIncomeTypes = payItemTypes.filter(item => item.is_active && item.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(item.code))
-  const customDeductionTypes = payItemTypes.filter(item => item.is_active && item.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(item.code))
+  const customIncomeTypes = payItemTypes.filter(item => item.is_active && selectedPayItemCodes.includes(item.code) && item.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(item.code))
+  const customDeductionTypes = payItemTypes.filter(item => item.is_active && selectedPayItemCodes.includes(item.code) && item.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(item.code))
+  const showsPayItem = (code: string) => selectedPayItemCodes.includes(code)
+  const visibleIncomeColumnCount = 1 + ['EXTRA_PAY', 'POS_ALLOW'].filter(showsPayItem).length + customIncomeTypes.length
+  const visibleDeductionColumnCount = 1 + ['KTB_LOAN', 'TAX', 'SSF', 'FUNERAL_FUND', 'KTB_BANK', 'SAVINGS_BANK_LOAN'].filter(showsPayItem).length + customDeductionTypes.length
   const availableEmployees = allDepartmentEmployees.filter(employee => !includedEmployeeIds.includes(employee.id))
   const visibleEmployees = emps.filter(employee => {
     const keyword = search.trim().toLowerCase()
@@ -2174,6 +2271,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     try {
       const created = await createPayItemType({ name: newItemName.trim(), category: newItemCategory })
       setPayItemTypes(current => current.some(item => item.code === created.code) ? current : [...current, created])
+      setDraftPayItemCodes(current => current.includes(created.code) ? current : [...current, created.code])
       setRows(current => Object.fromEntries(Object.entries(current).map(([employeeId, row]) => [employeeId, {
         ...row,
         [created.category === 'EARNING' ? 'customIncome' : 'customDeduction']: {
@@ -2182,12 +2280,26 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
         },
       }])))
       setNewItemName('')
-      setShowAddItemModal(false)
-      showToast('เพิ่มคอลัมน์รายการเงินเดือนแล้ว กรอกจำนวนเงินและกดบันทึกเพื่อใช้ในรอบนี้', 'success')
+      showToast('เพิ่มรายการแล้วและเลือกไว้ในตาราง', 'success')
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'เพิ่มประเภทรายการเงินเดือนไม่สำเร็จ', 'error')
     } finally {
       setCreatingItemType(false)
+    }
+  }
+
+  const finishEditingPayItemColumns = async () => {
+    if (!dept.databaseId) { showToast('ไม่พบข้อมูลรอบเงินเดือน', 'error'); return }
+    setSavingColumns(true)
+    try {
+      const savedCodes = await savePayrollBatchColumns(dept.databaseId, draftPayItemCodes)
+      setSelectedPayItemCodes(savedCodes)
+      setShowAddItemModal(false)
+      showToast(`บันทึกคอลัมน์ที่ใช้ในตาราง ${savedCodes.length} รายการแล้ว`, 'success')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'บันทึกคอลัมน์ไม่สำเร็จ', 'error')
+    } finally {
+      setSavingColumns(false)
     }
   }
 
@@ -2580,8 +2692,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           <thead>
             <tr>
               <th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
-              <th colSpan={3 + customIncomeTypes.length} className="th-group th-group-income">รายการรับ</th>
-              <th colSpan={7 + customDeductionTypes.length} className="th-group th-group-deduct">
+              <th colSpan={visibleIncomeColumnCount} className="th-group th-group-income">รายการรับ</th>
+              <th colSpan={visibleDeductionColumnCount} className="th-group th-group-deduct">
                 รายการหัก
                 {!isReadonly && (
                   <button
@@ -2589,11 +2701,12 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                     className="payroll-add-item-button"
                     onClick={() => {
                       setEditing(true)
+                      setDraftPayItemCodes(selectedPayItemCodes)
                       setShowAddItemModal(true)
                     }}
-                    title="เพิ่มประเภทรายการรับหรือรายการหัก"
+                    title="เลือก เพิ่ม หรือนำประเภทรายการออกจากตาราง"
                   >
-                    + เพิ่มประเภทรายการรับ/หัก
+                    แก้ไขประเภทรายการรับ/หัก
                   </button>
                 )}
               </th>
@@ -2608,17 +2721,17 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               <th className="th-emp">หน่วยงาน</th>
               <th className="th-emp" style={{ textAlign: 'right' }}>ฐานเงินเดือน</th>
               {/* Income */}
-              <th className="th-income" style={{ textAlign: 'right' }}>เงินเพิ่ม</th>
-              <th className="th-income" style={{ textAlign: 'right' }}>เงินประจำตำแหน่ง</th>
+              {showsPayItem('EXTRA_PAY') && <th className="th-income" style={{ textAlign: 'right' }}>เงินเพิ่ม</th>}
+              {showsPayItem('POS_ALLOW') && <th className="th-income" style={{ textAlign: 'right' }}>เงินประจำตำแหน่ง</th>}
               {customIncomeTypes.map(item => <th key={item.code} className="th-income" style={{ textAlign: 'right', minWidth: 125 }}>{item.name}</th>)}
               <th className="th-income" style={{ textAlign: 'right' }}>รวมรายการรับ</th>
               {/* Deduct */}
-              <th className="th-deduct" style={{ textAlign: 'right' }}>ชำระหนี้ KTB</th>
-              <th className="th-deduct" style={{ textAlign: 'right' }}>ภาษีหัก ณ ที่จ่าย</th>
-              <th className="th-deduct" style={{ textAlign: 'right' }}>ประกันสังคม</th>
-              <th className="th-deduct" style={{ textAlign: 'right' }}>ฌาปนกิจ</th>
-              <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารกรุงไทย</th>
-              <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารออมสิน</th>
+              {showsPayItem('KTB_LOAN') && <th className="th-deduct" style={{ textAlign: 'right' }}>ชำระหนี้ KTB</th>}
+              {showsPayItem('TAX') && <th className="th-deduct" style={{ textAlign: 'right' }}>ภาษีหัก ณ ที่จ่าย</th>}
+              {showsPayItem('SSF') && <th className="th-deduct" style={{ textAlign: 'right' }}>ประกันสังคม</th>}
+              {showsPayItem('FUNERAL_FUND') && <th className="th-deduct" style={{ textAlign: 'right' }}>ฌาปนกิจ</th>}
+              {showsPayItem('KTB_BANK') && <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารกรุงไทย</th>}
+              {showsPayItem('SAVINGS_BANK_LOAN') && <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารออมสิน</th>}
               {customDeductionTypes.map(item => <th key={item.code} className="th-deduct" style={{ textAlign: 'right', minWidth: 125 }}>{item.name}</th>)}
               <th className="th-deduct" style={{ textAlign: 'right' }}>รวมรายการหัก</th>
               {/* Net */}
@@ -2638,16 +2751,16 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.position}</td>
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.organization}</td>
                   <td className="num readonly">{thb(e.baseSalary)}</td>
-                  <CellInput empId={e.id} field="extra" value={r.extra} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:EXTRA_PAY`)} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="posAllowance" value={r.posAllowance} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:POS_ALLOW`)} onFocus={handleFocus} onCommit={handleCommit} />
+                  {showsPayItem('EXTRA_PAY') && <CellInput empId={e.id} field="extra" value={r.extra} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:EXTRA_PAY`)} onFocus={handleFocus} onCommit={handleCommit} />}
+                  {showsPayItem('POS_ALLOW') && <CellInput empId={e.id} field="posAllowance" value={r.posAllowance} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:POS_ALLOW`)} onFocus={handleFocus} onCommit={handleCommit} />}
                   {customIncomeTypes.map(item => <CustomPayItemCell key={item.code} empId={e.id} code={item.code} category="EARNING" value={r.customIncome?.[item.code] ?? 0} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:${item.code}`)} onFocus={handleFocus} onCommit={requestCustomCellChange} />)}
                   <td className="num total" style={{ background: '#F0FDF4', color: '#15803D' }}>{thb(g)}</td>
-                  <CellInput empId={e.id} field="debtKTB" value={r.debtKTB} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:KTB_LOAN`)} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="tax" value={r.tax} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:TAX`)} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="social" value={r.social} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:SSF`)} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="funeral" value={r.funeral} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:FUNERAL_FUND`)} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="ktb" value={r.ktb} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:KTB_BANK`)} onFocus={handleFocus} onCommit={handleCommit} />
-                  <CellInput empId={e.id} field="gsb" value={r.gsb} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:SAVINGS_BANK_LOAN`)} onFocus={handleFocus} onCommit={handleCommit} />
+                  {showsPayItem('KTB_LOAN') && <CellInput empId={e.id} field="debtKTB" value={r.debtKTB} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:KTB_LOAN`)} onFocus={handleFocus} onCommit={handleCommit} />}
+                  {showsPayItem('TAX') && <CellInput empId={e.id} field="tax" value={r.tax} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:TAX`)} onFocus={handleFocus} onCommit={handleCommit} />}
+                  {showsPayItem('SSF') && <CellInput empId={e.id} field="social" value={r.social} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:SSF`)} onFocus={handleFocus} onCommit={handleCommit} />}
+                  {showsPayItem('FUNERAL_FUND') && <CellInput empId={e.id} field="funeral" value={r.funeral} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:FUNERAL_FUND`)} onFocus={handleFocus} onCommit={handleCommit} />}
+                  {showsPayItem('KTB_BANK') && <CellInput empId={e.id} field="ktb" value={r.ktb} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:KTB_BANK`)} onFocus={handleFocus} onCommit={handleCommit} />}
+                  {showsPayItem('SAVINGS_BANK_LOAN') && <CellInput empId={e.id} field="gsb" value={r.gsb} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:SAVINGS_BANK_LOAN`)} onFocus={handleFocus} onCommit={handleCommit} />}
                   {customDeductionTypes.map(item => <CustomPayItemCell key={item.code} empId={e.id} code={item.code} category="DEDUCTION" value={r.customDeduction?.[item.code] ?? 0} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:${item.code}`)} onFocus={handleFocus} onCommit={requestCustomCellChange} />)}
                   <td className="num total" style={{ background: '#FFF8F6', color: '#B91C1C' }}>{thb(d)}</td>
                   <td className="num total" style={{ background: '#F5F3FF', color: 'var(--purple-600)', fontFamily: 'var(--font-display)' }}>{thb(n)}</td>
@@ -2682,16 +2795,16 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             <tr>
               <td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>
               <td className="num">{thb(totals.base)}</td>
-              <td className="num">{thb(totals.extra)}</td>
-              <td className="num">{thb(totals.pos)}</td>
+              {showsPayItem('EXTRA_PAY') && <td className="num">{thb(totals.extra)}</td>}
+              {showsPayItem('POS_ALLOW') && <td className="num">{thb(totals.pos)}</td>}
               {customIncomeTypes.map(item => <td key={item.code} className="num">{thb(emps.reduce((sum, employee) => sum + (rows[employee.id].customIncome?.[item.code] ?? 0), 0))}</td>)}
               <td className="num" style={{ color: '#15803D' }}>{thb(totals.gross)}</td>
-              <td className="num">{thb(totals.debtKTB)}</td>
-              <td className="num">{thb(totals.tax)}</td>
-              <td className="num">{thb(totals.social)}</td>
-              <td className="num">{thb(totals.funeral)}</td>
-              <td className="num">{thb(totals.ktb)}</td>
-              <td className="num">{thb(totals.gsb)}</td>
+              {showsPayItem('KTB_LOAN') && <td className="num">{thb(totals.debtKTB)}</td>}
+              {showsPayItem('TAX') && <td className="num">{thb(totals.tax)}</td>}
+              {showsPayItem('SSF') && <td className="num">{thb(totals.social)}</td>}
+              {showsPayItem('FUNERAL_FUND') && <td className="num">{thb(totals.funeral)}</td>}
+              {showsPayItem('KTB_BANK') && <td className="num">{thb(totals.ktb)}</td>}
+              {showsPayItem('SAVINGS_BANK_LOAN') && <td className="num">{thb(totals.gsb)}</td>}
               {customDeductionTypes.map(item => <td key={item.code} className="num">{thb(emps.reduce((sum, employee) => sum + (rows[employee.id].customDeduction?.[item.code] ?? 0), 0))}</td>)}
               <td className="num" style={{ color: '#B91C1C' }}>{thb(totals.deduct)}</td>
               <td className="num" style={{ color: 'var(--purple-600)' }}>{thb(totals.net)}</td>
@@ -2794,12 +2907,37 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       )}
 
       {showAddItemModal && (
-        <Modal title="เพิ่มคอลัมน์รายการเงินเดือน" onClose={() => !creatingItemType && setShowAddItemModal(false)}>
-          <div className="flex flex-col gap-4">
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65 }}>รายการที่เพิ่มจะเป็นประเภทรายการเงินเดือนใหม่ และใช้งานเป็นคอลัมน์ในรอบเงินเดือนถัดไปได้</div>
-            <FormField label="ชื่อรายการ" required><input className="inp" autoFocus value={newItemName} maxLength={100} onChange={event => setNewItemName(event.target.value)} placeholder="เช่น เงินพิเศษ" /></FormField>
-            <FormField label="จัดเป็นรายการ" required><AppSelect className="inp" value={newItemCategory} onChange={event => setNewItemCategory(event.target.value as PayItemType['category'])}><option value="EARNING">รายการรับ</option><option value="DEDUCTION">รายการหัก</option></AppSelect></FormField>
-            <div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingItemType} onClick={() => setShowAddItemModal(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={creatingItemType} disabled={creatingItemType || !newItemName.trim()} onClick={() => void addPayItemType()}><BusyLabel busy={creatingItemType} label="กำลังเพิ่ม…">เพิ่มคอลัมน์</BusyLabel></button></div>
+        <Modal title="แก้ไขประเภทรายการรับ/หัก" onClose={() => !creatingItemType && !savingColumns && setShowAddItemModal(false)}>
+          <div className="flex flex-col gap-4" style={{ minWidth: 'min(560px, 80vw)' }}>
+            <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.65 }}>ติ๊กรายการที่ต้องการให้แสดงในตาราง หรือกด <strong>−</strong> เพื่อนำรายการออกจากตารางรอบนี้ โดยข้อมูลเดิมจะไม่ถูกลบ</div>
+            <div style={{ maxHeight: 300, overflowY: 'auto', border: '1px solid var(--border)', borderRadius: 12 }}>
+              {(['EARNING', 'DEDUCTION'] as const).map(category => (
+                <div key={category} style={{ padding: '12px 14px', borderBottom: category === 'EARNING' ? '1px solid var(--border)' : undefined }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: category === 'EARNING' ? '#15803D' : '#B91C1C', marginBottom: 8 }}>{category === 'EARNING' ? 'รายการรับ' : 'รายการหัก'}</div>
+                  <div className="flex flex-col gap-2">
+                    {payItemTypes.filter(item => item.is_active && item.category === category).map(item => {
+                      const checked = draftPayItemCodes.includes(item.code)
+                      return <label key={item.code} className="flex items-center justify-between gap-3" style={{ padding: '8px 10px', borderRadius: 9, background: checked ? '#F7F4FF' : '#FAFAFC', cursor: 'pointer' }}>
+                        <span className="flex items-center gap-3"><input type="checkbox" checked={checked} onChange={() => setDraftPayItemCodes(current => checked ? current.filter(code => code !== item.code) : [...current, item.code])} /><span>{item.name}</span></span>
+                        <button type="button" className="btn btn-danger btn-xs" aria-label={`นำ ${item.name} ออกจากตาราง`} title="นำออกจากตาราง" onClick={event => { event.preventDefault(); setDraftPayItemCodes(current => current.filter(code => code !== item.code)) }}>−</button>
+                      </label>
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ borderTop: '1px solid var(--border)', paddingTop: 16 }}>
+              <div style={{ fontWeight: 700, marginBottom: 10 }}>เพิ่มประเภทรายการใหม่</div>
+              <div className="flex gap-2 items-end flex-wrap">
+                <FormField label="ชื่อรายการ" required><input className="inp" value={newItemName} maxLength={100} onChange={event => setNewItemName(event.target.value)} placeholder="เช่น เงินพิเศษ" /></FormField>
+                <FormField label="ประเภท" required><AppSelect className="inp" value={newItemCategory} onChange={event => setNewItemCategory(event.target.value as PayItemType['category'])}><option value="EARNING">รายการรับ</option><option value="DEDUCTION">รายการหัก</option></AppSelect></FormField>
+                <button className="btn btn-secondary" aria-busy={creatingItemType} disabled={creatingItemType || !newItemName.trim()} onClick={() => void addPayItemType()}><BusyLabel busy={creatingItemType} label="กำลังเพิ่ม…">+ เพิ่ม</BusyLabel></button>
+              </div>
+            </div>
+            <div className="flex justify-between items-center gap-3">
+              <span style={{ fontSize: 12.5, color: 'var(--text-muted)' }}>เลือกแสดง {draftPayItemCodes.filter(code => allActivePayItemCodes.includes(code)).length} คอลัมน์</span>
+              <div className="flex gap-3"><button className="btn btn-secondary" disabled={creatingItemType || savingColumns} onClick={() => setShowAddItemModal(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={savingColumns} disabled={creatingItemType || savingColumns} onClick={() => void finishEditingPayItemColumns()}><BusyLabel busy={savingColumns} label="กำลังบันทึก…">เสร็จสิ้น</BusyLabel></button></div>
+            </div>
           </div>
         </Modal>
       )}
@@ -4855,7 +4993,7 @@ export default function App() {
           {page === 'dashboard' && (
             <Dashboard role={role} userName={userName} userDepartment={userDepartment} periods={visiblePeriods}
               employees={visibleEmployees} departments={visibleDepartments} setPage={setPage}
-              setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
+              setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} showToast={showToast} />
           )}
           {page === 'periods' && (
             <PeriodsPage periods={visiblePeriods} departments={visibleDepartments} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} reloadPayroll={loadEmployeeData} error={payrollError} showToast={showToast} />

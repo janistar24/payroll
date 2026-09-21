@@ -1,4 +1,5 @@
 import { authorizationHeaders } from './auth'
+import { idempotentFetch } from './idempotency'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
 
@@ -36,6 +37,7 @@ export interface PayrollBatchRecord {
   edit_version?: number
   last_edited_at?: string | null
   last_edited_by_name?: string | null
+  visible_pay_item_codes?: string[] | null
   payroll_items: PayrollItemRecord[]
   excluded_employee_codes?: string[]
 }
@@ -74,13 +76,13 @@ export async function getPayrollSyncVersion(): Promise<string> {
 }
 
 export async function createPayrollPeriod(input: { year: number; month: number; pay_date: string; note?: string; department_id?: number }): Promise<{ period_id: number; batch_id: number; existing: boolean }> {
-  const response = await fetch(`${API_URL}/payroll_periods`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify(input) })
+  const response = await idempotentFetch(`${API_URL}/payroll_periods`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify(input) }, `POST:/payroll_periods:${input.year}:${input.month}:${input.department_id ?? 'all'}`)
   if (!response.ok) return parseError(response, `สร้างรอบเงินเดือนไม่สำเร็จ: ${response.status}`)
   return (await response.json()).data as { period_id: number; batch_id: number; existing: boolean }
 }
 
 export async function deletePayrollPeriod(periodId: number): Promise<void> {
-  const response = await fetch(`${API_URL}/payroll_periods/${periodId}`, { method: 'DELETE', headers: authorizationHeaders() })
+  const response = await idempotentFetch(`${API_URL}/payroll_periods/${periodId}`, { method: 'DELETE', headers: authorizationHeaders() }, `DELETE:/payroll_periods/${periodId}`)
   if (!response.ok) return parseError(response, `ลบรอบเงินเดือนไม่สำเร็จ: ${response.status}`)
 }
 
@@ -114,7 +116,7 @@ export async function savePayrollBatchItems(
   change_notes: PayrollChangeNote[] = [],
   expected_version?: number,
 ): Promise<{ edit_version: number }> {
-  const response = await fetch(
+  const response = await idempotentFetch(
     `${API_URL}/payroll_department_batches/${batchId}/items`,
     {
       method: 'PUT',
@@ -123,7 +125,7 @@ export async function savePayrollBatchItems(
         ...authorizationHeaders(),
       },
       body: JSON.stringify({ rows, change_notes, expected_version }),
-    },
+    }, `PUT:/payroll_department_batches/${batchId}/items:v${expected_version ?? 'unknown'}`,
   )
   if (!response.ok) {
     return parseError(response, `บันทึกตารางเงินเดือนไม่สำเร็จ: ${response.status}`)
@@ -151,7 +153,7 @@ export async function getPayrollBatchVersion(batchId: number): Promise<number> {
 }
 
 export async function createPayrollRevision(batchId: number, revision_type: string, reason: string): Promise<{ batch_id: number }> {
-  const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/revisions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ revision_type, reason }) })
+  const response = await idempotentFetch(`${API_URL}/payroll_department_batches/${batchId}/revisions`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ revision_type, reason }) }, `POST:/payroll_department_batches/${batchId}/revisions`)
   if (!response.ok) return parseError(response, `สร้างฉบับแก้ไขไม่สำเร็จ: ${response.status}`)
   return (await response.json()).data as { batch_id: number }
 }
@@ -163,15 +165,15 @@ export async function getPayrollBatchHistory(batchId: number): Promise<PayrollBa
 }
 
 export async function payrollBatchAction(batchId: number, action: 'submit' | 'approve' | 'reject', expected_version: number, reject_reason?: string): Promise<void> {
-  const response = await fetch(`${API_URL}/payroll_department_batches/${batchId}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ action, reject_reason, expected_version }) })
+  const response = await idempotentFetch(`${API_URL}/payroll_department_batches/${batchId}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ action, reject_reason, expected_version }) }, `POST:/payroll_department_batches/${batchId}/action:${action}:v${expected_version}`)
   if (!response.ok) return parseError(response, `เปลี่ยนสถานะเงินเดือนไม่สำเร็จ: ${response.status}`)
 }
 
 export async function sendPayslipEmail(payrollItemId: number): Promise<{ recipient: string }> {
-  const response = await fetch(`${API_URL}/payslip-email-deliveries/${payrollItemId}/send`, {
+  const response = await idempotentFetch(`${API_URL}/payslip-email-deliveries/${payrollItemId}/send`, {
     method: 'POST',
     headers: authorizationHeaders(),
-  })
+  }, `POST:/payslip-email-deliveries/${payrollItemId}/send`)
   if (!response.ok) return parseError(response, `ส่งอีเมลไม่สำเร็จ: ${response.status}`)
   return (await response.json()).data as { recipient: string }
 }

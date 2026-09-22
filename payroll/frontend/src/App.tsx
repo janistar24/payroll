@@ -2783,9 +2783,9 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             <tr>
               {/* Emp */}
               <th className="th-emp">ลำดับ</th>
-              <th className="th-emp">รหัส</th>
               <th className="th-emp">ชื่อ–นามสกุล</th>
               <th className="th-emp">ตำแหน่ง</th>
+              <th className="th-emp">หน่วยงาน</th>
               <th className="th-emp" style={{ textAlign: 'right' }}>เงินเดือน</th>
               {/* Income */}
               {showsPayItem('EXTRA_PAY') && <th className="th-income" style={{ textAlign: 'right' }}>เงินเพิ่ม/ค่าตอบแทน</th>}
@@ -2814,9 +2814,9 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               return (
                 <tr key={e.id} className={isActive ? 'editing' : ''}>
                   <td className="readonly" style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>{idx + 1}</td>
-                  <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.id}</td>
                   <td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{e.title}{e.firstName} {e.lastName}</td>
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.position}</td>
+                  <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.organization}</td>
                   <td className="num readonly">{thb(e.baseSalary)}</td>
                   {showsPayItem('EXTRA_PAY') && <CellInput empId={e.id} field="extra" value={r.extra} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:EXTRA_PAY`)} onFocus={handleFocus} onCommit={handleCommit} />}
                   {showsPayItem('POS_ALLOW') && <CellInput empId={e.id} field="posAllowance" value={r.posAllowance} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:POS_ALLOW`)} onFocus={handleFocus} onCommit={handleCommit} />}
@@ -3408,14 +3408,13 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
         <table className="tbl payroll-detail-table" style={{ minWidth: 1200 }}>
           <thead>
             <tr>
-              <th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
+              <th colSpan={4} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
               <th colSpan={3} className="th-group th-group-income">รายการรับ</th>
               <th colSpan={7} className="th-group th-group-deduct">รายการหัก</th>
               <th colSpan={1} className="th-group th-group-net">ยอดรับสุทธิ</th>
             </tr>
             <tr>
               <th className="th-emp">ลำดับ</th>
-              <th className="th-emp">รหัส</th>
               <th className="th-emp">ชื่อ–นามสกุล</th>
               <th className="th-emp">ตำแหน่ง</th>
               <th className="th-emp" style={{ textAlign: 'right' }}>เงินเดือน</th>
@@ -3439,7 +3438,6 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
               return (
                 <tr key={e.id}>
                   <td className="readonly" style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>{idx + 1}</td>
-                  <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.id}</td>
                   <td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{e.title}{e.firstName} {e.lastName}</td>
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{e.position}</td>
                   <td className="num readonly">{thb(e.baseSalary)}</td>
@@ -3460,7 +3458,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>
+              <td colSpan={3} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>
               <td className="num">{thb(t.totalBase)}</td>
               <td className="num">{thb(t.totalExtra)}</td>
               <td className="num">{thb(t.totalPos)}</td>

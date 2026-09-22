@@ -21,7 +21,7 @@ import { activateSystemUser, approveAccessRequest, changeMyPassword, createSyste
 import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
 import { createPayItemType, renamePayItemType, savePayrollBatchColumns, type PayItemType } from './api/payItemTypes'
-import { closeAnnouncement, createAnnouncement, getAnnouncementSnapshot, getAnnouncements, type SystemAnnouncement } from './api/announcements'
+import { closeAnnouncement, createAnnouncement, getAnnouncementSnapshot, getAnnouncements, getSystemReleaseId, type SystemAnnouncement } from './api/announcements'
 
 const SYSTEM_UPDATE_EVENT = 'payflow:before-system-update'
 type SystemUpdateEventDetail = { register: (saveTask: Promise<boolean>) => void }
@@ -4826,6 +4826,7 @@ export default function App() {
   const [userDepartment, setUserDepartment] = useState<string | null>(null)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [announcementOpenSignal, setAnnouncementOpenSignal] = useState(0)
+  const [maintenance, setMaintenance] = useState<{ announcement: SystemAnnouncement; releaseId: string } | null>(null)
   const [showMyInfo, setShowMyInfo] = useState(false)
   const [showPasswordReset, setShowPasswordReset] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
@@ -4844,6 +4845,7 @@ export default function App() {
   const initialAnnouncementIdsRef = useRef<Set<number> | null>(null)
   const announcementRefreshInProgressRef = useRef(false)
   const announcementRetryAfterRef = useRef<Record<number, number>>({})
+  const currentReleaseIdRef = useRef<string | null>(null)
 
   const syncPayrollEmployeeEmails = useCallback((employees: DatabaseEmployee[]) => {
     const emailByCode = new Map(employees.map(employee => [employee.employee_code, employee.email ?? '']))
@@ -5010,7 +5012,7 @@ export default function App() {
   }, [])
 
   const checkSystemUpdateAnnouncements = useCallback(async () => {
-    if (!loggedIn || announcementRefreshInProgressRef.current) return
+    if (!loggedIn || maintenance || announcementRefreshInProgressRef.current) return
     try {
       const snapshot = await getAnnouncementSnapshot()
       const announcements = snapshot.announcements
@@ -5037,14 +5039,48 @@ export default function App() {
         showToast('ยังรีเฟรชไม่ได้ เนื่องจากมีข้อมูลที่บันทึกไม่สำเร็จ กรุณาตรวจสอบช่องที่แจ้งเตือน ระบบจะลองใหม่อีกครั้ง', 'error')
         return
       }
-      sessionStorage.setItem(`payflow-update-refreshed:${due.id}`, new Date().toISOString())
-      window.location.reload()
+      const currentReleaseId = currentReleaseIdRef.current ?? await getSystemReleaseId()
+      currentReleaseIdRef.current = currentReleaseId
+      setMaintenance({ announcement: due, releaseId: currentReleaseId })
     } catch {
       // A temporary announcement API failure must never interrupt current work.
     } finally {
       announcementRefreshInProgressRef.current = false
     }
-  }, [loggedIn, showToast])
+  }, [loggedIn, maintenance, showToast])
+
+  useEffect(() => {
+    if (!loggedIn) {
+      currentReleaseIdRef.current = null
+      return
+    }
+    void getSystemReleaseId().then(releaseId => { currentReleaseIdRef.current = releaseId }).catch(() => undefined)
+  }, [loggedIn])
+
+  useEffect(() => {
+    if (!maintenance) return
+    let checking = false
+    const checkDeployment = async () => {
+      if (checking) return
+      checking = true
+      try {
+        const releaseId = await getSystemReleaseId()
+        if (releaseId !== maintenance.releaseId) {
+          sessionStorage.setItem(`payflow-update-refreshed:${maintenance.announcement.id}`, new Date().toISOString())
+          clearAccessToken()
+          window.location.reload()
+        }
+      } catch {
+        // During deployment the backend may be temporarily unavailable.
+        // Keep the maintenance screen visible and retry when it is healthy.
+      } finally {
+        checking = false
+      }
+    }
+    void checkDeployment()
+    const timer = window.setInterval(() => { void checkDeployment() }, 5_000)
+    return () => window.clearInterval(timer)
+  }, [maintenance])
 
   useEffect(() => {
     if (!loggedIn) {
@@ -5078,6 +5114,18 @@ export default function App() {
   }
 
   if (!loggedIn) return <LoginPage onLogin={handleLogin} />
+
+  if (maintenance) return (
+    <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: 'linear-gradient(145deg, #F6F3FF 0%, #FFFFFF 55%, #F3EEFF 100%)', color: '#24202E' }}>
+      <div role="status" aria-live="polite" style={{ width: 'min(560px, 100%)', padding: '42px 34px', background: '#FFFFFF', border: '1px solid #E4DDF5', borderRadius: 22, boxShadow: '0 20px 55px rgba(67, 45, 120, .14)', textAlign: 'center' }}>
+        <div className="btn-spinner" style={{ width: 38, height: 38, borderWidth: 4, margin: '0 auto 22px', color: '#7651DC' }} />
+        <h1 style={{ margin: 0, fontFamily: 'var(--font-display)', fontSize: 25 }}>ขณะนี้กำลังปรับปรุงระบบ</h1>
+        <p style={{ margin: '12px auto 0', maxWidth: 430, color: 'var(--text-secondary)', lineHeight: 1.75, fontSize: 14 }}>{maintenance.announcement.title}</p>
+        <p style={{ margin: '8px auto 0', maxWidth: 430, color: 'var(--text-muted)', lineHeight: 1.65, fontSize: 13 }}>ระบบได้บันทึกข้อมูลที่แก้ไขเรียบร้อยแล้ว กรุณาเปิดหน้านี้ไว้ ระบบจะกลับไปยังหน้าเข้าสู่ระบบโดยอัตโนมัติเมื่อการอัปเดตเสร็จสมบูรณ์</p>
+        <div style={{ marginTop: 22, paddingTop: 18, borderTop: '1px solid #EEEAF5', color: '#7651DC', fontSize: 12.5, fontWeight: 600 }}>กำลังตรวจสอบเวอร์ชันใหม่…</div>
+      </div>
+    </div>
+  )
 
   const visiblePeriods = role === 'hr' && userDepartment
     ? periods.map(period => ({ ...period, depts: period.depts.filter(department => department.department === userDepartment) }))

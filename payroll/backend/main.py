@@ -47,6 +47,7 @@ payroll_workflow_service = PayrollWorkflow()
 payslip_email_service = PayslipEmailService()
 audit_logger = AuditLogger()
 environment = os.getenv("APP_ENV", "development").lower()
+release_id = os.getenv("RAILWAY_GIT_COMMIT_SHA", "").strip() or str(uuid.uuid4())
 allowed_origins = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if origin.strip()]
 trusted_hosts = [host.strip() for host in os.getenv("TRUSTED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
 
@@ -211,7 +212,9 @@ def healthcheck():
         logging.exception("Healthcheck failed")
         raise HTTPException(status_code=503, detail="ระบบยังไม่พร้อมให้บริการ") from error
     return {
-        "status": "ok"
+        "status": "ok",
+        "release_id": release_id,
+        "server_time": datetime.now(timezone.utc),
     }
 
 @app.get("/api/departments")

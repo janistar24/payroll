@@ -59,3 +59,33 @@ class PayItemTypes:
             )
             columns = tuple(desc.name for desc in cursor.description)
             return dict(zip(columns, cursor.fetchone()))
+
+    def rename(self, item_type_id, name):
+        normalized_name = " ".join(name.split())
+        if not normalized_name:
+            raise ValueError("กรุณาระบุชื่อรายการ")
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                "SELECT id, code, category FROM public.pay_item_types WHERE id=%s FOR UPDATE",
+                (item_type_id,),
+            )
+            existing = cursor.fetchone()
+            if existing is None:
+                raise ValueError("ไม่พบประเภทรายการ")
+            if not existing[1].startswith("CUSTOM_"):
+                raise ValueError("ไม่สามารถแก้ชื่อประเภทรายการมาตรฐานของระบบได้")
+            cursor.execute(
+                """SELECT 1 FROM public.pay_item_types
+                   WHERE id<>%s AND category=%s AND LOWER(BTRIM(name))=LOWER(BTRIM(%s))
+                   LIMIT 1""",
+                (item_type_id, existing[2], normalized_name),
+            )
+            if cursor.fetchone() is not None:
+                raise ValueError("มีชื่อประเภทรายการนี้อยู่แล้ว")
+            cursor.execute(
+                """UPDATE public.pay_item_types SET name=%s WHERE id=%s
+                   RETURNING id, code, name, category, is_taxable, is_active""",
+                (normalized_name, item_type_id),
+            )
+            columns = tuple(desc.name for desc in cursor.description)
+            return dict(zip(columns, cursor.fetchone()))

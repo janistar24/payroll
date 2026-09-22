@@ -25,6 +25,19 @@ export async function createPayItemType(input: { name: string; category: PayItem
   return (await response.json()).data as PayItemType
 }
 
+export async function renamePayItemType(id: number, name: string): Promise<PayItemType> {
+  const response = await idempotentFetch(`${API_URL}/pay_item_types/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...authorizationHeaders() },
+    body: JSON.stringify({ name }),
+  }, `PATCH:/pay_item_types/${id}`)
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    throw new Error(typeof body?.detail === 'string' ? body.detail : body?.detail?.message ?? 'แก้ชื่อประเภทรายการไม่สำเร็จ')
+  }
+  return (await response.json()).data as PayItemType
+}
+
 export async function savePayrollBatchColumns(batchId: number, codes: string[]): Promise<string[]> {
   const response = await idempotentFetch(`${API_URL}/payroll_department_batches/${batchId}/columns`, {
     method: 'PUT',

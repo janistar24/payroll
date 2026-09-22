@@ -20,7 +20,7 @@ import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
 import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, revealAccessRequestPassword, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
-import { createPayItemType, savePayrollBatchColumns, type PayItemType } from './api/payItemTypes'
+import { createPayItemType, renamePayItemType, savePayrollBatchColumns, type PayItemType } from './api/payItemTypes'
 import { closeAnnouncement, createAnnouncement, getAnnouncements, type SystemAnnouncement } from './api/announcements'
 import { createOrganization, type Organization } from './api/organizations'
 import { getAnnualTaxReport, type AnnualReportType, type AnnualTaxRow } from './api/annualTax'
@@ -669,13 +669,16 @@ const printPayrollWithCustomItems = ({ period, department, entries, payItemTypes
   const incomeTypes = payItemTypes.filter(item => item.is_active && item.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(item.code))
   const deductionTypes = payItemTypes.filter(item => item.is_active && item.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(item.code))
   const visible = (code: string) => payItemTypes.some(item => item.is_active && item.code === code)
-  const headers = ['ลำดับ', 'ชื่อ–นามสกุล', 'ตำแหน่ง', 'ฐานเงินเดือน', ...(visible('EXTRA_PAY') ? ['เงินเพิ่ม'] : []), ...(visible('POS_ALLOW') ? ['เงินประจำตำแหน่ง'] : []), ...incomeTypes.map(item => item.name), 'รวมรายการรับ', ...(visible('KTB_LOAN') ? ['ชำระหนี้ KTB'] : []), ...(visible('TAX') ? ['ภาษีหัก ณ ที่จ่าย'] : []), ...(visible('SSF') ? ['ประกันสังคม'] : []), ...(visible('FUNERAL_FUND') ? ['ฌาปนกิจ'] : []), ...(visible('KTB_BANK') ? ['ธนาคารกรุงไทย'] : []), ...(visible('SAVINGS_BANK_LOAN') ? ['ธนาคารออมสิน'] : []), ...deductionTypes.map(item => item.name), 'รวมรายการหัก', 'ยอดรับสุทธิ']
+  const employeeHeaders = ['ลำดับ', 'รหัส', 'ชื่อ–นามสกุล', 'ตำแหน่ง', 'เงินเดือน']
+  const incomeHeaders = [...(visible('EXTRA_PAY') ? ['เงินเพิ่ม/<br>ค่าตอบแทน'] : []), ...(visible('POS_ALLOW') ? ['เงินประจำ<br>ตำแหน่ง'] : []), ...incomeTypes.map(item => escapeMarkup(item.name)), 'รวมรายการรับ']
+  const deductionHeaders = [...(visible('KTB_LOAN') ? ['เพื่อชำระหนี้<br>ธนาคารกรุงไทย'] : []), ...(visible('TAX') ? ['ภาษีหัก ณ ที่<br>จ่าย'] : []), ...(visible('SSF') ? ['ประกันสังคม'] : []), ...(visible('FUNERAL_FUND') ? ['ฌาปนกิจ'] : []), ...(visible('KTB_BANK') ? ['ธนาคารกรุงไทย'] : []), ...(visible('SAVINGS_BANK_LOAN') ? ['ธนาคารออมสิน<br>สาขาตาคลี'] : []), ...deductionTypes.map(item => escapeMarkup(item.name)), 'รวมรายการหัก']
+  const headers = [...employeeHeaders, ...incomeHeaders, ...deductionHeaders, 'ยอดรับสุทธิ']
   const amount = (value: number) => `<td class="num">${thb(value)}</td>`
-  const rows = entries.map(({ employee, row }, index) => `<tr><td>${index + 1}</td><td class="name">${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${amount(employee.baseSalary)}${visible('EXTRA_PAY') ? amount(row.extra) : ''}${visible('POS_ALLOW') ? amount(row.posAllowance) : ''}${incomeTypes.map(item => amount(row.customIncome?.[item.code] ?? 0)).join('')}${amount(rowGross(employee, row))}${visible('KTB_LOAN') ? amount(row.debtKTB) : ''}${visible('TAX') ? amount(row.tax) : ''}${visible('SSF') ? amount(row.social) : ''}${visible('FUNERAL_FUND') ? amount(row.funeral) : ''}${visible('KTB_BANK') ? amount(row.ktb) : ''}${visible('SAVINGS_BANK_LOAN') ? amount(row.gsb) : ''}${deductionTypes.map(item => amount(row.customDeduction?.[item.code] ?? 0)).join('')}${amount(rowDeduct(row))}${amount(rowNet(employee, row))}</tr>`).join('')
+  const rows = entries.map(({ employee, row }, index) => `<tr><td>${index + 1}</td><td>${escapeMarkup(employee.id)}</td><td class="name">${escapeMarkup(`${employee.title}${employee.firstName} ${employee.lastName}`)}</td><td>${escapeMarkup(employee.position)}</td>${amount(employee.baseSalary)}${visible('EXTRA_PAY') ? amount(row.extra) : ''}${visible('POS_ALLOW') ? amount(row.posAllowance) : ''}${incomeTypes.map(item => amount(row.customIncome?.[item.code] ?? 0)).join('')}${amount(rowGross(employee, row))}${visible('KTB_LOAN') ? amount(row.debtKTB) : ''}${visible('TAX') ? amount(row.tax) : ''}${visible('SSF') ? amount(row.social) : ''}${visible('FUNERAL_FUND') ? amount(row.funeral) : ''}${visible('KTB_BANK') ? amount(row.ktb) : ''}${visible('SAVINGS_BANK_LOAN') ? amount(row.gsb) : ''}${deductionTypes.map(item => amount(row.customDeduction?.[item.code] ?? 0)).join('')}${amount(rowDeduct(row))}${amount(rowNet(employee, row))}</tr>`).join('')
   const totals = (selector: (employee: Employee, row: PayrollRow) => number) => entries.reduce((sum, entry) => sum + selector(entry.employee, entry.row), 0)
   const incomeFooter = incomeTypes.map(item => amount(totals((_, row) => row.customIncome?.[item.code] ?? 0))).join('')
   const deductionFooter = deductionTypes.map(item => amount(totals((_, row) => row.customDeduction?.[item.code] ?? 0))).join('')
-  const footer = `<tr><td colspan="3">รวมทั้งสิ้น</td>${amount(totals(employee => employee.baseSalary))}${visible('EXTRA_PAY') ? amount(totals((_, row) => row.extra)) : ''}${visible('POS_ALLOW') ? amount(totals((_, row) => row.posAllowance)) : ''}${incomeFooter}${amount(totals(rowGross))}${visible('KTB_LOAN') ? amount(totals((_, row) => row.debtKTB)) : ''}${visible('TAX') ? amount(totals((_, row) => row.tax)) : ''}${visible('SSF') ? amount(totals((_, row) => row.social)) : ''}${visible('FUNERAL_FUND') ? amount(totals((_, row) => row.funeral)) : ''}${visible('KTB_BANK') ? amount(totals((_, row) => row.ktb)) : ''}${visible('SAVINGS_BANK_LOAN') ? amount(totals((_, row) => row.gsb)) : ''}${deductionFooter}${amount(totals((_, row) => rowDeduct(row)))}${amount(totals((employee, row) => rowNet(employee, row)))}</tr>`
+  const footer = `<tr><td colspan="4">รวมทั้งสิ้น</td>${amount(totals(employee => employee.baseSalary))}${visible('EXTRA_PAY') ? amount(totals((_, row) => row.extra)) : ''}${visible('POS_ALLOW') ? amount(totals((_, row) => row.posAllowance)) : ''}${incomeFooter}${amount(totals(rowGross))}${visible('KTB_LOAN') ? amount(totals((_, row) => row.debtKTB)) : ''}${visible('TAX') ? amount(totals((_, row) => row.tax)) : ''}${visible('SSF') ? amount(totals((_, row) => row.social)) : ''}${visible('FUNERAL_FUND') ? amount(totals((_, row) => row.funeral)) : ''}${visible('KTB_BANK') ? amount(totals((_, row) => row.ktb)) : ''}${visible('SAVINGS_BANK_LOAN') ? amount(totals((_, row) => row.gsb)) : ''}${deductionFooter}${amount(totals((_, row) => rowDeduct(row)))}${amount(totals((employee, row) => rowNet(employee, row)))}</tr>`
   const printFontSize = Math.max(4.5, Math.min(7, 100 / headers.length))
   const frame = document.createElement('iframe')
   frame.setAttribute('aria-hidden', 'true')
@@ -684,7 +687,7 @@ const printPayrollWithCustomItems = ({ period, department, entries, payItemTypes
   const doc = frame.contentDocument
   if (!doc) { frame.remove(); return false }
   doc.open()
-  doc.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานการปรับปรุงข้อมูลเงินเดือน</title><style>@page{size:A4 landscape;margin:8mm 7mm}*{box-sizing:border-box}body{margin:0;font-family:Tahoma,sans-serif;color:#111;font-size:${printFontSize}pt}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}h1,h2,p{margin:0;text-align:center}h1{font-size:14pt}h2{font-size:10pt;margin-top:2px}.meta{display:flex;justify-content:space-between;margin:4mm 0 3mm;font-size:8pt}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:.45pt solid #555;padding:${headers.length > 16 ? '1px' : '2px'};vertical-align:middle;line-height:1.12;overflow:hidden;text-overflow:clip}th{background:#ececec;text-align:center;font-size:${printFontSize}pt;white-space:normal;word-break:keep-all}td{font-size:${printFontSize}pt;white-space:nowrap}td:first-child{text-align:center}.name{white-space:nowrap}td.num{text-align:right;font-variant-numeric:tabular-nums}tfoot td{background:#f2f2f2;font-weight:700}</style></head><body><h1>เทศบาลเมืองตาคลี</h1><h2>รายงานการปรับปรุงข้อมูลเงินเดือน</h2><p>${escapeMarkup(department)} · ประจำเดือน ${escapeMarkup(periodLabel(period))}</p><div class="meta"><span>วันที่จ่าย ${escapeMarkup(formatBuddhistDate(period.payDate))}</span><span>จำนวนพนักงาน ${entries.length} คน</span><span>วันที่พิมพ์ ${escapeMarkup(formatBuddhistDate(new Date()))}</span></div><table><thead><tr>${headers.map(header => `<th>${escapeMarkup(header)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody><tfoot>${footer}</tfoot></table><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.frameElement?.remove())})<\/script></body></html>`)
+  doc.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานการปรับปรุงข้อมูลเงินเดือน</title><style>@page{size:A4 landscape;margin:8mm 7mm}*{box-sizing:border-box}body{margin:0;font-family:Tahoma,sans-serif;color:#111;font-size:${printFontSize}pt}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}h1,h2,p{margin:0;text-align:center}h1{font-size:14pt}h2{font-size:10pt;margin-top:2px}.meta{display:flex;justify-content:space-between;margin:4mm 0 3mm;font-size:8pt}table{width:100%;border-collapse:collapse;table-layout:fixed}th,td{border:.45pt solid #555;padding:${headers.length > 16 ? '1px' : '2px'};vertical-align:middle;line-height:1.12;overflow:hidden;text-overflow:clip}th{background:#ffffcc;text-align:center;font-size:${printFontSize}pt;white-space:normal;word-break:keep-all}td{font-size:${printFontSize}pt;white-space:nowrap}td:first-child,td:nth-child(2){text-align:center}.name{white-space:nowrap}td.num{text-align:right;font-variant-numeric:tabular-nums}tfoot td{background:#ffffcc;font-weight:700}</style></head><body><h1>เทศบาลเมืองตาคลี</h1><h2>รายงานการปรับปรุงข้อมูลเงินเดือน</h2><p>${escapeMarkup(department)} · ประจำเดือน ${escapeMarkup(periodLabel(period))}</p><div class="meta"><span>วันที่จ่าย ${escapeMarkup(formatBuddhistDate(period.payDate))}</span><span>จำนวนพนักงาน ${entries.length} คน</span><span>วันที่พิมพ์ ${escapeMarkup(formatBuddhistDate(new Date()))}</span></div><table><thead><tr><th colspan="${employeeHeaders.length}">ข้อมูลพนักงาน</th><th colspan="${incomeHeaders.length}">รายการรับ</th><th colspan="${deductionHeaders.length}">รายการหัก</th><th rowspan="2">ยอดรับสุทธิ</th></tr><tr>${employeeHeaders.map(header => `<th>${header}</th>`).join('')}${incomeHeaders.map(header => `<th>${header}</th>`).join('')}${deductionHeaders.map(header => `<th>${header}</th>`).join('')}</tr></thead><tbody>${rows}</tbody><tfoot>${footer}</tfoot></table><script>window.addEventListener('load',()=>{window.print();window.addEventListener('afterprint',()=>window.frameElement?.remove())})<\/script></body></html>`)
   doc.close()
   return true
 }
@@ -2014,6 +2017,9 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const [newItemName, setNewItemName] = useState('')
   const [newItemCategory, setNewItemCategory] = useState<PayItemType['category']>('EARNING')
   const [creatingItemType, setCreatingItemType] = useState(false)
+  const [editingItemTypeId, setEditingItemTypeId] = useState<number | null>(null)
+  const [editingItemTypeName, setEditingItemTypeName] = useState('')
+  const [renamingItemTypeId, setRenamingItemTypeId] = useState<number | null>(null)
   const allActivePayItemCodes = useMemo(() => payItemTypes.filter(item => item.is_active).map(item => item.code), [payItemTypes])
   const [selectedPayItemCodes, setSelectedPayItemCodes] = useState<string[]>(() => dept.visiblePayItemCodes ?? payItemTypes.filter(item => item.is_active).map(item => item.code))
   const [draftPayItemCodes, setDraftPayItemCodes] = useState<string[]>(selectedPayItemCodes)
@@ -2304,6 +2310,12 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     try {
       const savedCodes = await savePayrollBatchColumns(dept.databaseId, draftPayItemCodes)
       setSelectedPayItemCodes(savedCodes)
+      setPeriods(current => current.map(savedPeriod => savedPeriod.id !== period.id ? savedPeriod : {
+        ...savedPeriod,
+        depts: savedPeriod.depts.map(savedDept => savedDept.id === dept.id
+          ? { ...savedDept, visiblePayItemCodes: savedCodes }
+          : savedDept),
+      }))
       setShowAddItemModal(false)
       showToast(`บันทึกคอลัมน์ที่ใช้ในตาราง ${savedCodes.length} รายการแล้ว`, 'success')
     } catch (error) {
@@ -2311,6 +2323,24 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       showToast(error instanceof Error ? error.message : 'บันทึกคอลัมน์ไม่สำเร็จ', 'error')
     } finally {
       setSavingColumns(false)
+    }
+  }
+
+  const savePayItemTypeName = async (item: PayItemType) => {
+    const name = editingItemTypeName.trim()
+    if (!name) { showToast('กรุณาระบุชื่อรายการ', 'error'); return }
+    if (name === item.name) { setEditingItemTypeId(null); return }
+    setRenamingItemTypeId(item.id)
+    try {
+      const updated = await renamePayItemType(item.id, name)
+      setPayItemTypes(current => current.map(currentItem => currentItem.id === updated.id ? updated : currentItem))
+      setEditingItemTypeId(null)
+      setEditingItemTypeName('')
+      showToast('แก้ไขชื่อประเภทรายการแล้ว', 'success')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'แก้ชื่อประเภทรายการไม่สำเร็จ', 'error')
+    } finally {
+      setRenamingItemTypeId(null)
     }
   }
 
@@ -2930,7 +2960,17 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                   <div className="flex flex-col gap-2" style={{ padding: 10, minHeight: 210, maxHeight: 330, overflowY: 'auto' }}>
                     {items.length === 0 ? <div style={{ padding: '34px 10px', textAlign: 'center', fontSize: 12.5, color: 'var(--text-muted)' }}>ไม่มีรายการ</div> : items.map(item => (
                       <div key={item.code} className="flex items-center justify-between gap-3" style={{ minHeight: 42, padding: '7px 9px', borderRadius: 9, background: '#FAFAFC' }}>
-                        <div style={{ minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</div><div style={{ fontSize: 11, color: item.category === 'EARNING' ? '#15803D' : '#B91C1C' }}>{item.category === 'EARNING' ? 'รายการรับ' : 'รายการหัก'}</div></div>
+                        {editingItemTypeId === item.id ? (
+                          <div className="flex items-center gap-2" style={{ flex: 1, minWidth: 0 }}>
+                            <input className="inp" autoFocus style={{ height: 36, minWidth: 0 }} maxLength={100} value={editingItemTypeName} onChange={event => setEditingItemTypeName(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void savePayItemTypeName(item); if (event.key === 'Escape') setEditingItemTypeId(null) }} />
+                            <button type="button" className="btn btn-primary btn-sm" style={{ height: 36 }} aria-busy={renamingItemTypeId === item.id} disabled={renamingItemTypeId === item.id || !editingItemTypeName.trim()} onClick={() => void savePayItemTypeName(item)}><BusyLabel busy={renamingItemTypeId === item.id} label="กำลังบันทึก…">บันทึก</BusyLabel></button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2" style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ minWidth: 0 }}><div style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{item.name}</div><div style={{ fontSize: 11, color: item.category === 'EARNING' ? '#15803D' : '#B91C1C' }}>{item.category === 'EARNING' ? 'รายการรับ' : 'รายการหัก'}</div></div>
+                            {item.code.startsWith('CUSTOM_') && <button type="button" aria-label={`แก้ไขชื่อ ${item.name}`} title="แก้ไขชื่อรายการ" onClick={() => { setEditingItemTypeId(item.id); setEditingItemTypeName(item.name) }} style={{ border: 0, background: 'transparent', color: '#161616', cursor: 'pointer', padding: 4, display: 'inline-grid', placeItems: 'center', flexShrink: 0 }}><PencilIcon /></button>}
+                          </div>
+                        )}
                         <button type="button" className={group.selected ? 'btn btn-danger btn-xs' : 'btn btn-secondary btn-xs'} style={{ minWidth: 32 }} aria-label={group.selected ? `นำ ${item.name} ออกจากตาราง` : `เพิ่ม ${item.name} เข้าตาราง`} onClick={() => setDraftPayItemCodes(current => group.selected ? current.filter(code => code !== item.code) : [...current, item.code])}>{group.selected ? '−' : '+'}</button>
                       </div>
                     ))}

@@ -554,6 +554,10 @@ class PayItemTypeCreate(BaseModel):
         return value
 
 
+class PayItemTypeRename(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
 class PayrollBatchColumnsUpdate(BaseModel):
     codes: list[str]
 
@@ -1516,6 +1520,23 @@ def create_pay_item_type(request: PayItemTypeCreate, user=Depends(get_current_us
         raise HTTPException(status_code=400, detail=str(error))
     except Exception as error:
         raise HTTPException(status_code=500, detail={"message": "ไม่สามารถเพิ่มประเภทรายการเงินเดือนได้", "error": str(error)})
+
+
+@app.patch("/api/pay_item_types/{item_type_id}")
+def rename_pay_item_type(item_type_id: int, request: PayItemTypeRename, user=Depends(get_current_user)):
+    try:
+        _require_payroll_role(user)
+        if user["role"] == "director":
+            raise HTTPException(status_code=403, detail="ผู้บริหารไม่สามารถแก้ไขประเภทรายการเงินเดือนได้")
+        item_type = pay_item_types_service.rename(item_type_id, request.name)
+        audit_logger.log(user["id"], "RENAME_PAY_ITEM_TYPE", "pay_item_type", item_type_id, {"name": item_type["name"]})
+        return {"success": True, "data": item_type}
+    except HTTPException:
+        raise
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        raise HTTPException(status_code=500, detail={"message": "แก้ชื่อประเภทรายการไม่สำเร็จ", "error": str(error)})
 
 
 @app.put("/api/payroll_department_batches/{batch_id}/columns")

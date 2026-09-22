@@ -22,6 +22,19 @@ import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
 import { createPayItemType, renamePayItemType, savePayrollBatchColumns, type PayItemType } from './api/payItemTypes'
 import { closeAnnouncement, createAnnouncement, getAnnouncements, type SystemAnnouncement } from './api/announcements'
+
+const SYSTEM_UPDATE_EVENT = 'payflow:before-system-update'
+type SystemUpdateEventDetail = { register: (saveTask: Promise<boolean>) => void }
+
+async function saveOpenEditorsBeforeSystemUpdate(): Promise<boolean> {
+  const saveTasks: Promise<boolean>[] = []
+  window.dispatchEvent(new CustomEvent<SystemUpdateEventDetail>(SYSTEM_UPDATE_EVENT, {
+    detail: { register: saveTask => saveTasks.push(saveTask) },
+  }))
+  if (saveTasks.length === 0) return true
+  const results = await Promise.allSettled(saveTasks)
+  return results.every(result => result.status === 'fulfilled' && result.value)
+}
 import { createOrganization, type Organization } from './api/organizations'
 import { getAnnualTaxReport, type AnnualReportType, type AnnualTaxRow } from './api/annualTax'
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -2462,6 +2475,16 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     }
   }
 
+  useEffect(() => {
+    const handleSystemUpdate = (event: Event) => {
+      if (!dirty && pendingNotes.length === 0) return
+      const detail = (event as CustomEvent<SystemUpdateEventDetail>).detail
+      detail?.register(save())
+    }
+    window.addEventListener(SYSTEM_UPDATE_EVENT, handleSystemUpdate)
+    return () => window.removeEventListener(SYSTEM_UPDATE_EVENT, handleSystemUpdate)
+  }, [dirty, pendingNotes.length, save])
+
   const saveAndCloseEditor = async () => {
     const saved = await save()
     if (saved) setShowDiscardModal(false)
@@ -2754,23 +2777,23 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             </tr>
             <tr>
               {/* Emp */}
-              <th className="th-emp">#</th>
+              <th className="th-emp">ลำดับ</th>
+              <th className="th-emp">รหัส</th>
               <th className="th-emp">ชื่อ–นามสกุล</th>
               <th className="th-emp">ตำแหน่ง</th>
-              <th className="th-emp">หน่วยงาน</th>
-              <th className="th-emp" style={{ textAlign: 'right' }}>ฐานเงินเดือน</th>
+              <th className="th-emp" style={{ textAlign: 'right' }}>เงินเดือน</th>
               {/* Income */}
-              {showsPayItem('EXTRA_PAY') && <th className="th-income" style={{ textAlign: 'right' }}>เงินเพิ่ม</th>}
+              {showsPayItem('EXTRA_PAY') && <th className="th-income" style={{ textAlign: 'right' }}>เงินเพิ่ม/ค่าตอบแทน</th>}
               {showsPayItem('POS_ALLOW') && <th className="th-income" style={{ textAlign: 'right' }}>เงินประจำตำแหน่ง</th>}
               {customIncomeTypes.map(item => <th key={item.code} className="th-income" style={{ textAlign: 'right', minWidth: 125 }}>{item.name}</th>)}
               <th className="th-income" style={{ textAlign: 'right' }}>รวมรายการรับ</th>
               {/* Deduct */}
-              {showsPayItem('KTB_LOAN') && <th className="th-deduct" style={{ textAlign: 'right' }}>ชำระหนี้ KTB</th>}
+              {showsPayItem('KTB_LOAN') && <th className="th-deduct" style={{ textAlign: 'right' }}>เพื่อชำระหนี้ธนาคารกรุงไทย</th>}
               {showsPayItem('TAX') && <th className="th-deduct" style={{ textAlign: 'right' }}>ภาษีหัก ณ ที่จ่าย</th>}
               {showsPayItem('SSF') && <th className="th-deduct" style={{ textAlign: 'right' }}>ประกันสังคม</th>}
               {showsPayItem('FUNERAL_FUND') && <th className="th-deduct" style={{ textAlign: 'right' }}>ฌาปนกิจ</th>}
               {showsPayItem('KTB_BANK') && <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารกรุงไทย</th>}
-              {showsPayItem('SAVINGS_BANK_LOAN') && <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารออมสิน</th>}
+              {showsPayItem('SAVINGS_BANK_LOAN') && <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารออมสิน สาขาตาคลี</th>}
               {customDeductionTypes.map(item => <th key={item.code} className="th-deduct" style={{ textAlign: 'right', minWidth: 125 }}>{item.name}</th>)}
               <th className="th-deduct" style={{ textAlign: 'right' }}>รวมรายการหัก</th>
               {/* Net */}
@@ -2786,9 +2809,9 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               return (
                 <tr key={e.id} className={isActive ? 'editing' : ''}>
                   <td className="readonly" style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>{idx + 1}</td>
+                  <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.id}</td>
                   <td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{e.title}{e.firstName} {e.lastName}</td>
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.position}</td>
-                  <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.organization}</td>
                   <td className="num readonly">{thb(e.baseSalary)}</td>
                   {showsPayItem('EXTRA_PAY') && <CellInput empId={e.id} field="extra" value={r.extra} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:EXTRA_PAY`)} onFocus={handleFocus} onCommit={handleCommit} />}
                   {showsPayItem('POS_ALLOW') && <CellInput empId={e.id} field="posAllowance" value={r.posAllowance} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:POS_ALLOW`)} onFocus={handleFocus} onCommit={handleCommit} />}
@@ -3380,25 +3403,26 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
         <table className="tbl payroll-detail-table" style={{ minWidth: 1200 }}>
           <thead>
             <tr>
-              <th colSpan={4} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
+              <th colSpan={5} className="th-group th-group-emp">ข้อมูลพนักงาน</th>
               <th colSpan={3} className="th-group th-group-income">รายการรับ</th>
               <th colSpan={7} className="th-group th-group-deduct">รายการหัก</th>
               <th colSpan={1} className="th-group th-group-net">ยอดรับสุทธิ</th>
             </tr>
             <tr>
-              <th className="th-emp">#</th>
+              <th className="th-emp">ลำดับ</th>
+              <th className="th-emp">รหัส</th>
               <th className="th-emp">ชื่อ–นามสกุล</th>
               <th className="th-emp">ตำแหน่ง</th>
-              <th className="th-emp" style={{ textAlign: 'right' }}>ฐานเงินเดือน</th>
-              <th className="th-income" style={{ textAlign: 'right' }}>เงินเพิ่ม</th>
+              <th className="th-emp" style={{ textAlign: 'right' }}>เงินเดือน</th>
+              <th className="th-income" style={{ textAlign: 'right' }}>เงินเพิ่ม/ค่าตอบแทน</th>
               <th className="th-income" style={{ textAlign: 'right' }}>เงินประจำตำแหน่ง</th>
               <th className="th-income" style={{ textAlign: 'right' }}>รวมรายการรับ</th>
-              <th className="th-deduct" style={{ textAlign: 'right' }}>ชำระหนี้ KTB</th>
+              <th className="th-deduct" style={{ textAlign: 'right' }}>เพื่อชำระหนี้ธนาคารกรุงไทย</th>
               <th className="th-deduct" style={{ textAlign: 'right' }}>ภาษีหัก ณ ที่จ่าย</th>
               <th className="th-deduct" style={{ textAlign: 'right' }}>ประกันสังคม</th>
               <th className="th-deduct" style={{ textAlign: 'right' }}>ฌาปนกิจ</th>
               <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารกรุงไทย</th>
-              <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารออมสิน</th>
+              <th className="th-deduct" style={{ textAlign: 'right' }}>ธนาคารออมสิน สาขาตาคลี</th>
               <th className="th-deduct" style={{ textAlign: 'right' }}>รวมรายการหัก</th>
               <th className="th-net" style={{ textAlign: 'right' }}>ยอดรับสุทธิ</th>
             </tr>
@@ -3841,10 +3865,10 @@ function EmployeeForm({ empId, employees, departments, positions, organizations,
     }
   }, [emp?.position_id, positionName, positions])
 
-  const handleSave = async () => {
+  const handleSave = async (): Promise<boolean> => {
     if (nationalId.length !== 13 || !firstName.trim() || !lastName.trim() || !birthDate || !baseSalary || (prefixChoice === 'OTHER' && !customPrefix.trim()) || (employeeType === 'OTHER' && !employeeTypeOther.trim())) {
       setSaveError('กรุณากรอกช่องที่จำเป็นให้ครบ รวมถึงวันเดือนปีเกิด และเลขประจำตัวประชาชนต้องมี 13 หลัก')
-      return
+      return false
     }
 
     try {
@@ -3887,12 +3911,23 @@ function EmployeeForm({ empId, employees, departments, positions, organizations,
       onSaved(savedEmployee, resolvedPosition && !existingPosition ? resolvedPosition : undefined)
       showToast(empId ? 'อัปเดตข้อมูลพนักงานแล้ว' : 'เพิ่มพนักงานใหม่แล้ว', 'success')
       setPage('employees')
+      return true
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : 'บันทึกข้อมูลพนักงานไม่สำเร็จ')
+      return false
     } finally {
       setSaving(false)
     }
   }
+
+  useEffect(() => {
+    const handleSystemUpdate = (event: Event) => {
+      const detail = (event as CustomEvent<SystemUpdateEventDetail>).detail
+      detail?.register(handleSave())
+    }
+    window.addEventListener(SYSTEM_UPDATE_EVENT, handleSystemUpdate)
+    return () => window.removeEventListener(SYSTEM_UPDATE_EVENT, handleSystemUpdate)
+  }, [handleSave])
 
   return (
     <div className="anim" style={{ maxWidth: 720 }}>
@@ -4800,6 +4835,9 @@ export default function App() {
   const toastKey = useRef(0)
   const payrollSyncVersionRef = useRef<string | null>(null)
   const payrollSyncCheckingRef = useRef(false)
+  const initialAnnouncementIdsRef = useRef<Set<number> | null>(null)
+  const announcementRefreshInProgressRef = useRef(false)
+  const announcementRetryAfterRef = useRef<Record<number, number>>({})
 
   const syncPayrollEmployeeEmails = useCallback((employees: DatabaseEmployee[]) => {
     const emailByCode = new Map(employees.map(employee => [employee.employee_code, employee.email ?? '']))
@@ -4964,6 +5002,61 @@ export default function App() {
   const showToast = useCallback((msg: string, type?: 'success' | 'error' | 'info') => {
     setToast({ msg, type, key: ++toastKey.current })
   }, [])
+
+  const checkSystemUpdateAnnouncements = useCallback(async () => {
+    if (!loggedIn || announcementRefreshInProgressRef.current) return
+    try {
+      const announcements = await getAnnouncements()
+      const now = Date.now()
+      if (initialAnnouncementIdsRef.current === null) {
+        initialAnnouncementIdsRef.current = new Set(
+          announcements.filter(item => new Date(item.starts_at).getTime() <= now).map(item => item.id),
+        )
+        return
+      }
+      const due = announcements.find(item => {
+        if (new Date(item.starts_at).getTime() > now) return false
+        if (initialAnnouncementIdsRef.current?.has(item.id)) return false
+        if (sessionStorage.getItem(`payflow-update-refreshed:${item.id}`)) return false
+        return (announcementRetryAfterRef.current[item.id] ?? 0) <= now
+      })
+      if (!due) return
+
+      announcementRefreshInProgressRef.current = true
+      showToast('ระบบกำลังบันทึกข้อมูลที่แก้ไขก่อนอัปเดตหน้า…', 'info')
+      const saved = await saveOpenEditorsBeforeSystemUpdate()
+      if (!saved) {
+        announcementRetryAfterRef.current[due.id] = Date.now() + 60_000
+        showToast('ยังรีเฟรชไม่ได้ เนื่องจากมีข้อมูลที่บันทึกไม่สำเร็จ กรุณาตรวจสอบช่องที่แจ้งเตือน ระบบจะลองใหม่อีกครั้ง', 'error')
+        return
+      }
+      sessionStorage.setItem(`payflow-update-refreshed:${due.id}`, new Date().toISOString())
+      window.location.reload()
+    } catch {
+      // A temporary announcement API failure must never interrupt current work.
+    } finally {
+      announcementRefreshInProgressRef.current = false
+    }
+  }, [loggedIn, showToast])
+
+  useEffect(() => {
+    if (!loggedIn) {
+      initialAnnouncementIdsRef.current = null
+      return
+    }
+    void checkSystemUpdateAnnouncements()
+    const timer = window.setInterval(() => { void checkSystemUpdateAnnouncements() }, 10_000)
+    const checkWhenVisible = () => {
+      if (document.visibilityState === 'visible') void checkSystemUpdateAnnouncements()
+    }
+    document.addEventListener('visibilitychange', checkWhenVisible)
+    window.addEventListener('focus', checkSystemUpdateAnnouncements)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', checkWhenVisible)
+      window.removeEventListener('focus', checkSystemUpdateAnnouncements)
+    }
+  }, [loggedIn, checkSystemUpdateAnnouncements])
 
   const handleLogin = (username: string, name: string, r: Role, department: string | null) => {
     setUserName(name); setAccountUsername(username); setRole(r); setUserDepartment(department); setLoggedIn(true); setPage('dashboard')

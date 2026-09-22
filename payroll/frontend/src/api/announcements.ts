@@ -12,6 +12,11 @@ export type SystemAnnouncement = {
   created_by_name: string
 }
 
+export type AnnouncementSnapshot = {
+  announcements: SystemAnnouncement[]
+  server_time: string
+}
+
 async function parseResponse(response: Response) {
   const body = await response.json().catch(() => null)
   if (!response.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : body?.detail?.message ?? 'ดำเนินการประกาศไม่สำเร็จ')
@@ -19,8 +24,16 @@ async function parseResponse(response: Response) {
 }
 
 export async function getAnnouncements(): Promise<SystemAnnouncement[]> {
+  return (await getAnnouncementSnapshot()).announcements
+}
+
+export async function getAnnouncementSnapshot(): Promise<AnnouncementSnapshot> {
   const response = await fetch(`${API_URL}/announcements`, { headers: authorizationHeaders(), cache: 'no-store' })
-  return (await parseResponse(response)).data as SystemAnnouncement[]
+  const body = await parseResponse(response)
+  return {
+    announcements: body.data as SystemAnnouncement[],
+    server_time: String(body.server_time ?? new Date().toISOString()),
+  }
 }
 
 export async function createAnnouncement(input: { title: string; content: string; starts_at: string }): Promise<SystemAnnouncement> {

@@ -21,7 +21,7 @@ import { activateSystemUser, approveAccessRequest, changeMyPassword, createSyste
 import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
 import { createPayItemType, renamePayItemType, savePayrollBatchColumns, type PayItemType } from './api/payItemTypes'
-import { closeAnnouncement, createAnnouncement, getAnnouncements, type SystemAnnouncement } from './api/announcements'
+import { closeAnnouncement, createAnnouncement, getAnnouncementSnapshot, getAnnouncements, type SystemAnnouncement } from './api/announcements'
 
 const SYSTEM_UPDATE_EVENT = 'payflow:before-system-update'
 type SystemUpdateEventDetail = { register: (saveTask: Promise<boolean>) => void }
@@ -1175,12 +1175,17 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
       showToast('กรุณากรอกหัวข้อ เนื้อหา และวัน–เวลาเริ่มอัปเดตให้ครบ', 'error')
       return
     }
+    const startsAt = new Date(`${announcementDate}T${announcementTime}:00`)
+    if (!Number.isFinite(startsAt.getTime()) || startsAt.getTime() < Date.now() + 30_000) {
+      showToast('กรุณากำหนดเวลาเริ่มอัปเดตล่วงหน้าอย่างน้อย 1 นาที', 'error')
+      return
+    }
     setAnnouncementSaving(true)
     try {
       const created = await createAnnouncement({
         title: announcementTitle.trim(),
         content: announcementContent.trim(),
-        starts_at: new Date(`${announcementDate}T${announcementTime}:00`).toISOString(),
+        starts_at: startsAt.toISOString(),
       })
       setAnnouncements(current => [created, ...current])
       setAnnouncementTitle(''); setAnnouncementContent(''); setAnnouncementDate(''); setAnnouncementTime('')
@@ -3434,6 +3439,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
               return (
                 <tr key={e.id}>
                   <td className="readonly" style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12 }}>{idx + 1}</td>
+                  <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.id}</td>
                   <td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{e.title}{e.firstName} {e.lastName}</td>
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>{e.position}</td>
                   <td className="num readonly">{thb(e.baseSalary)}</td>
@@ -3454,7 +3460,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
           </tbody>
           <tfoot>
             <tr>
-              <td colSpan={3} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>
+              <td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>
               <td className="num">{thb(t.totalBase)}</td>
               <td className="num">{thb(t.totalExtra)}</td>
               <td className="num">{thb(t.totalPos)}</td>
@@ -5006,8 +5012,9 @@ export default function App() {
   const checkSystemUpdateAnnouncements = useCallback(async () => {
     if (!loggedIn || announcementRefreshInProgressRef.current) return
     try {
-      const announcements = await getAnnouncements()
-      const now = Date.now()
+      const snapshot = await getAnnouncementSnapshot()
+      const announcements = snapshot.announcements
+      const now = new Date(snapshot.server_time).getTime()
       if (initialAnnouncementIdsRef.current === null) {
         initialAnnouncementIdsRef.current = new Set(
           announcements.filter(item => new Date(item.starts_at).getTime() <= now).map(item => item.id),

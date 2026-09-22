@@ -4,7 +4,7 @@ import uuid
 import logging
 import json
 from concurrent.futures import ThreadPoolExecutor
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import psycopg
@@ -698,13 +698,21 @@ def get_announcements(user=Depends(get_current_user)):
                LIMIT 10"""
         )
     except psycopg.errors.UndefinedTable:
-        return {"success": True, "data": []}
-    return {"success": True, "data": [dict(zip(columns, row)) for row in rows]}
+        return {"success": True, "data": [], "server_time": datetime.now(timezone.utc)}
+    return {
+        "success": True,
+        "data": [dict(zip(columns, row)) for row in rows],
+        "server_time": datetime.now(timezone.utc),
+    }
 
 
 @app.post("/api/announcements", status_code=201)
 def create_announcement(request: AnnouncementCreate, user=Depends(get_current_user)):
     _require_admin(user)
+    if request.starts_at.tzinfo is None:
+        raise HTTPException(status_code=422, detail="วัน–เวลาเริ่มอัปเดตต้องระบุเขตเวลา")
+    if request.starts_at.astimezone(timezone.utc) < datetime.now(timezone.utc) + timedelta(seconds=30):
+        raise HTTPException(status_code=422, detail="กรุณากำหนดเวลาเริ่มอัปเดตล่วงหน้าอย่างน้อย 1 นาที")
     try:
         with db.transaction() as cursor:
             cursor.execute(

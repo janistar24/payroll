@@ -768,10 +768,10 @@ function Toast({ msg, type, onClose }: { msg: string; type?: 'success' | 'error'
 
 // ─── Modal ────────────────────────────────────────────────────────────────────
 
-function Modal({ title, children, onClose, size }: { title: string; children: React.ReactNode; onClose: () => void; size?: 'lg' | 'xl' }) {
+function Modal({ title, children, onClose, size, closeOnBackdrop = true }: { title: string; children: React.ReactNode; onClose: () => void; size?: 'lg' | 'xl'; closeOnBackdrop?: boolean }) {
   return (
-    <div className="modal-overlay" onClick={e => e.target === e.currentTarget && onClose()}>
-      <div className={`modal ${size === 'lg' ? 'modal-lg' : size === 'xl' ? 'modal-xl' : ''}`}>
+    <div className="modal-overlay" onClick={event => closeOnBackdrop && event.target === event.currentTarget && onClose()}>
+      <div className={`modal ${size === 'lg' ? 'modal-lg' : size === 'xl' ? 'modal-xl' : ''}`} onClick={event => event.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-5" style={{ borderBottom: '1px solid rgba(0,0,0,0.07)' }}>
           <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 17, color: '#1A1A1A' }}>{title}</div>
           <button className="btn btn-ghost btn-sm" style={{ borderRadius: '50%', width: 32, height: 32, padding: 0 }} onClick={onClose}>✕</button>
@@ -1156,6 +1156,14 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
   const [announcementTime, setAnnouncementTime] = useState('')
   const [announcementSaving, setAnnouncementSaving] = useState(false)
   const [closingAnnouncementId, setClosingAnnouncementId] = useState<number | null>(null)
+  const closeAnnouncementComposer = () => {
+    if (announcementSaving) return
+    setShowAnnouncementModal(false)
+    setAnnouncementTitle('')
+    setAnnouncementContent('')
+    setAnnouncementDate('')
+    setAnnouncementTime('')
+  }
   useEffect(() => {
     void getAnnouncements().then(setAnnouncements).catch(() => setAnnouncements([]))
     const timer = window.setInterval(() => {
@@ -1419,7 +1427,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
       )}
 
       {showAnnouncementModal && (
-        <Modal size="xl" title="สร้างประกาศการอัปเดตระบบ" onClose={() => !announcementSaving && setShowAnnouncementModal(false)}>
+        <Modal size="xl" title="สร้างประกาศการอัปเดตระบบ" closeOnBackdrop={false} onClose={closeAnnouncementComposer}>
           <div className="flex flex-col gap-4">
             <div style={{ fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.6 }}>ประกาศนี้จะแสดงบนหน้าหลักของพนักงานฝ่ายธุรการ ผู้บริหาร และแอดมินทุกคน</div>
             <FormField label="หัวข้อประกาศ" required><input className="inp" autoFocus maxLength={200} value={announcementTitle} onChange={event => setAnnouncementTitle(event.target.value)} placeholder="เช่น อัปเดตระบบ PayFlow เวอร์ชันใหม่" /></FormField>
@@ -1428,7 +1436,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
               <FormField label="วันที่เริ่มอัปเดต (พ.ศ.)" required><BuddhistDateInput value={announcementDate} onChange={setAnnouncementDate} required /></FormField>
               <FormField label="เวลาเริ่มอัปเดต" required><input className="inp" type="time" value={announcementTime} onChange={event => setAnnouncementTime(event.target.value)} required /></FormField>
             </div>
-            <div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={announcementSaving} onClick={() => setShowAnnouncementModal(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={announcementSaving} disabled={announcementSaving} onClick={() => void publishAnnouncement()}><BusyLabel busy={announcementSaving} label="กำลังประกาศ…">บันทึกและประกาศ</BusyLabel></button></div>
+            <div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={announcementSaving} onClick={closeAnnouncementComposer}>ยกเลิก</button><button className="btn btn-primary" aria-busy={announcementSaving} disabled={announcementSaving} onClick={() => void publishAnnouncement()}><BusyLabel busy={announcementSaving} label="กำลังประกาศ…">บันทึกและประกาศ</BusyLabel></button></div>
           </div>
         </Modal>
       )}

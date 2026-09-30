@@ -205,7 +205,12 @@ async def add_utf8_charset(request, call_next):
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         origin = request.headers.get("origin")
         fetch_site = request.headers.get("sec-fetch-site", "")
-        if (origin and origin not in allowed_origins) or fetch_site == "cross-site":
+        origin_is_allowed = bool(origin and origin in allowed_origins)
+        # Railway hosts the SPA and API on separate *.up.railway.app domains,
+        # which browsers correctly classify as cross-site.  An exact allowlist
+        # match is authoritative; Sec-Fetch-Site is only a fallback when a
+        # cross-site mutation arrives without an Origin header.
+        if (origin and not origin_is_allowed) or (not origin and fetch_site == "cross-site"):
             logging.warning("Blocked cross-site mutation method=%s path=%s", request.method, request.url.path)
             response = JSONResponse(status_code=403, content={"detail": "ไม่อนุญาตคำขอจากเว็บไซต์อื่น"})
         else:

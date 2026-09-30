@@ -6,7 +6,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
 export interface SystemUser {
   id: number; username: string; full_name: string; email: string | null; employee_id: number | null
   is_active: boolean; role: 'hr' | 'director' | 'admin'; employee_code: string | null; department_name: string | null
-  access_request_id: number | null; has_initial_password: boolean
+  access_request_id: number | null
 }
 
 async function request(path: string, init?: RequestInit) {
@@ -31,4 +31,3 @@ export interface AccessRequest { id: number; username: string; requested_role: S
 export async function getAccessRequests(): Promise<AccessRequest[]> { return (await request('/admin/access-requests')).data }
 export async function approveAccessRequest(id: number, actual_role: SystemUser['role']) { return request(`/admin/access-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({ actual_role }) }) }
 export async function rejectAccessRequest(id: number, reason?: string) { return request(`/admin/access-requests/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason: reason || null }) }) }
-export async function revealAccessRequestPassword(id: number): Promise<string> { return (await request(`/admin/access-requests/${id}/password`)).data.password }

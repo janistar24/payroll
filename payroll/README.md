@@ -27,7 +27,7 @@ PostgreSQL connection values into `backend/.env` and set `VITE_API_URL` in
 ## ก่อน Deploy
 
 1. สร้าง `backend/.env` จาก `backend/.env.example` และกำหนดค่า secret ทุกตัวใหม่
-   โดยเฉพาะ `JWT_SECRET` และ `PASSWORD_VAULT_KEY` ห้ามนำค่าจากเครื่องพัฒนาไปใช้ซ้ำ
+   โดยเฉพาะ `JWT_SECRET` ห้ามนำค่าจากเครื่องพัฒนาไปใช้ซ้ำ
    กับระบบอื่น
 2. ตั้ง `APP_ENV=production`, `ALLOWED_ORIGINS` และ `TRUSTED_HOSTS` ให้เป็น domain
    จริงเท่านั้น แล้วตรวจว่า `VITE_API_URL` ใช้ HTTPS ของ API จริง

@@ -50,6 +50,7 @@ environment = os.getenv("APP_ENV", "development").lower()
 release_id = os.getenv("RAILWAY_GIT_COMMIT_SHA", "").strip() or str(uuid.uuid4())
 allowed_origins = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if origin.strip()]
 trusted_hosts = [host.strip() for host in os.getenv("TRUSTED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
+trusted_proxy_ips = {ip.strip() for ip in os.getenv("TRUSTED_PROXY_IPS", "127.0.0.1,::1").split(",") if ip.strip()}
 
 # Railway calls the health endpoint through the service's generated internal
 # hostname. Add only this deployment's exact generated hostnames; do not open
@@ -72,11 +73,21 @@ if environment == "production" and (not os.getenv("JWT_SECRET") or not os.getenv
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Idempotency-Key"],
 )
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=trusted_hosts)
+
+
+def _client_ip(request: Request) -> str:
+    """Trust forwarding headers only when the direct peer is our proxy."""
+    peer = request.client.host if request.client else "unknown"
+    if peer in trusted_proxy_ips:
+        forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+        if forwarded:
+            return forwarded[:64]
+    return peer[:64]
 
 
 @app.middleware("http")
@@ -169,10 +180,10 @@ def close_database_connections():
 @app.exception_handler(HTTPException)
 async def secure_http_errors(request: Request, error: HTTPException):
     detail = error.detail
-    if environment == "production" and error.status_code >= 500:
-        logging.exception("Request %s failed: %s", request.url.path, detail)
+    if error.status_code >= 500:
+        logging.error("Request %s failed with status %s", request.url.path, error.status_code)
         detail = {"message": "ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง"}
-    return JSONResponse(status_code=error.status_code, content={"detail": detail})
+    return JSONResponse(status_code=error.status_code, content={"detail": detail}, headers=error.headers)
 
 
 @app.exception_handler(Exception)
@@ -188,7 +199,19 @@ async def unexpected_error(request: Request, error: Exception):
 async def add_utf8_charset(request, call_next):
     started_at = time.perf_counter()
     request_id = str(uuid.uuid4())
-    response = await call_next(request)
+
+    # Bearer tokens are never accepted from cookies.  Reject cross-site state
+    # changes as an additional CSRF boundary before a handler reads the body.
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        origin = request.headers.get("origin")
+        fetch_site = request.headers.get("sec-fetch-site", "")
+        if (origin and origin not in allowed_origins) or fetch_site == "cross-site":
+            logging.warning("Blocked cross-site mutation method=%s path=%s", request.method, request.url.path)
+            response = JSONResponse(status_code=403, content={"detail": "ไม่อนุญาตคำขอจากเว็บไซต์อื่น"})
+        else:
+            response = await call_next(request)
+    else:
+        response = await call_next(request)
 
     if response.headers.get("content-type", "").startswith("application/json"):
         response.headers["content-type"] = "application/json; charset=utf-8"
@@ -197,10 +220,23 @@ async def add_utf8_charset(request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
+        "form-action 'none'; object-src 'none'"
+    )
     response.headers["Cache-Control"] = "no-store" if request.url.path.startswith("/api/") else "no-cache"
     if environment == "production":
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     response.headers["Server-Timing"] = f"app;dur={(time.perf_counter() - started_at) * 1000:.1f}"
+    logging.info(
+        "access request_id=%s method=%s path=%s status=%s duration_ms=%.1f client=%s",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        (time.perf_counter() - started_at) * 1000,
+        _client_ip(request),
+    )
 
     return response
 
@@ -211,11 +247,7 @@ def healthcheck():
     except Exception as error:
         logging.exception("Healthcheck failed")
         raise HTTPException(status_code=503, detail="ระบบยังไม่พร้อมให้บริการ") from error
-    return {
-        "status": "ok",
-        "release_id": release_id,
-        "server_time": datetime.now(timezone.utc),
-    }
+    return {"status": "ok"}
 
 @app.get("/api/departments")
 def get_departments(user=Depends(get_current_user)):
@@ -308,9 +340,9 @@ def get_app_data(user=Depends(get_current_user)):
             def optional_result(name, future):
                 try:
                     return future.result()
-                except Exception as optional_error:
+                except Exception:
                     logging.exception("Unable to load optional app-data section: %s", name)
-                    warnings[name] = str(optional_error)
+                    warnings[name] = "ไม่สามารถโหลดข้อมูลส่วนนี้ได้"
                     return []
 
             payroll_periods = optional_result("payroll_periods", payroll_future)
@@ -659,13 +691,18 @@ def _ensure_payroll_item_access(payroll_item_id, user):
 @app.post("/api/auth/login")
 def login(request: LoginRequest, http_request: Request):
     username = request.username.strip()
-    client_ip = http_request.client.host if http_request.client else "unknown"
+    client_ip = _client_ip(http_request)
     auth_service.ensure_login_allowed(username, client_ip)
     user = auth_service.authenticate(username, request.password)
     if user is None:
         auth_service.record_login_failure(username, client_ip)
+        logging.warning("login_failed username=%s client=%s", username, client_ip)
+        # The third failed attempt is the start of the five-minute lock, not a
+        # free extra attempt before the next request discovers the lock.
+        auth_service.ensure_login_allowed(username, client_ip)
         raise HTTPException(status_code=401, detail="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
     auth_service.clear_login_failures(username, client_ip)
+    audit_logger.log(user["id"], "LOGIN", "user", user["id"], {"client_ip": client_ip})
     return {
         "success": True,
         "data": {
@@ -856,17 +893,6 @@ def submit_access_request(token: str, request: AccessRequestSubmit):
 def get_access_requests(user=Depends(get_current_user)):
     _require_admin(user)
     return {"success": True, "data": auth_service.list_access_requests()}
-
-
-@app.get("/api/admin/access-requests/{request_id}/password")
-def reveal_access_request_password(request_id: int, user=Depends(get_current_user)):
-    _require_admin(user)
-    try:
-        password = auth_service.reveal_requested_password(request_id)
-        audit_logger.log(user["id"], "REVEAL_REQUESTED_PASSWORD", "access_request", request_id)
-        return {"success": True, "data": {"password": password}}
-    except ValueError as error:
-        raise HTTPException(status_code=404, detail=str(error))
 
 
 @app.post("/api/admin/access-requests/{request_id}/approve")

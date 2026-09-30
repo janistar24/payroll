@@ -6,7 +6,6 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
-from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -15,7 +14,10 @@ from DBHelper import DBHelper
 
 TOKEN_ALGORITHM = "HS256"
 TOKEN_LIFETIME_HOURS = 8
+LOGIN_MAX_FAILURES = int(os.getenv("LOGIN_MAX_FAILURES", "3"))
+LOGIN_LOCK_MINUTES = int(os.getenv("LOGIN_LOCK_MINUTES", "5"))
 bearer_scheme = HTTPBearer(auto_error=False)
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"payflow-timing-only", bcrypt.gensalt())
 
 
 class AuthService:
@@ -24,29 +26,35 @@ class AuthService:
         self.secret = os.getenv("JWT_SECRET")
         if not self.secret:
             raise RuntimeError("กรุณากำหนด JWT_SECRET ในไฟล์ .env")
-        self.password_vault_key = os.getenv("PASSWORD_VAULT_KEY")
-        if not self.password_vault_key:
-            raise RuntimeError("กรุณากำหนด PASSWORD_VAULT_KEY ในไฟล์ .env")
-        self.password_vault = Fernet(self.password_vault_key.encode("utf-8"))
 
     def ensure_login_allowed(self, username, ip_address):
         data, _ = self.db.fetch(
-            """SELECT COUNT(*) FROM public.login_failures
-               WHERE username = %s AND ip_address = %s
-               AND attempted_at > NOW() - INTERVAL '15 minutes'""",
-            (username, ip_address),
+            """SELECT COUNT(*), MAX(attempted_at)
+                 FROM public.login_failures
+                WHERE LOWER(username) = LOWER(%s)
+                  AND attempted_at > NOW() - (%s * INTERVAL '1 minute')""",
+            (username, LOGIN_LOCK_MINUTES),
         )
-        if data[0][0] >= int(os.getenv("LOGIN_MAX_FAILURES", "5")):
-            raise HTTPException(status_code=429, detail="ลองเข้าสู่ระบบมากเกินไป กรุณารอ 15 นาที")
+        count, last_attempt = data[0]
+        if count >= LOGIN_MAX_FAILURES and last_attempt is not None:
+            unlock_at = last_attempt + timedelta(minutes=LOGIN_LOCK_MINUTES)
+            retry_after = max(1, int((unlock_at - datetime.now(timezone.utc)).total_seconds()))
+            raise HTTPException(
+                status_code=429,
+                detail=f"บัญชีถูกล็อกชั่วคราว กรุณารอ {LOGIN_LOCK_MINUTES} นาทีแล้วลองใหม่",
+                headers={"Retry-After": str(retry_after)},
+            )
 
     def record_login_failure(self, username, ip_address):
-        self.db.execute(
-            "INSERT INTO public.login_failures (username, ip_address) VALUES (%s, %s)",
-            (username, ip_address),
-        )
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                "INSERT INTO public.login_failures (username, ip_address) VALUES (%s, %s)",
+                (username, ip_address),
+            )
+            cursor.execute("DELETE FROM public.login_failures WHERE attempted_at < NOW() - INTERVAL '1 day'")
 
     def clear_login_failures(self, username, ip_address):
-        self.db.execute("DELETE FROM public.login_failures WHERE username = %s AND ip_address = %s", (username, ip_address))
+        self.db.execute("DELETE FROM public.login_failures WHERE LOWER(username) = LOWER(%s)", (username,))
 
     def authenticate(self, username, password):
         data, columns = self.db.fetch(
@@ -70,6 +78,7 @@ class AuthService:
             (username,)
         )
         if not data:
+            bcrypt.checkpw(password.encode("utf-8"), _DUMMY_PASSWORD_HASH)
             return None
 
         user = dict(zip(columns, data[0]))
@@ -130,8 +139,7 @@ class AuthService:
                    users.is_active, users.created_at, roles.code AS role,
                    employee.employee_code, employee.first_name, employee.last_name,
                    department.name AS department_name,
-                   request.id AS access_request_id,
-                   (request.password_vault IS NOT NULL) AS has_initial_password
+                   request.id AS access_request_id
             FROM public.users users
             JOIN public.roles roles ON roles.id = users.role_id
             LEFT JOIN public.employees employee ON employee.id = users.employee_id
@@ -288,9 +296,9 @@ class AuthService:
                 raise ValueError("คำเชิญนี้ถูกส่งข้อมูลแล้ว")
             cursor.execute(
                 """INSERT INTO public.access_requests
-                   (invite_id, username, password_hash, password_vault, requested_role, employee_data)
-                   VALUES (%s, %s, %s, %s, %s, %s::jsonb)""",
-                (invite["id"], username.strip(), password_hash, self.password_vault.encrypt(password.encode("utf-8")).decode("utf-8"), invite["requested_role"], __import__("json").dumps(employee_data, default=str)),
+                   (invite_id, username, password_hash, requested_role, employee_data)
+                   VALUES (%s, %s, %s, %s, %s::jsonb)""",
+                (invite["id"], username.strip(), password_hash, invite["requested_role"], __import__("json").dumps(employee_data, default=str)),
             )
             cursor.execute("UPDATE public.user_invites SET used_at = NOW() WHERE id = %s", (invite["id"],))
 
@@ -386,15 +394,6 @@ class AuthService:
                 ORDER BY request.created_at DESC"""
         )
         return [dict(zip(cols, row)) for row in data]
-
-    def reveal_requested_password(self, request_id):
-        data, _ = self.db.fetch("SELECT password_vault FROM public.access_requests WHERE id = %s", (request_id,))
-        if not data or not data[0][0]:
-            raise ValueError("ไม่พบรหัสผ่านที่ตั้งตอนสมัคร")
-        try:
-            return self.password_vault.decrypt(data[0][0].encode("utf-8")).decode("utf-8")
-        except InvalidToken as error:
-            raise ValueError("ไม่สามารถอ่านรหัสผ่านที่เข้ารหัสไว้") from error
 
     def approve_access_request(self, request_id, employee_id, actor_id, actual_role):
         with self.db.transaction() as cursor:

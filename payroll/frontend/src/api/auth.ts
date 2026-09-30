@@ -17,10 +17,12 @@ interface LoginResponse {
 }
 
 export function getAccessToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY)
+  return sessionStorage.getItem(TOKEN_KEY)
 }
 
 export function clearAccessToken(): void {
+  sessionStorage.removeItem(TOKEN_KEY)
+  // Remove tokens issued by older versions of the application.
   localStorage.removeItem(TOKEN_KEY)
 }
 
@@ -59,11 +61,13 @@ export async function loginWithDatabase(username: string, password: string): Pro
   const response = await postLoginWithWakeRetry(username, password)
 
   if (!response.ok) {
-    throw new Error(response.status === 401 ? 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง' : `เข้าสู่ระบบไม่สำเร็จ: ${response.status}`)
+    if (response.status === 401) throw new Error('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง')
+    if (response.status === 429) throw new Error('บัญชีถูกล็อกชั่วคราว กรุณารอ 5 นาทีแล้วลองใหม่')
+    throw new Error(`เข้าสู่ระบบไม่สำเร็จ: ${response.status}`)
   }
 
   const result = (await response.json()) as LoginResponse
   if (!result.success || !result.data?.access_token) throw new Error('ระบบไม่สามารถออก token สำหรับเข้าสู่ระบบได้')
-  localStorage.setItem(TOKEN_KEY, result.data.access_token)
+  sessionStorage.setItem(TOKEN_KEY, result.data.access_token)
   return result.data.user
 }

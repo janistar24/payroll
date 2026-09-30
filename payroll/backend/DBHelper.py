@@ -22,6 +22,10 @@ class DBHelper:
         self.user = os.getenv("POSTGRES_USER")
         self.password = os.getenv("POSTGRES_PASSWORD")
         self.db = os.getenv("POSTGRES_DB")
+        self.sslmode = os.getenv(
+            "POSTGRES_SSLMODE",
+            "require" if os.getenv("APP_ENV", "development").lower() == "production" else "prefer",
+        )
 
     def _get_pool(self):
         """Use a bounded shared pool; cursors remain request-local and thread-safe."""
@@ -32,7 +36,7 @@ class DBHelper:
                 if self.__class__._pool is None:
                     conninfo = make_conninfo(
                         host=self.host, port=self.port, user=self.user,
-                        password=self.password, dbname=self.db,
+                        password=self.password, dbname=self.db, sslmode=self.sslmode,
                     )
                     max_size = int(os.getenv("POSTGRES_POOL_MAX_SIZE", "10"))
                     min_size = min(int(os.getenv("POSTGRES_POOL_MIN_SIZE", "4")), max_size)
@@ -79,6 +83,7 @@ class DBHelper:
         connection = psycopg.connect(
             host=self.host, port=self.port, user=self.user,
             password=self.password, dbname=self.db,
+            sslmode=self.sslmode,
             connect_timeout=int(os.getenv("POSTGRES_CONNECT_TIMEOUT_SECONDS", "5")),
             options=f"-c statement_timeout={int(os.getenv('POSTGRES_STATEMENT_TIMEOUT_MS', '15000'))}",
         )

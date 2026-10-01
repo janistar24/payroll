@@ -98,6 +98,101 @@ class PayrollWorkflow:
             )
             return revision_id
 
+    def restore_revision(self, current_batch_id, source_batch_id, actor_id):
+        """Create a new draft from an immutable historical version."""
+        if current_batch_id == source_batch_id:
+            raise ValueError("ฉบับที่เลือกเป็นฉบับปัจจุบันอยู่แล้ว")
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                """SELECT id, payroll_period_id, department_id, is_current
+                   FROM public.payroll_department_batches
+                   WHERE id = %s FOR UPDATE""",
+                (current_batch_id,),
+            )
+            current = cursor.fetchone()
+            if current is None or not current[3]:
+                raise ValueError("ไม่พบฉบับปัจจุบัน หรือมีผู้ใช้อื่นเปลี่ยนฉบับไปแล้ว")
+            cursor.execute(
+                """SELECT id, payroll_period_id, department_id, revision_number,
+                          visible_pay_item_codes
+                   FROM public.payroll_department_batches
+                   WHERE id = %s FOR UPDATE""",
+                (source_batch_id,),
+            )
+            source = cursor.fetchone()
+            if source is None or source[1] != current[1] or source[2] != current[2]:
+                raise ValueError("ฉบับที่เลือกไม่ได้อยู่ในรอบเงินเดือนและฝ่ายเดียวกัน")
+
+            cursor.execute(
+                """SELECT COALESCE(MAX(revision_number), 0) + 1
+                   FROM public.payroll_department_batches
+                   WHERE payroll_period_id = %s AND department_id = %s""",
+                (current[1], current[2]),
+            )
+            next_revision = cursor.fetchone()[0]
+            cursor.execute(
+                """UPDATE public.payroll_department_batches
+                   SET is_current = FALSE
+                   WHERE payroll_period_id = %s AND department_id = %s AND is_current = TRUE""",
+                (current[1], current[2]),
+            )
+            cursor.execute(
+                """INSERT INTO public.payroll_department_batches (
+                       payroll_period_id, department_id, status, created_at,
+                       revision_number, parent_batch_id, revision_type,
+                       revision_reason, revision_created_by_id, is_current,
+                       visible_pay_item_codes, edit_version,
+                       last_edited_at, last_edited_by_id
+                   ) VALUES (%s, %s, 'DRAFT', NOW(), %s, %s,
+                             'กู้คืนฉบับก่อน', %s, %s, TRUE, %s, 0, NOW(), %s)
+                   RETURNING id""",
+                (
+                    current[1], current[2], next_revision, current_batch_id,
+                    f"กู้คืนข้อมูลจากฉบับครั้งที่ {source[3] or 0}", actor_id,
+                    json.dumps(source[4]) if source[4] is not None else None,
+                    actor_id,
+                ),
+            )
+            restored_id = cursor.fetchone()[0]
+            cursor.execute(
+                """INSERT INTO public.payroll_items (
+                       payroll_period_id, department_batch_id, department_id,
+                       employee_id, base_salary, total_earnings,
+                       total_deductions, net_pay, created_at
+                   )
+                   SELECT payroll_period_id, %s, department_id, employee_id,
+                          base_salary, total_earnings, total_deductions,
+                          net_pay, NOW()
+                   FROM public.payroll_items
+                   WHERE department_batch_id = %s""",
+                (restored_id, source_batch_id),
+            )
+            cursor.execute(
+                """INSERT INTO public.payroll_item_lines (
+                       payroll_item_id, pay_item_type_id, amount
+                   )
+                   SELECT restored_item.id, line.pay_item_type_id, line.amount
+                   FROM public.payroll_item_lines line
+                   JOIN public.payroll_items source_item
+                     ON source_item.id = line.payroll_item_id
+                   JOIN public.payroll_items restored_item
+                     ON restored_item.department_batch_id = %s
+                    AND restored_item.employee_id = source_item.employee_id
+                   WHERE source_item.department_batch_id = %s""",
+                (restored_id, source_batch_id),
+            )
+            cursor.execute(
+                """INSERT INTO public.payroll_batch_employee_exclusions (
+                       department_batch_id, employee_id
+                   )
+                   SELECT %s, employee_id
+                   FROM public.payroll_batch_employee_exclusions
+                   WHERE department_batch_id = %s
+                   ON CONFLICT (department_batch_id, employee_id) DO NOTHING""",
+                (restored_id, source_batch_id),
+            )
+            return restored_id
+
     def update_visible_columns(self, batch_id, department_id, codes, actor_id):
         with self.db.transaction() as cursor:
             cursor.execute(
@@ -259,14 +354,38 @@ class PayrollWorkflow:
                 if key[0] in set(employee_ids) and saved_lines.get(key, Decimal("0")) != incoming_lines.get(key, Decimal("0"))
             }
             notes_by_key = {}
+            membership_notes = []
             for note in change_notes:
                 employee_id = note["employee_id"]
                 field_code = note["field_code"]
                 if employee_id not in set(employee_ids) | saved_employee_ids:
                     raise ValueError("พบประวัติการแก้ไขของพนักงานที่ไม่อยู่ในรอบเงินเดือน")
+                reason = str(note.get("reason") or "").strip()
+                if field_code in {"__EMPLOYEE_ADDED__", "__EMPLOYEE_REMOVED__"}:
+                    is_valid_add = (
+                        field_code == "__EMPLOYEE_ADDED__"
+                        and employee_id in set(employee_ids)
+                        and employee_id not in saved_employee_ids
+                    )
+                    is_valid_remove = (
+                        field_code == "__EMPLOYEE_REMOVED__"
+                        and employee_id in saved_employee_ids
+                        and employee_id not in set(employee_ids)
+                    )
+                    if not (is_valid_add or is_valid_remove):
+                        raise ValueError("รายการเพิ่มหรือนำพนักงานออกไม่ตรงกับข้อมูลล่าสุด")
+                    membership_notes.append({
+                        **note,
+                        "reason": reason or (
+                            "เพิ่มพนักงานเข้าตารางเงินเดือน"
+                            if is_valid_add else "นำพนักงานออกจากตารางเงินเดือน"
+                        ),
+                        "old_value": Decimal("0") if is_valid_add else Decimal("1"),
+                        "new_value": Decimal("1") if is_valid_add else Decimal("0"),
+                    })
+                    continue
                 if field_code not in line_categories and (employee_id, field_code) not in saved_lines:
                     raise ValueError("พบประเภทรายการในประวัติการแก้ไขที่ไม่ถูกต้อง")
-                reason = str(note.get("reason") or "").strip()
                 if not reason:
                     raise ValueError("กรุณาระบุเหตุผลของรายการที่แก้ไขให้ครบถ้วน")
                 normalized = {
@@ -361,22 +480,10 @@ class PayrollWorkflow:
                 for key in changed_keys
                 for note in notes_by_key.get(key, [])
             ]
-            added_employee_ids = set(employee_ids) - saved_employee_ids
-            removed_employee_ids = saved_employee_ids - set(employee_ids)
-            persisted_notes.extend({
-                "employee_id": employee_id,
-                "field_code": "__EMPLOYEE_ADDED__",
-                "old_value": Decimal("0"),
-                "new_value": Decimal("1"),
-                "reason": "เพิ่มพนักงานเข้าตารางเงินเดือน",
-            } for employee_id in added_employee_ids)
-            persisted_notes.extend({
-                "employee_id": employee_id,
-                "field_code": "__EMPLOYEE_REMOVED__",
-                "old_value": Decimal("1"),
-                "new_value": Decimal("0"),
-                "reason": "นำพนักงานออกจากตารางเงินเดือน",
-            } for employee_id in removed_employee_ids)
+            # Membership notes are supplied only by explicit add/remove actions
+            # in the UI. Employees populated automatically must not create a
+            # misleading audit entry.
+            persisted_notes.extend(membership_notes)
 
             if persisted_notes:
                 cursor.execute(

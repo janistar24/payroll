@@ -1332,6 +1332,28 @@ def get_payroll_batch_history(batch_id: int, user=Depends(get_current_user)):
         raise HTTPException(status_code=500, detail="ไม่สามารถโหลดประวัติฉบับเงินเดือนได้")
 
 
+@app.post("/api/payroll_department_batches/{batch_id}/restore/{source_batch_id}", status_code=201)
+def restore_payroll_batch_version(batch_id: int, source_batch_id: int, user=Depends(get_current_user)):
+    if user["role"] not in {"hr", "admin"}:
+        raise HTTPException(status_code=403, detail="เฉพาะพนักงานฝ่ายธุรการหรือแอดมินเท่านั้นที่กู้คืนฉบับได้")
+    current = _ensure_batch_access(batch_id, user)
+    source = _ensure_batch_access(source_batch_id, user)
+    if current["department_id"] != source["department_id"]:
+        raise HTTPException(status_code=400, detail="ฉบับที่เลือกไม่ได้อยู่ในฝ่ายเดียวกัน")
+    try:
+        restored_id = payroll_workflow_service.restore_revision(batch_id, source_batch_id, user["id"])
+        audit_logger.log(
+            user["id"], "RESTORE_PAYROLL_VERSION", "payroll_department_batch", restored_id,
+            {"current_batch_id": batch_id, "source_batch_id": source_batch_id, "department_id": current["department_id"]},
+        )
+        return {"success": True, "data": {"batch_id": restored_id}}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception:
+        logging.exception("Restore payroll version failed")
+        raise HTTPException(status_code=500, detail="กู้คืนฉบับเงินเดือนไม่สำเร็จ กรุณาลองใหม่อีกครั้ง")
+
+
 @app.put("/api/payroll_department_batches/{batch_id}/items")
 def save_payroll_batch_items(batch_id: int, request: PayrollBatchSave, user=Depends(get_current_user)):
     try:

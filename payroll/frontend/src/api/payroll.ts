@@ -164,6 +164,16 @@ export async function getPayrollBatchHistory(batchId: number): Promise<PayrollBa
   return (await response.json()).data as PayrollBatchRecord[]
 }
 
+export async function restorePayrollBatchVersion(batchId: number, sourceBatchId: number): Promise<{ batch_id: number }> {
+  const response = await idempotentFetch(
+    `${API_URL}/payroll_department_batches/${batchId}/restore/${sourceBatchId}`,
+    { method: 'POST', headers: authorizationHeaders() },
+    `POST:/payroll_department_batches/${batchId}/restore/${sourceBatchId}`,
+  )
+  if (!response.ok) return parseError(response, `กู้คืนฉบับเงินเดือนไม่สำเร็จ: ${response.status}`)
+  return (await response.json()).data as { batch_id: number }
+}
+
 export async function payrollBatchAction(batchId: number, action: 'submit' | 'approve' | 'reject', expected_version: number, reject_reason?: string): Promise<void> {
   const response = await idempotentFetch(`${API_URL}/payroll_department_batches/${batchId}/action`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...authorizationHeaders() }, body: JSON.stringify({ action, reject_reason, expected_version }) }, `POST:/payroll_department_batches/${batchId}/action:${action}:v${expected_version}`)
   if (!response.ok) return parseError(response, `เปลี่ยนสถานะเงินเดือนไม่สำเร็จ: ${response.status}`)

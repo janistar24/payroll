@@ -2126,7 +2126,10 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     () => new Map(databaseEmployees.map(employee => [employee.employee_code, employee.id])),
     [databaseEmployees],
   )
-  const isReadonly = dept.status === 'pending' || dept.status === 'approved' || dept.status === 'closed'
+  // A payroll table stays editable in every workflow state except after it has
+  // been approved. This includes rejected batches so HR can correct and
+  // resubmit them without creating another revision first.
+  const isReadonly = dept.status === 'approved'
   const customIncomeTypes = payItemTypes.filter(item => item.is_active && selectedPayItemCodes.includes(item.code) && item.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(item.code))
   const customDeductionTypes = payItemTypes.filter(item => item.is_active && selectedPayItemCodes.includes(item.code) && item.category === 'DEDUCTION' && !STANDARD_PAY_ITEM_CODES.has(item.code))
   const showsPayItem = (code: string) => selectedPayItemCodes.includes(code)
@@ -2904,7 +2907,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             <button className="btn btn-secondary" onClick={printPayrollTable}>🖨️ พิมพ์ตาราง</button>
             <button className="btn btn-secondary" onClick={exportExcel}>📥 ส่งออก Excel</button>
             <button className="btn btn-secondary" onClick={() => {
-              if (dept.status === 'approved' || dept.status === 'closed') {
+              if (dept.status === 'approved') {
                 setRevisionType('')
                 setRevisionReason('')
                 setShowRevisionModal(true)
@@ -2922,7 +2925,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
               background: '#FFF8E8',
               boxShadow: '0 1px 4px rgba(168,91,0,.12)',
             } : undefined}>
-              {dept.status === 'approved' || dept.status === 'closed'
+              {dept.status === 'approved'
                 ? '✏️ แก้ไขเพิ่มเติม'
                 : editing
                 ? `✏️ ปิดการแก้ไข${hasPendingChanges ? ` · ${pendingChangeCount} รายการแก้ไข` : ''}`

@@ -218,8 +218,8 @@ class PayrollWorkflow:
             batch = cursor.fetchone()
             if batch is None:
                 raise ValueError("ไม่พบรายการฝ่ายของรอบเงินเดือน")
-            if batch[0] not in {"DRAFT", "REJECTED"} or not batch[1]:
-                raise ValueError("รายการนี้ถูกส่งอนุมัติหรือปิดแล้ว จึงไม่สามารถแก้ไขคอลัมน์ได้")
+            if batch[0] == "APPROVED" or not batch[1]:
+                raise ValueError("รายการนี้อนุมัติแล้ว จึงไม่สามารถแก้ไขคอลัมน์ได้")
             if codes:
                 cursor.execute(
                     "SELECT code FROM public.pay_item_types WHERE is_active=TRUE AND code = ANY(%s)",
@@ -259,8 +259,8 @@ class PayrollWorkflow:
             batch = cursor.fetchone()
             if batch is None:
                 raise ValueError("ไม่พบรายการฝ่ายของรอบเงินเดือน")
-            if batch[1] not in {"DRAFT", "REJECTED"} or not batch[2]:
-                raise ValueError("รายการนี้ถูกส่งอนุมัติหรือปิดแล้ว จึงไม่สามารถบันทึกทับได้")
+            if batch[1] == "APPROVED" or not batch[2]:
+                raise ValueError("รายการนี้อนุมัติแล้ว จึงไม่สามารถบันทึกทับได้")
             current_version = int(batch[3] or 0)
             if expected_version is not None and int(expected_version) != current_version:
                 raise StalePayrollVersionError(

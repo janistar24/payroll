@@ -52,6 +52,13 @@ export interface PayrollItemRecord {
   position_name: string | null
   organization_name?: string | null
   base_salary: string | number
+  calculation_method?: 'FULL_MONTH' | 'DAILY' | null
+  full_month_salary?: string | number | null
+  calculation_base_days?: number | null
+  payable_days?: number | null
+  calculation_start_date?: string | null
+  calculation_end_date?: string | null
+  calculation_reason?: string | null
   email_status?: 'PENDING' | 'SENT' | 'FAILED' | null
   email_sent_at?: string | null
   lines: { code: string; amount: string | number; name?: string | null; category?: 'EARNING' | 'DEDUCTION' | null }[]
@@ -112,7 +119,17 @@ export type PayrollChangeLog = {
 
 export async function savePayrollBatchItems(
   batchId: number,
-  rows: { employee_id: number; lines: Record<string, number> }[],
+  rows: {
+    employee_id: number
+    base_salary: number
+    calculation_method: 'FULL_MONTH' | 'DAILY'
+    calculation_base_days?: number | null
+    payable_days?: number | null
+    calculation_start_date?: string | null
+    calculation_end_date?: string | null
+    calculation_reason?: string | null
+    lines: Record<string, number>
+  }[],
   change_notes: PayrollChangeNote[] = [],
   expected_version?: number,
 ): Promise<{ edit_version: number }> {

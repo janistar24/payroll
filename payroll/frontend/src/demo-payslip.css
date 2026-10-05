@@ -1,0 +1,25 @@
+.payslip-page .demo-title{margin:0 0 18px}
+.payslip-page .demo-title h2{font-size:24px}
+.payslip-page .demo-title p{font-size:12px;color:#8d929d}
+.payslip-period{box-shadow:0 2px 7px #31204f10}
+.payslip-period>header{min-height:74px;padding:16px 20px;align-items:center}
+.payslip-period>header small{color:#7650c3;font-weight:700}
+.payslip-period>header h2{font-size:18px;margin-top:2px}
+.payslip-period>header p{font-size:11px;color:#777e89;margin-top:2px}
+.payslip-period>header button{box-shadow:0 5px 12px #8550da36}
+.payslip-dept{min-height:58px;padding:11px 20px;align-items:center;border-top:1px solid #e6ddf5}
+.payslip-dept h3{font-size:14px}
+.payslip-dept p{font-size:11px;color:#777e89;margin-top:2px}
+.sent-summary{display:flex;align-items:center;gap:10px}
+.sent-summary small{color:#7d858f}
+.sent-summary>b{font-size:18px;color:#167c3a}
+.payslip-period th{background:#f5f5f8;color:#565d68;font-weight:700}
+.payslip-period th,.payslip-period td{padding:9px 12px}
+.payslip-period th:first-child,.payslip-period td:first-child{padding-left:20px}
+.email-value{color:#555d68}
+.email-edit{border:0!important;background:transparent!important;color:#222!important;padding:2px!important;font-size:14px!important}
+.payslip-actions{white-space:nowrap}
+.payslip-actions button{display:inline-block;margin-right:3px;padding:5px 7px;font-size:10px}
+.payslip-actions .text-btn{background:transparent;color:#373b43}
+.payslip-actions .mini-btn{background:#fff;color:#353942;border:1px solid #d8dbe1}
+@media(max-width:850px){.payslip-period{overflow:auto}}

@@ -26,14 +26,18 @@ import { closeAnnouncement, createAnnouncement, getAnnouncementSnapshot, getAnno
 const SYSTEM_UPDATE_EVENT = 'payflow:before-system-update'
 type SystemUpdateEventDetail = { register: (saveTask: Promise<boolean>) => void }
 
-async function saveOpenEditorsBeforeSystemUpdate(): Promise<boolean> {
+async function saveOpenEditorsBeforeSystemUpdate(onTasksCollected?: (taskCount: number) => void): Promise<{ success: boolean; taskCount: number }> {
   const saveTasks: Promise<boolean>[] = []
   window.dispatchEvent(new CustomEvent<SystemUpdateEventDetail>(SYSTEM_UPDATE_EVENT, {
     detail: { register: saveTask => saveTasks.push(saveTask) },
   }))
-  if (saveTasks.length === 0) return true
+  onTasksCollected?.(saveTasks.length)
+  if (saveTasks.length === 0) return { success: true, taskCount: 0 }
   const results = await Promise.allSettled(saveTasks)
-  return results.every(result => result.status === 'fulfilled' && result.value)
+  return {
+    success: results.every(result => result.status === 'fulfilled' && result.value),
+    taskCount: saveTasks.length,
+  }
 }
 import { createOrganization, type Organization } from './api/organizations'
 import { getAnnualTaxReport, type AnnualReportType, type AnnualTaxRow } from './api/annualTax'
@@ -106,6 +110,13 @@ interface Employee {
 
 interface PayrollRow {
   empId: string
+  periodBaseSalary?: number
+  salaryCalculationMethod?: 'FULL_MONTH' | 'DAILY'
+  salaryCalculationBaseDays?: number
+  salaryPayableDays?: number
+  salaryCalculationStartDate?: string
+  salaryCalculationEndDate?: string
+  salaryCalculationReason?: string
   extra: number        // เงินเพิ่ม
   posAllowance: number // เงินประจำตำแหน่ง
   debtKTB: number      // เพื่อชำระหนี้ธนาคารกรุงไทย
@@ -122,10 +133,11 @@ const PAYROLL_FIELD_LABELS: Record<string, string> = {
   EXTRA_PAY: 'เงินเพิ่ม', POS_ALLOW: 'เงินประจำตำแหน่ง', KTB_LOAN: 'ชำระหนี้ KTB',
   TAX: 'ภาษีหัก ณ ที่จ่าย', SSF: 'ประกันสังคม', FUNERAL_FUND: 'ฌาปนกิจ',
   KTB_BANK: 'ธนาคารกรุงไทย', SAVINGS_BANK_LOAN: 'ธนาคารออมสิน',
+  BASE_SALARY: 'เงินเดือน',
   __EMPLOYEE_ADDED__: 'เพิ่มพนักงาน', __EMPLOYEE_REMOVED__: 'นำพนักงานออก',
 }
 
-const PAYROLL_FIELD_CODES: Record<Exclude<keyof PayrollRow, 'empId' | 'customIncome' | 'customDeduction'>, string> = {
+const PAYROLL_FIELD_CODES: Partial<Record<keyof PayrollRow, string>> = {
   extra: 'EXTRA_PAY', posAllowance: 'POS_ALLOW', debtKTB: 'KTB_LOAN', tax: 'TAX',
   social: 'SSF', funeral: 'FUNERAL_FUND', ktb: 'KTB_BANK', gsb: 'SAVINGS_BANK_LOAN',
 }
@@ -230,7 +242,7 @@ const EMPLOYEES: Employee[] = [
 const makeDefaultRow = (e: Employee): PayrollRow => ({
   // A new payroll line must never invent statutory deductions or allowances.
   // HR enters and saves the actual values for the period.
-  empId: e.id, extra: 0, posAllowance: 0,
+  empId: e.id, periodBaseSalary: e.baseSalary, salaryCalculationMethod: 'FULL_MONTH', extra: 0, posAllowance: 0,
   debtKTB: 0, tax: 0, social: 0, funeral: 0, ktb: 0, gsb: 0,
   customIncome: {}, customDeduction: {},
 })
@@ -342,6 +354,13 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
         const lines = Object.fromEntries(item.lines.map(line => [line.code, Number(line.amount)]))
         rows[item.employee_code] = {
           empId: item.employee_code, extra: lines.EXTRA_PAY ?? 0, posAllowance: lines.POS_ALLOW ?? 0,
+          periodBaseSalary: Number(item.base_salary),
+          salaryCalculationMethod: item.calculation_method === 'DAILY' ? 'DAILY' : 'FULL_MONTH',
+          salaryCalculationBaseDays: item.calculation_base_days ?? undefined,
+          salaryPayableDays: item.payable_days ?? undefined,
+          salaryCalculationStartDate: item.calculation_start_date ?? undefined,
+          salaryCalculationEndDate: item.calculation_end_date ?? undefined,
+          salaryCalculationReason: item.calculation_reason ?? undefined,
           debtKTB: lines.KTB_LOAN ?? 0, tax: lines.TAX ?? 0, social: lines.SSF ?? 0,
           funeral: lines.FUNERAL_FUND ?? 0, ktb: lines.KTB_BANK ?? 0, gsb: lines.SAVINGS_BANK_LOAN ?? 0,
           customIncome: Object.fromEntries(item.lines.filter(line => line.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(line.code)).map(line => [line.code, Number(line.amount)])),
@@ -366,7 +385,7 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
             position: item.position_name ?? currentEmployee.position,
           organization: item.organization_name ?? currentEmployee.organization,
             department: batch.department_name,
-            baseSalary: Number(item.base_salary),
+            baseSalary: Number(item.full_month_salary ?? currentEmployee.baseSalary),
           }
         }
         // Keep old payrolls viewable even if the employee was later deactivated
@@ -379,7 +398,7 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
           position: item.position_name ?? '–',
           organization: item.organization_name ?? '–',
           department: batch.department_name,
-          baseSalary: Number(item.base_salary),
+          baseSalary: Number(item.full_month_salary ?? item.base_salary),
           email: '',
           status: 'inactive' as const,
           startDate: '',
@@ -417,6 +436,13 @@ const mapPayrollHistoryBatch = (batch: PayrollBatchRecord, period: PayrollPeriod
     const lines = Object.fromEntries(item.lines.map(line => [line.code, Number(line.amount)]))
     rows[item.employee_code] = {
       empId: item.employee_code, extra: lines.EXTRA_PAY ?? 0, posAllowance: lines.POS_ALLOW ?? 0,
+      periodBaseSalary: Number(item.base_salary),
+      salaryCalculationMethod: item.calculation_method === 'DAILY' ? 'DAILY' : 'FULL_MONTH',
+      salaryCalculationBaseDays: item.calculation_base_days ?? undefined,
+      salaryPayableDays: item.payable_days ?? undefined,
+      salaryCalculationStartDate: item.calculation_start_date ?? undefined,
+      salaryCalculationEndDate: item.calculation_end_date ?? undefined,
+      salaryCalculationReason: item.calculation_reason ?? undefined,
       debtKTB: lines.KTB_LOAN ?? 0, tax: lines.TAX ?? 0, social: lines.SSF ?? 0,
       funeral: lines.FUNERAL_FUND ?? 0, ktb: lines.KTB_BANK ?? 0, gsb: lines.SAVINGS_BANK_LOAN ?? 0,
       customIncome: Object.fromEntries(item.lines.filter(line => line.category === 'EARNING' && !STANDARD_PAY_ITEM_CODES.has(line.code)).map(line => [line.code, Number(line.amount)])),
@@ -424,7 +450,7 @@ const mapPayrollHistoryBatch = (batch: PayrollBatchRecord, period: PayrollPeriod
     }
     return {
       id: item.employee_code, title: item.prefix ?? '', firstName: item.first_name, lastName: item.last_name,
-      position: item.position_name ?? '–', organization: item.organization_name ?? '–', department: batch.department_name, baseSalary: Number(item.base_salary),
+      position: item.position_name ?? '–', organization: item.organization_name ?? '–', department: batch.department_name, baseSalary: Number(item.full_month_salary ?? item.base_salary),
       email: '', status: 'inactive' as const, startDate: '', taxId: '', socialSecId: '',
     }
   })
@@ -449,7 +475,8 @@ const escapeMarkup = (value: unknown) => String(value ?? '')
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#039;')
 
-const rowGross = (e: Employee, r: PayrollRow) => e.baseSalary + r.extra + r.posAllowance + Object.values(r.customIncome ?? {}).reduce((sum, value) => sum + value, 0)
+const payrollBaseSalary = (e: Employee, r: PayrollRow) => Number.isFinite(r.periodBaseSalary) ? Number(r.periodBaseSalary) : e.baseSalary
+const rowGross = (e: Employee, r: PayrollRow) => payrollBaseSalary(e, r) + r.extra + r.posAllowance + Object.values(r.customIncome ?? {}).reduce((sum, value) => sum + value, 0)
 const rowDeduct = (r: PayrollRow) => r.debtKTB + r.tax + r.social + r.funeral + r.ktb + r.gsb + Object.values(r.customDeduction ?? {}).reduce((sum, value) => sum + value, 0)
 const rowNet = (e: Employee, r: PayrollRow) => rowGross(e, r) - rowDeduct(r)
 
@@ -719,7 +746,7 @@ const deptTotals = (dept: DeptPayroll) => {
   let totalBase = 0, totalExtra = 0, totalPos = 0, totalGross = 0, totalDebtKTB = 0, totalTax = 0, totalSocial = 0, totalFuneral = 0, totalKTB = 0, totalGSB = 0, totalDeduct = 0, totalNet = 0
   emps.forEach(e => {
     const r = dept.rows[e.id] ?? makeDefaultRow(e)
-    totalBase  += e.baseSalary
+    totalBase  += payrollBaseSalary(e, r)
     totalExtra += r.extra
     totalPos   += r.posAllowance
     totalGross += rowGross(e, r)
@@ -1996,6 +2023,16 @@ type PendingPayrollCellChange = {
   category?: 'EARNING' | 'DEDUCTION'
 }
 
+type SalaryCalculationDraft = {
+  empId: string
+  method: 'FULL_MONTH' | 'DAILY'
+  baseDays: number
+  payableDays: number
+  startDate: string
+  endDate: string
+  reason: string
+}
+
 function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, departments, positions, payItemTypes, setPayItemTypes, reloadPayroll, payrollReferenceReady }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
   setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void;
@@ -2068,6 +2105,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   const [resetVersion, setResetVersion] = useState(0)
   const [editVersion, setEditVersion] = useState(dept.editVersion ?? 0)
   const [pendingCellChange, setPendingCellChange] = useState<PendingPayrollCellChange | null>(null)
+  const [salaryCalculation, setSalaryCalculation] = useState<SalaryCalculationDraft | null>(null)
   const [changeReason, setChangeReason] = useState('')
   const [pendingNotes, setPendingNotes] = useState<PayrollChangeNote[]>([])
   const [savedNotes, setSavedNotes] = useState<PayrollChangeNote[]>([])
@@ -2249,12 +2287,81 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       return
     }
     const fieldCode = PAYROLL_FIELD_CODES[field]
+    if (!fieldCode) {
+      showToast('ช่องนี้ไม่ใช่รายการรับหรือรายการหัก', 'error')
+      return
+    }
     setPendingCellChange({
       empId, employeeId, fieldCode, field, label: fieldLabel(fieldCode),
       oldValue: Number(row[field]), newValue,
     })
     setChangeReason('')
   }, [employeeDatabaseIdByCode, fieldLabel, rows, showToast])
+
+  const openSalaryCalculation = (employee: Employee) => {
+    const row = rows[employee.id] ?? makeDefaultRow(employee)
+    setFocusRow(employee.id)
+    setSalaryCalculation({
+      empId: employee.id,
+      method: row.salaryCalculationMethod === 'DAILY' ? 'DAILY' : 'FULL_MONTH',
+      baseDays: row.salaryCalculationBaseDays ?? 30,
+      payableDays: row.salaryPayableDays ?? 30,
+      startDate: row.salaryCalculationStartDate ?? '',
+      endDate: row.salaryCalculationEndDate ?? '',
+      reason: row.salaryCalculationReason ?? '',
+    })
+  }
+
+  const confirmSalaryCalculation = () => {
+    if (!salaryCalculation) return
+    const employee = emps.find(item => item.id === salaryCalculation.empId)
+    if (!employee) { showToast('ไม่พบข้อมูลพนักงาน', 'error'); return }
+    if (salaryCalculation.method === 'DAILY') {
+      if (salaryCalculation.baseDays < 1 || salaryCalculation.baseDays > 31) { showToast('จำนวนวันฐานคำนวณต้องอยู่ระหว่าง 1 ถึง 31 วัน', 'error'); return }
+      if (salaryCalculation.payableDays < 1 || salaryCalculation.payableDays > salaryCalculation.baseDays) { showToast('จำนวนวันที่ได้รับค่าจ้างไม่ถูกต้อง', 'error'); return }
+      if (!salaryCalculation.startDate || !salaryCalculation.endDate) { showToast('กรุณาระบุวันที่เริ่มและวันที่สิ้นสุด', 'error'); return }
+      if (salaryCalculation.startDate > salaryCalculation.endDate) { showToast('วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด', 'error'); return }
+      if (!salaryCalculation.reason.trim()) { showToast('กรุณาระบุเหตุผลการจ่ายเงินเดือนไม่เต็มเดือน', 'error'); return }
+    }
+    const periodBaseSalary = salaryCalculation.method === 'DAILY'
+      ? Math.round((employee.baseSalary / salaryCalculation.baseDays) * salaryCalculation.payableDays * 100) / 100
+      : employee.baseSalary
+    const employeeId = employeeDatabaseIdByCode.get(employee.id)
+    const oldValue = payrollBaseSalary(employee, rows[employee.id])
+    setRows(current => ({
+      ...current,
+      [employee.id]: {
+        ...current[employee.id],
+        periodBaseSalary,
+        salaryCalculationMethod: salaryCalculation.method,
+        salaryCalculationBaseDays: salaryCalculation.method === 'DAILY' ? salaryCalculation.baseDays : undefined,
+        salaryPayableDays: salaryCalculation.method === 'DAILY' ? salaryCalculation.payableDays : undefined,
+        salaryCalculationStartDate: salaryCalculation.method === 'DAILY' ? salaryCalculation.startDate : undefined,
+        salaryCalculationEndDate: salaryCalculation.method === 'DAILY' ? salaryCalculation.endDate : undefined,
+        salaryCalculationReason: salaryCalculation.method === 'DAILY' ? salaryCalculation.reason.trim() : undefined,
+      },
+    }))
+    setDirty(true)
+    if (employeeId && oldValue !== periodBaseSalary) {
+      setPendingNotes(current => {
+        const next = [...current, {
+          employee_id: employeeId,
+          field_code: 'BASE_SALARY',
+          old_value: oldValue,
+          new_value: periodBaseSalary,
+          reason: salaryCalculation.method === 'DAILY' ? salaryCalculation.reason.trim() : 'กลับมาใช้เงินเดือนเต็มเดือน',
+        }]
+        const originalEmployee = emps.find(item => item.id === employee.id)
+        const originalValue = originalEmployee && initialRows.current[employee.id]
+          ? payrollBaseSalary(originalEmployee, initialRows.current[employee.id])
+          : employee.baseSalary
+        return periodBaseSalary === originalValue
+          ? next.filter(note => !(note.employee_id === employeeId && note.field_code === 'BASE_SALARY'))
+          : next
+      })
+    }
+    setSalaryCalculation(null)
+  }
 
   const requestCustomCellChange = useCallback((empId: string, category: 'EARNING' | 'DEDUCTION', code: string, newValue: number) => {
     const employeeId = employeeDatabaseIdByCode.get(empId)
@@ -2421,7 +2528,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     const currentIds = new Set(includedEmployeeIds)
     const added = includedEmployeeIds.filter(id => !originalIds.has(id)).length
     const removed = initialIncludedEmployeeIds.current.filter(id => !currentIds.has(id)).length
-    const editableFields: Array<Exclude<keyof PayrollRow, 'empId' | 'customIncome' | 'customDeduction'>> = ['extra', 'posAllowance', 'debtKTB', 'tax', 'social', 'funeral', 'ktb', 'gsb']
+    const editableFields: Array<keyof PayrollRow> = ['periodBaseSalary', 'extra', 'posAllowance', 'debtKTB', 'tax', 'social', 'funeral', 'ktb', 'gsb']
     const editedCells = includedEmployeeIds.reduce((count, id) => {
       if (!originalIds.has(id)) return count
       const original = initialRows.current[id]
@@ -2429,7 +2536,8 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       if (!original || !current) return count
       const customChanges = [...new Set([...Object.keys(original.customIncome ?? {}), ...Object.keys(current.customIncome ?? {}), ...Object.keys(original.customDeduction ?? {}), ...Object.keys(current.customDeduction ?? {})])]
         .filter(code => (original.customIncome?.[code] ?? original.customDeduction?.[code] ?? 0) !== (current.customIncome?.[code] ?? current.customDeduction?.[code] ?? 0)).length
-      return count + editableFields.filter(field => original[field] !== current[field]).length + customChanges
+      const salaryModeChanged = original.salaryCalculationMethod !== current.salaryCalculationMethod
+      return count + editableFields.filter(field => original[field] !== current[field]).length + (salaryModeChanged ? 1 : 0) + customChanges
     }, 0)
     return added + removed + editedCells
   }, [includedEmployeeIds, rows])
@@ -2442,12 +2550,22 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       const row = rows[employeeCode]
       const employeeId = employeeDatabaseIdByCode.get(employeeCode)
       if (!employeeId || !row) throw new Error('ไม่พบข้อมูลพนักงาน')
-      return { employee_id: employeeId, lines: {
+      return {
+        employee_id: employeeId,
+        base_salary: payrollBaseSalary(allDepartmentEmployees.find(employee => employee.id === employeeCode)!, row),
+        calculation_method: row.salaryCalculationMethod ?? 'FULL_MONTH',
+        calculation_base_days: row.salaryCalculationBaseDays ?? null,
+        payable_days: row.salaryPayableDays ?? null,
+        calculation_start_date: row.salaryCalculationStartDate ?? null,
+        calculation_end_date: row.salaryCalculationEndDate ?? null,
+        calculation_reason: row.salaryCalculationReason ?? null,
+        lines: {
         EXTRA_PAY: row.extra, POS_ALLOW: row.posAllowance, KTB_LOAN: row.debtKTB,
         TAX: row.tax, SSF: row.social, FUNERAL_FUND: row.funeral,
         KTB_BANK: row.ktb, SAVINGS_BANK_LOAN: row.gsb,
         ...row.customIncome, ...row.customDeduction,
-      } }
+        },
+      }
     })
     const result = await savePayrollBatchItems(dept.databaseId, payload, pendingNotes, editVersion)
     setEditVersion(result.edit_version)
@@ -2628,7 +2746,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     let base = 0, extra = 0, pos = 0, gross = 0, debtKTB = 0, tax = 0, social = 0, funeral = 0, ktb = 0, gsb = 0, deduct = 0, net = 0
     emps.forEach(e => {
       const r = rows[e.id]
-      base += e.baseSalary
+      base += payrollBaseSalary(e, r)
       extra += r.extra; pos += r.posAllowance; gross += rowGross(e, r)
       debtKTB += r.debtKTB; tax += r.tax; social += r.social; funeral += r.funeral; ktb += r.ktb; gsb += r.gsb
       deduct += rowDeduct(r); net += rowNet(e, r)
@@ -2636,13 +2754,22 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     return { base, extra, pos, gross, debtKTB, tax, social, funeral, ktb, gsb, deduct, net }
   }, [rows, emps])
 
+  const salaryCalculationEmployee = salaryCalculation
+    ? emps.find(employee => employee.id === salaryCalculation.empId)
+    : undefined
+  const salaryCalculationAmount = salaryCalculation && salaryCalculationEmployee
+    ? salaryCalculation.method === 'DAILY'
+      ? Math.round((salaryCalculationEmployee.baseSalary / Math.max(1, salaryCalculation.baseDays)) * salaryCalculation.payableDays * 100) / 100
+      : salaryCalculationEmployee.baseSalary
+    : 0
+
   const handleFocus = useCallback((id: string) => setFocusRow(id), [])
   const handleCommit = useCallback((id: string, field: keyof PayrollRow, val: number) => {
     requestStandardCellChange(id, field, val)
   }, [requestStandardCellChange])
 
   const exportExcel = () => {
-    const entries = emps.map(employee => ({ employee, row: rows[employee.id] }))
+    const entries = emps.map(employee => ({ employee: { ...employee, baseSalary: payrollBaseSalary(employee, rows[employee.id]) }, row: rows[employee.id] }))
     const visiblePayItemTypes = payItemTypes.filter(item => item.is_active && selectedPayItemCodes.includes(item.code))
     return exportPayrollWorkbookWithCustomItems({ period, department: dept.department, entries, payItemTypes: visiblePayItemTypes })
   }
@@ -2693,7 +2820,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
   }
 
   const printPayrollTable = () => {
-    const entries = emps.map(employee => ({ employee, row: rows[employee.id] }))
+    const entries = emps.map(employee => ({ employee: { ...employee, baseSalary: payrollBaseSalary(employee, rows[employee.id]) }, row: rows[employee.id] }))
     const visiblePayItemTypes = payItemTypes.filter(item => item.is_active && selectedPayItemCodes.includes(item.code))
     const printed = printPayrollWithCustomItems({ period, department: dept.department, entries, payItemTypes: visiblePayItemTypes })
     if (!printed) {
@@ -2881,7 +3008,22 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                   <td style={{ fontWeight: 500, whiteSpace: 'nowrap' }}>{e.title}{e.firstName} {e.lastName}</td>
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.position}</td>
                   <td className="readonly" style={{ fontSize: 12.5, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>{e.organization}</td>
-                  <td className="num readonly">{thb(e.baseSalary)}</td>
+                  <td className="num readonly" style={r.salaryCalculationMethod === 'DAILY' ? { background: '#F7F3FF' } : undefined}>
+                    <div className="flex items-center justify-end gap-1" style={{ whiteSpace: 'nowrap' }}>
+                      <span>{thb(payrollBaseSalary(e, r))}</span>
+                      {editing && !isReadonly && (
+                        <button
+                          type="button"
+                          className="btn btn-ghost btn-xs"
+                          aria-label={`แก้ไขกรณีจ่ายไม่เต็มเดือนของ ${e.title}${e.firstName} ${e.lastName}`}
+                          title="แก้ไขกรณีจ่ายไม่เต็มเดือน"
+                          onClick={() => openSalaryCalculation(e)}
+                          style={{ width: 26, height: 26, padding: 0, color: 'var(--purple-600)' }}
+                        >✎</button>
+                      )}
+                    </div>
+                    {r.salaryCalculationMethod === 'DAILY' && <div style={{ marginTop: 2, color: 'var(--purple-600)', fontSize: 10, fontWeight: 700 }}>จ่าย {r.salaryPayableDays}/{r.salaryCalculationBaseDays} วัน</div>}
+                  </td>
                   {showsPayItem('EXTRA_PAY') && <CellInput empId={e.id} field="extra" value={r.extra} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:EXTRA_PAY`)} onFocus={handleFocus} onCommit={handleCommit} />}
                   {showsPayItem('POS_ALLOW') && <CellInput empId={e.id} field="posAllowance" value={r.posAllowance} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:POS_ALLOW`)} onFocus={handleFocus} onCommit={handleCommit} />}
                   {customIncomeTypes.map(item => <CustomPayItemCell key={item.code} empId={e.id} code={item.code} category="EARNING" value={r.customIncome?.[item.code] ?? 0} isReadonly={isReadonly || !editing} resetVersion={resetVersion} isChanged={!!employeeDatabaseId && pendingCellKeys.has(`${employeeDatabaseId}:${item.code}`)} onFocus={handleFocus} onCommit={requestCustomCellChange} />)}
@@ -2991,6 +3133,41 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           </div>
         </Modal>
       )}
+      {salaryCalculation && salaryCalculationEmployee && (
+        <Modal title="คำนวณเงินเดือนเฉพาะรอบนี้" onClose={() => setSalaryCalculation(null)}>
+          <div className="flex flex-col gap-4">
+            <div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>
+              {salaryCalculationEmployee.title}{salaryCalculationEmployee.firstName} {salaryCalculationEmployee.lastName} · {salaryCalculationEmployee.position}
+            </div>
+            <div style={{ display: 'flex', gap: 8 }} role="group" aria-label="รูปแบบการคำนวณเงินเดือน">
+              <button type="button" className={salaryCalculation.method === 'FULL_MONTH' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'} onClick={() => setSalaryCalculation(current => current ? { ...current, method: 'FULL_MONTH' } : current)}>เต็มเดือน</button>
+              <button type="button" className={salaryCalculation.method === 'DAILY' ? 'btn btn-primary btn-sm' : 'btn btn-secondary btn-sm'} onClick={() => setSalaryCalculation(current => current ? { ...current, method: 'DAILY' } : current)}>คำนวณรายวัน</button>
+            </div>
+            <div style={{ background: '#F6F3FF', border: '1px solid #E4DBFF', borderRadius: 10, padding: '11px 13px', fontSize: 12.5, lineHeight: 1.65 }}>
+              <strong>มีผลเฉพาะรอบ {periodLabel(period)}</strong><br />ไม่เปลี่ยนฐานเงินเดือนในข้อมูลพนักงาน และเดือนถัดไปจะกลับมาใช้เงินเดือนเต็มเดือน {thb(salaryCalculationEmployee.baseSalary)} บาท
+            </div>
+            {salaryCalculation.method === 'DAILY' && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+                  <FormField label="ฐานเงินเดือนเต็มเดือน"><input className="inp" value={thb(salaryCalculationEmployee.baseSalary)} readOnly /></FormField>
+                  <FormField label="จำนวนวันฐานคำนวณ" required><input className="inp" type="number" min={1} max={31} value={salaryCalculation.baseDays} onChange={event => setSalaryCalculation(current => current ? { ...current, baseDays: Number(event.target.value) } : current)} /></FormField>
+                  <FormField label="วันที่เริ่มได้รับค่าจ้าง" required><input className="inp" type="date" value={salaryCalculation.startDate} onChange={event => setSalaryCalculation(current => current ? { ...current, startDate: event.target.value } : current)} /></FormField>
+                  <FormField label="วันที่สิ้นสุด" required><input className="inp" type="date" value={salaryCalculation.endDate} onChange={event => setSalaryCalculation(current => current ? { ...current, endDate: event.target.value } : current)} /></FormField>
+                  <FormField label="จำนวนวันที่ได้รับค่าจ้าง" required><input className="inp" type="number" min={1} max={salaryCalculation.baseDays} value={salaryCalculation.payableDays} onChange={event => setSalaryCalculation(current => current ? { ...current, payableDays: Number(event.target.value) } : current)} /></FormField>
+                  <FormField label="อัตราต่อวัน"><input className="inp" value={thb(salaryCalculationEmployee.baseSalary / Math.max(1, salaryCalculation.baseDays))} readOnly /></FormField>
+                </div>
+                <FormField label="เหตุผลในการคำนวณรายวัน" required><textarea className="inp" rows={3} maxLength={1000} value={salaryCalculation.reason} onChange={event => setSalaryCalculation(current => current ? { ...current, reason: event.target.value } : current)} placeholder="เช่น เริ่มปฏิบัติงานกลางเดือน หรือลาออกกลางเดือน" /></FormField>
+              </>
+            )}
+            <div className="flex justify-between items-center gap-3" style={{ background: '#FAF8FF', borderRadius: 10, padding: '12px 14px' }}>
+              <span style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{salaryCalculation.method === 'DAILY' ? `${thb(salaryCalculationEmployee.baseSalary)} ÷ ${Math.max(1, salaryCalculation.baseDays)} วัน × ${salaryCalculation.payableDays} วัน` : 'ใช้ฐานเงินเดือนเต็มเดือน'}</span>
+              <strong style={{ color: 'var(--purple-600)' }}>{thb(salaryCalculationAmount)} บาท</strong>
+            </div>
+            <div className="flex justify-end gap-3"><button className="btn btn-secondary" onClick={() => setSalaryCalculation(null)}>ยกเลิก</button><button className="btn btn-primary" onClick={confirmSalaryCalculation}>ยืนยัน</button></div>
+          </div>
+        </Modal>
+      )}
+
       {pendingCellChange && (
         <Modal title="ระบุเหตุผลการเปลี่ยนแปลงยอด" onClose={cancelCellChange}>
           <div className="flex flex-col gap-4">
@@ -3310,7 +3487,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
   const exportExcel = () => exportPayrollWorkbookWithCustomItems({
     period,
     department: dept.department,
-    entries: visibleEmployees.map(employee => ({ employee, row: dept.rows[employee.id] ?? makeDefaultRow(employee) })),
+    entries: visibleEmployees.map(employee => { const row = dept.rows[employee.id] ?? makeDefaultRow(employee); return { employee: { ...employee, baseSalary: payrollBaseSalary(employee, row) }, row } }),
     payItemTypes,
   })
 
@@ -3331,7 +3508,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
   }
 
   const printPayrollTable = () => {
-    if (!printPayrollWithCustomItems({ period, department: dept.department, entries: visibleEmployees.map(employee => ({ employee, row: dept.rows[employee.id] ?? makeDefaultRow(employee) })), payItemTypes })) {
+    if (!printPayrollWithCustomItems({ period, department: dept.department, entries: visibleEmployees.map(employee => { const row = dept.rows[employee.id] ?? makeDefaultRow(employee); return { employee: { ...employee, baseSalary: payrollBaseSalary(employee, row) }, row } }), payItemTypes })) {
       showToast('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up', 'error')
     }
   }
@@ -3644,7 +3821,7 @@ function HistoricPayrollView({ period, dept, payItemTypes, versions, currentBatc
   const [showRestoreConfirm, setShowRestoreConfirm] = useState(false)
   const employees = useMemo(() => deptEmps(dept), [dept])
   const totals = useMemo(() => deptTotals(dept), [dept])
-  const entries = employees.map(employee => ({ employee, row: dept.rows[employee.id] ?? makeDefaultRow(employee) }))
+  const entries = employees.map(employee => { const row = dept.rows[employee.id] ?? makeDefaultRow(employee); return { employee: { ...employee, baseSalary: payrollBaseSalary(employee, row) }, row } })
   const selectedVersionLabel = (dept.revisionNumber ?? 0) === 0 ? 'ฉบับเดิม · รอบปกติ' : `ฉบับแก้ไข ครั้งที่ ${dept.revisionNumber}`
   const print = () => {
     if (!printPayrollWithCustomItems({ period, department: dept.department, entries, payItemTypes })) window.alert('เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาต Pop-up')
@@ -5122,9 +5299,10 @@ export default function App() {
       if (!due) return
 
       announcementRefreshInProgressRef.current = true
-      showToast('ระบบกำลังบันทึกข้อมูลที่แก้ไขก่อนอัปเดตหน้า…', 'info')
-      const saved = await saveOpenEditorsBeforeSystemUpdate()
-      if (!saved) {
+      const saveResult = await saveOpenEditorsBeforeSystemUpdate(taskCount => {
+        if (taskCount > 0) showToast('ระบบกำลังบันทึกข้อมูลที่แก้ไขก่อนปิดปรับปรุง…', 'info')
+      })
+      if (!saveResult.success) {
         announcementRetryAfterRef.current[due.id] = Date.now() + 60_000
         showToast('ยังรีเฟรชไม่ได้ เนื่องจากมีข้อมูลที่บันทึกไม่สำเร็จ กรุณาตรวจสอบช่องที่แจ้งเตือน ระบบจะลองใหม่อีกครั้ง', 'error')
         return

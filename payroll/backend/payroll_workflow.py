@@ -81,8 +81,18 @@ class PayrollWorkflow:
                               SELECT %s,%s,'DRAFT',NOW(),%s,%s,%s,%s,%s,TRUE,visible_pay_item_codes
                               FROM public.payroll_department_batches WHERE id=%s RETURNING id""", (source[0],source[1],source[3]+1,batch_id,revision_type,reason.strip(),actor_id,batch_id))
             revision_id=cursor.fetchone()[0]
-            cursor.execute("""INSERT INTO public.payroll_items (payroll_period_id,department_batch_id,department_id,employee_id,base_salary,total_earnings,total_deductions,net_pay,created_at)
-                              SELECT payroll_period_id,%s,department_id,employee_id,base_salary,total_earnings,total_deductions,net_pay,NOW() FROM public.payroll_items WHERE department_batch_id=%s""", (revision_id,batch_id))
+            cursor.execute("""INSERT INTO public.payroll_items (
+                                  payroll_period_id,department_batch_id,department_id,employee_id,
+                                  base_salary,calculation_method,full_month_salary,
+                                  calculation_base_days,payable_days,calculation_start_date,
+                                  calculation_end_date,calculation_reason,
+                                  total_earnings,total_deductions,net_pay,created_at)
+                              SELECT payroll_period_id,%s,department_id,employee_id,
+                                  base_salary,calculation_method,full_month_salary,
+                                  calculation_base_days,payable_days,calculation_start_date,
+                                  calculation_end_date,calculation_reason,
+                                  total_earnings,total_deductions,net_pay,NOW()
+                              FROM public.payroll_items WHERE department_batch_id=%s""", (revision_id,batch_id))
             cursor.execute("""INSERT INTO public.payroll_item_lines (payroll_item_id,pay_item_type_id,amount)
                               SELECT new.id,line.pay_item_type_id,line.amount FROM public.payroll_item_lines line JOIN public.payroll_items old ON old.id=line.payroll_item_id JOIN public.payroll_items new ON new.department_batch_id=%s AND new.employee_id=old.employee_id WHERE old.department_batch_id=%s""", (revision_id,batch_id))
             # Keep intentional removals in the revised version as well.  Without
@@ -157,11 +167,17 @@ class PayrollWorkflow:
             cursor.execute(
                 """INSERT INTO public.payroll_items (
                        payroll_period_id, department_batch_id, department_id,
-                       employee_id, base_salary, total_earnings,
+                       employee_id, base_salary, calculation_method,
+                       full_month_salary, calculation_base_days, payable_days,
+                       calculation_start_date, calculation_end_date,
+                       calculation_reason, total_earnings,
                        total_deductions, net_pay, created_at
                    )
                    SELECT payroll_period_id, %s, department_id, employee_id,
-                          base_salary, total_earnings, total_deductions,
+                          base_salary, calculation_method, full_month_salary,
+                          calculation_base_days, payable_days,
+                          calculation_start_date, calculation_end_date,
+                          calculation_reason, total_earnings, total_deductions,
                           net_pay, NOW()
                    FROM public.payroll_items
                    WHERE department_batch_id = %s""",
@@ -287,10 +303,14 @@ class PayrollWorkflow:
                 for employee_id, code, amount in cursor.fetchall()
             }
             cursor.execute(
-                "SELECT employee_id FROM public.payroll_items WHERE department_batch_id = %s",
+                "SELECT employee_id, base_salary FROM public.payroll_items WHERE department_batch_id = %s",
                 (batch_id,),
             )
-            saved_employee_ids = {record[0] for record in cursor.fetchall()}
+            saved_item_salaries = {
+                employee_id: Decimal(str(base_salary))
+                for employee_id, base_salary in cursor.fetchall()
+            }
+            saved_employee_ids = set(saved_item_salaries)
 
             # Remember staff intentionally removed from this payroll batch.  Without
             # this, the live employee directory would add them back after a refresh.
@@ -348,6 +368,19 @@ class PayrollWorkflow:
                 for row in rows
                 for code, amount in row.get("lines", {}).items()
             }
+            incoming_salaries = {
+                row["employee_id"]: Decimal(str(row.get("base_salary", salaries[row["employee_id"]])))
+                for row in rows
+            }
+            expected_old_salaries = {
+                employee_id: saved_item_salaries.get(employee_id, Decimal(str(salaries[employee_id])))
+                for employee_id in incoming_salaries
+            }
+            changed_salary_employee_ids = {
+                employee_id
+                for employee_id, incoming_salary in incoming_salaries.items()
+                if expected_old_salaries[employee_id] != incoming_salary
+            }
             changed_keys = {
                 key
                 for key in set(saved_lines) | set(incoming_lines)
@@ -384,6 +417,19 @@ class PayrollWorkflow:
                         "new_value": Decimal("1") if is_valid_add else Decimal("0"),
                     })
                     continue
+                if field_code == "BASE_SALARY":
+                    if employee_id not in changed_salary_employee_ids:
+                        raise ValueError("รายการแก้ไขเงินเดือนไม่ตรงกับข้อมูลล่าสุด")
+                    if not reason:
+                        raise ValueError("กรุณาระบุเหตุผลการจ่ายเงินเดือนไม่เต็มเดือน")
+                    normalized = {
+                        **note,
+                        "reason": reason,
+                        "old_value": Decimal(str(note["old_value"])),
+                        "new_value": Decimal(str(note["new_value"])),
+                    }
+                    notes_by_key.setdefault((employee_id, field_code), []).append(normalized)
+                    continue
                 if field_code not in line_categories and (employee_id, field_code) not in saved_lines:
                     raise ValueError("พบประเภทรายการในประวัติการแก้ไขที่ไม่ถูกต้อง")
                 if not reason:
@@ -407,10 +453,44 @@ class PayrollWorkflow:
                 if any(left["new_value"] != right["old_value"] for left, right in zip(notes, notes[1:])):
                     raise ValueError("ลำดับประวัติการแก้ไขไม่ต่อเนื่อง กรุณาโหลดหน้าใหม่")
 
+            for employee_id in changed_salary_employee_ids:
+                notes = notes_by_key.get((employee_id, "BASE_SALARY"), [])
+                if not notes:
+                    raise ValueError("กรุณาระบุเหตุผลการเปลี่ยนแปลงเงินเดือนของรอบนี้")
+                if notes[0]["old_value"] != expected_old_salaries[employee_id] or notes[-1]["new_value"] != incoming_salaries[employee_id]:
+                    raise ValueError("ค่าเดิมหรือค่าใหม่ของเงินเดือนไม่ตรงกับข้อมูลล่าสุด กรุณาโหลดหน้าใหม่")
+                if any(left["new_value"] != right["old_value"] for left, right in zip(notes, notes[1:])):
+                    raise ValueError("ลำดับประวัติการแก้ไขเงินเดือนไม่ต่อเนื่อง กรุณาโหลดหน้าใหม่")
+
             item_payload = []
             line_payload = []
             for row in rows:
-                base_salary = Decimal(str(salaries[row["employee_id"]]))
+                full_month_salary = Decimal(str(salaries[row["employee_id"]])).quantize(Decimal("0.01"))
+                calculation_method = str(row.get("calculation_method") or "FULL_MONTH").upper()
+                if calculation_method == "DAILY":
+                    calculation_base_days = int(row.get("calculation_base_days") or 0)
+                    payable_days = int(row.get("payable_days") or 0)
+                    calculation_reason = str(row.get("calculation_reason") or "").strip()
+                    if calculation_base_days < 1 or calculation_base_days > 31:
+                        raise ValueError("จำนวนวันฐานคำนวณต้องอยู่ระหว่าง 1 ถึง 31 วัน")
+                    if payable_days < 1 or payable_days > calculation_base_days:
+                        raise ValueError("จำนวนวันที่ได้รับค่าจ้างไม่ถูกต้อง")
+                    if not calculation_reason:
+                        raise ValueError("กรุณาระบุเหตุผลการจ่ายเงินเดือนไม่เต็มเดือน")
+                    expected_salary = (
+                        full_month_salary / Decimal(calculation_base_days) * Decimal(payable_days)
+                    ).quantize(Decimal("0.01"))
+                    base_salary = Decimal(str(row.get("base_salary", expected_salary))).quantize(Decimal("0.01"))
+                    if base_salary != expected_salary:
+                        raise ValueError("ยอดเงินเดือนรายวันไม่ตรงกับจำนวนวันที่ระบุ")
+                elif calculation_method == "FULL_MONTH":
+                    calculation_method = "FULL_MONTH"
+                    calculation_base_days = None
+                    payable_days = None
+                    calculation_reason = None
+                    base_salary = full_month_salary
+                else:
+                    raise ValueError("รูปแบบการคำนวณเงินเดือนไม่ถูกต้อง")
                 line_values = row.get("lines", {})
                 earnings = sum(Decimal(str(value)) for code, value in line_values.items() if line_categories[code] == "EARNING")
                 deductions = sum(Decimal(str(value)) for code, value in line_values.items() if line_categories[code] == "DEDUCTION")
@@ -419,6 +499,13 @@ class PayrollWorkflow:
                 item_payload.append({
                     "employee_id": row["employee_id"],
                     "base_salary": str(base_salary),
+                    "calculation_method": calculation_method,
+                    "full_month_salary": str(full_month_salary),
+                    "calculation_base_days": calculation_base_days,
+                    "payable_days": payable_days,
+                    "calculation_start_date": row.get("calculation_start_date").isoformat() if calculation_method == "DAILY" and row.get("calculation_start_date") else None,
+                    "calculation_end_date": row.get("calculation_end_date").isoformat() if calculation_method == "DAILY" and row.get("calculation_end_date") else None,
+                    "calculation_reason": calculation_reason,
                     "total_earnings": str(total_earnings),
                     "total_deductions": str(deductions),
                     "net_pay": str(net_pay),
@@ -432,14 +519,25 @@ class PayrollWorkflow:
                     """
                     INSERT INTO public.payroll_items (
                         payroll_period_id, department_batch_id, department_id, employee_id,
-                        base_salary, total_earnings, total_deductions, net_pay, created_at
+                        base_salary, calculation_method, full_month_salary,
+                        calculation_base_days, payable_days, calculation_start_date,
+                        calculation_end_date, calculation_reason,
+                        total_earnings, total_deductions, net_pay, created_at
                     )
                     SELECT batch.payroll_period_id, batch.id, batch.department_id,
-                           payload.employee_id, payload.base_salary, payload.total_earnings,
+                           payload.employee_id, payload.base_salary, payload.calculation_method,
+                           payload.full_month_salary, payload.calculation_base_days,
+                           payload.payable_days, payload.calculation_start_date,
+                           payload.calculation_end_date, payload.calculation_reason,
+                           payload.total_earnings,
                            payload.total_deductions, payload.net_pay, NOW()
                     FROM public.payroll_department_batches batch
                     CROSS JOIN jsonb_to_recordset(%s::jsonb) AS payload(
-                        employee_id integer, base_salary numeric, total_earnings numeric,
+                        employee_id integer, base_salary numeric, calculation_method text,
+                        full_month_salary numeric, calculation_base_days integer,
+                        payable_days integer, calculation_start_date date,
+                        calculation_end_date date, calculation_reason text,
+                        total_earnings numeric,
                         total_deductions numeric, net_pay numeric
                     )
                     WHERE batch.id = %s
@@ -480,6 +578,11 @@ class PayrollWorkflow:
                 for key in changed_keys
                 for note in notes_by_key.get(key, [])
             ]
+            persisted_notes.extend(
+                note
+                for employee_id in changed_salary_employee_ids
+                for note in notes_by_key.get((employee_id, "BASE_SALARY"), [])
+            )
             # Membership notes are supplied only by explicit add/remove actions
             # in the UI. Employees populated automatically must not create a
             # misleading audit entry.

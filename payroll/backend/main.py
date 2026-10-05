@@ -252,7 +252,7 @@ def healthcheck():
     except Exception as error:
         logging.exception("Healthcheck failed")
         raise HTTPException(status_code=503, detail="ระบบยังไม่พร้อมให้บริการ") from error
-    return {"status": "ok"}
+    return {"status": "ok", "release_id": release_id}
 
 @app.get("/api/departments")
 def get_departments(user=Depends(get_current_user)):
@@ -556,7 +556,29 @@ class PayrollPeriodCreate(BaseModel):
 
 class PayrollRowSave(BaseModel):
     employee_id: int
+    base_salary: Decimal = Field(ge=0, max_digits=12, decimal_places=2)
+    calculation_method: str = "FULL_MONTH"
+    calculation_base_days: int | None = Field(default=None, ge=1, le=31)
+    payable_days: int | None = Field(default=None, ge=1, le=31)
+    calculation_start_date: date | None = None
+    calculation_end_date: date | None = None
+    calculation_reason: str | None = Field(default=None, max_length=1000)
     lines: dict[str, Decimal] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_salary_calculation(self):
+        if self.calculation_method not in {"FULL_MONTH", "DAILY"}:
+            raise ValueError("รูปแบบการคำนวณเงินเดือนไม่ถูกต้อง")
+        if self.calculation_method == "DAILY":
+            if self.calculation_base_days is None or self.payable_days is None:
+                raise ValueError("กรุณาระบุจำนวนวันสำหรับคำนวณเงินเดือนให้ครบถ้วน")
+            if self.payable_days > self.calculation_base_days:
+                raise ValueError("จำนวนวันที่ได้รับค่าจ้างต้องไม่เกินจำนวนวันฐานคำนวณ")
+            if not (self.calculation_reason or "").strip():
+                raise ValueError("กรุณาระบุเหตุผลการจ่ายเงินเดือนไม่เต็มเดือน")
+            if self.calculation_start_date and self.calculation_end_date and self.calculation_start_date > self.calculation_end_date:
+                raise ValueError("วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด")
+        return self
 
     @field_validator("lines")
     @classmethod

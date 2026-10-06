@@ -318,6 +318,14 @@ html, body {
   box-shadow: 0 0 0 3px rgba(108,82,217,0.12);
 }
 .inp::placeholder { color: var(--text-muted); }
+.inp.inp-calculated,
+.inp.inp-calculated:focus {
+  background: #F3F1F8;
+  border-color: #DDD8EA;
+  color: #625C70;
+  box-shadow: none;
+  cursor: not-allowed;
+}
 
 /* Keep every select visually identical to a text input. Native browser selects
    otherwise ignore part of the input styling and render as shorter grey fields. */

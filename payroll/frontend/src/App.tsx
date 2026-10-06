@@ -3178,22 +3178,22 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
             {salaryCalculation.method === 'DAILY' && (
               <>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
-                  <FormField label="ฐานเงินเดือนเต็มเดือน"><input className="inp" value={thb(salaryCalculationEmployee.baseSalary)} readOnly /></FormField>
-                  <FormField label="จำนวนวันฐานคำนวณ" required><input className="inp" type="number" min={1} max={31} value={salaryCalculation.baseDays} onChange={event => setSalaryCalculation(current => current ? { ...current, baseDays: Number(event.target.value) } : current)} /></FormField>
-                  <FormField label="วันที่เริ่มคำนวณค่าจ้าง" required><input className="inp" type="date" min={periodStartDate} max={periodEndDate} value={salaryCalculation.startDate} onChange={event => setSalaryCalculation(current => {
+                  <FormField label="เงินเดือนเต็มเดือน"><input className="inp inp-calculated" value={thb(salaryCalculationEmployee.baseSalary)} readOnly /></FormField>
+                  <FormField label="จำนวนวันสำหรับหารเงินเดือน" required><input className="inp" type="number" min={1} max={31} value={salaryCalculation.baseDays} onChange={event => setSalaryCalculation(current => current ? { ...current, baseDays: Number(event.target.value) } : current)} /></FormField>
+                  <FormField label="วันแรกของช่วงที่คิดค่าจ้าง" required><input className="inp" type="date" min={periodStartDate} max={periodEndDate} value={salaryCalculation.startDate} onChange={event => setSalaryCalculation(current => {
                     if (!current) return current
                     const startDate = event.target.value
                     return { ...current, startDate, payableDays: inclusiveCalendarDays(startDate, current.endDate) }
                   })} /></FormField>
-                  <FormField label="วันที่สิ้นสุดการคำนวณ" required><input className="inp" type="date" min={periodStartDate} max={periodEndDate} value={salaryCalculation.endDate} onChange={event => setSalaryCalculation(current => {
+                  <FormField label="วันสุดท้ายของช่วงที่คิดค่าจ้าง" required><input className="inp" type="date" min={periodStartDate} max={periodEndDate} value={salaryCalculation.endDate} onChange={event => setSalaryCalculation(current => {
                     if (!current) return current
                     const endDate = event.target.value
                     return { ...current, endDate, payableDays: inclusiveCalendarDays(current.startDate, endDate) }
-                  })} /><div style={{ marginTop: 5, color: 'var(--text-muted)', fontSize: 11 }}>ใช้กำหนดช่วงจ่ายของรอบนี้เท่านั้น ไม่ใช่วันสิ้นสุดการทำงาน</div></FormField>
-                  <FormField label="จำนวนวันที่ได้รับค่าจ้าง"><input className="inp" type="number" value={salaryCalculation.payableDays || ''} readOnly placeholder="ระบบคำนวณให้อัตโนมัติ" /></FormField>
-                  <FormField label="อัตราต่อวัน"><input className="inp" value={thb(salaryCalculationEmployee.baseSalary / Math.max(1, salaryCalculation.baseDays))} readOnly /></FormField>
+                  })} /></FormField>
+                  <FormField label="จำนวนวันที่คิดค่าจ้าง"><input className="inp inp-calculated" type="number" value={salaryCalculation.payableDays || ''} readOnly /></FormField>
+                  <FormField label="ค่าจ้างต่อวัน"><input className="inp inp-calculated" value={thb(salaryCalculationEmployee.baseSalary / Math.max(1, salaryCalculation.baseDays))} readOnly /></FormField>
                 </div>
-                <FormField label="เหตุผลในการคำนวณรายวัน" required><textarea className="inp" rows={3} maxLength={1000} value={salaryCalculation.reason} onChange={event => setSalaryCalculation(current => current ? { ...current, reason: event.target.value } : current)} placeholder="เช่น เริ่มปฏิบัติงานกลางเดือน หรือลาออกกลางเดือน" /></FormField>
+                <FormField label="เหตุผลที่จ่ายไม่เต็มเดือน" required><textarea className="inp" rows={3} maxLength={1000} value={salaryCalculation.reason} onChange={event => setSalaryCalculation(current => current ? { ...current, reason: event.target.value } : current)} placeholder="เช่น เริ่มงานกลางเดือน หรือลาออกกลางเดือน" /></FormField>
               </>
             )}
             <div className="flex justify-between items-center gap-3" style={{ background: '#FAF8FF', borderRadius: 10, padding: '12px 14px' }}>

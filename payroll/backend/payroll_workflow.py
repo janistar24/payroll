@@ -470,11 +470,19 @@ class PayrollWorkflow:
                 if calculation_method == "DAILY":
                     calculation_base_days = int(row.get("calculation_base_days") or 0)
                     payable_days = int(row.get("payable_days") or 0)
+                    calculation_start_date = row.get("calculation_start_date")
+                    calculation_end_date = row.get("calculation_end_date")
                     calculation_reason = str(row.get("calculation_reason") or "").strip()
                     if calculation_base_days < 1 or calculation_base_days > 31:
                         raise ValueError("จำนวนวันฐานคำนวณต้องอยู่ระหว่าง 1 ถึง 31 วัน")
                     if payable_days < 1 or payable_days > calculation_base_days:
                         raise ValueError("จำนวนวันที่ได้รับค่าจ้างไม่ถูกต้อง")
+                    if calculation_start_date is None or calculation_end_date is None:
+                        raise ValueError("กรุณาระบุวันที่เริ่มและวันที่สิ้นสุดการคำนวณ")
+                    if calculation_start_date > calculation_end_date:
+                        raise ValueError("วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด")
+                    if payable_days != (calculation_end_date - calculation_start_date).days + 1:
+                        raise ValueError("จำนวนวันที่ได้รับค่าจ้างไม่ตรงกับช่วงวันที่ระบุ")
                     if not calculation_reason:
                         raise ValueError("กรุณาระบุเหตุผลการจ่ายเงินเดือนไม่เต็มเดือน")
                     expected_salary = (

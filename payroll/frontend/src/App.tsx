@@ -2033,6 +2033,22 @@ type SalaryCalculationDraft = {
   reason: string
 }
 
+const toIsoDate = (date: Date) => {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const inclusiveCalendarDays = (startDate: string, endDate: string) => {
+  if (!startDate || !endDate || startDate > endDate) return 0
+  const [startYear, startMonth, startDay] = startDate.split('-').map(Number)
+  const [endYear, endMonth, endDay] = endDate.split('-').map(Number)
+  const start = Date.UTC(startYear, startMonth - 1, startDay)
+  const end = Date.UTC(endYear, endMonth - 1, endDay)
+  return Math.floor((end - start) / 86_400_000) + 1
+}
+
 function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, departments, positions, payItemTypes, setPayItemTypes, reloadPayroll, payrollReferenceReady }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
   setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void;
@@ -2301,16 +2317,25 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
     setChangeReason('')
   }, [employeeDatabaseIdByCode, fieldLabel, rows, showToast])
 
+  const periodStartDate = toIsoDate(new Date(period.year, period.month - 1, 1))
+  const periodEndDate = toIsoDate(new Date(period.year, period.month, 0))
+  const configuredPayDate = (period.payDate ?? '').slice(0, 10)
+  const defaultCalculationEndDate = configuredPayDate >= periodStartDate && configuredPayDate <= periodEndDate
+    ? configuredPayDate
+    : periodEndDate
+
   const openSalaryCalculation = (employee: Employee) => {
     const row = rows[employee.id] ?? makeDefaultRow(employee)
+    const startDate = row.salaryCalculationStartDate ?? ''
+    const endDate = row.salaryCalculationEndDate ?? defaultCalculationEndDate
     setFocusRow(employee.id)
     setSalaryCalculation({
       empId: employee.id,
       method: row.salaryCalculationMethod === 'DAILY' ? 'DAILY' : 'FULL_MONTH',
       baseDays: row.salaryCalculationBaseDays ?? 30,
-      payableDays: row.salaryPayableDays ?? 30,
-      startDate: row.salaryCalculationStartDate ?? '',
-      endDate: row.salaryCalculationEndDate ?? '',
+      payableDays: startDate ? inclusiveCalendarDays(startDate, endDate) : 0,
+      startDate,
+      endDate,
       reason: row.salaryCalculationReason ?? '',
     })
   }
@@ -2323,6 +2348,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       if (salaryCalculation.baseDays < 1 || salaryCalculation.baseDays > 31) { showToast('จำนวนวันฐานคำนวณต้องอยู่ระหว่าง 1 ถึง 31 วัน', 'error'); return }
       if (salaryCalculation.payableDays < 1 || salaryCalculation.payableDays > salaryCalculation.baseDays) { showToast('จำนวนวันที่ได้รับค่าจ้างไม่ถูกต้อง', 'error'); return }
       if (!salaryCalculation.startDate || !salaryCalculation.endDate) { showToast('กรุณาระบุวันที่เริ่มและวันที่สิ้นสุด', 'error'); return }
+      if (salaryCalculation.startDate < periodStartDate || salaryCalculation.endDate > periodEndDate) { showToast('วันที่คำนวณต้องอยู่ภายในรอบเงินเดือนนี้', 'error'); return }
       if (salaryCalculation.startDate > salaryCalculation.endDate) { showToast('วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด', 'error'); return }
       if (!salaryCalculation.reason.trim()) { showToast('กรุณาระบุเหตุผลการจ่ายเงินเดือนไม่เต็มเดือน', 'error'); return }
     }
@@ -3154,9 +3180,17 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
                   <FormField label="ฐานเงินเดือนเต็มเดือน"><input className="inp" value={thb(salaryCalculationEmployee.baseSalary)} readOnly /></FormField>
                   <FormField label="จำนวนวันฐานคำนวณ" required><input className="inp" type="number" min={1} max={31} value={salaryCalculation.baseDays} onChange={event => setSalaryCalculation(current => current ? { ...current, baseDays: Number(event.target.value) } : current)} /></FormField>
-                  <FormField label="วันที่เริ่มได้รับค่าจ้าง" required><input className="inp" type="date" value={salaryCalculation.startDate} onChange={event => setSalaryCalculation(current => current ? { ...current, startDate: event.target.value } : current)} /></FormField>
-                  <FormField label="วันที่สิ้นสุด" required><input className="inp" type="date" value={salaryCalculation.endDate} onChange={event => setSalaryCalculation(current => current ? { ...current, endDate: event.target.value } : current)} /></FormField>
-                  <FormField label="จำนวนวันที่ได้รับค่าจ้าง" required><input className="inp" type="number" min={1} max={salaryCalculation.baseDays} value={salaryCalculation.payableDays} onChange={event => setSalaryCalculation(current => current ? { ...current, payableDays: Number(event.target.value) } : current)} /></FormField>
+                  <FormField label="วันที่เริ่มคำนวณค่าจ้าง" required><input className="inp" type="date" min={periodStartDate} max={periodEndDate} value={salaryCalculation.startDate} onChange={event => setSalaryCalculation(current => {
+                    if (!current) return current
+                    const startDate = event.target.value
+                    return { ...current, startDate, payableDays: inclusiveCalendarDays(startDate, current.endDate) }
+                  })} /></FormField>
+                  <FormField label="วันที่สิ้นสุดการคำนวณ" required><input className="inp" type="date" min={periodStartDate} max={periodEndDate} value={salaryCalculation.endDate} onChange={event => setSalaryCalculation(current => {
+                    if (!current) return current
+                    const endDate = event.target.value
+                    return { ...current, endDate, payableDays: inclusiveCalendarDays(current.startDate, endDate) }
+                  })} /><div style={{ marginTop: 5, color: 'var(--text-muted)', fontSize: 11 }}>ใช้กำหนดช่วงจ่ายของรอบนี้เท่านั้น ไม่ใช่วันสิ้นสุดการทำงาน</div></FormField>
+                  <FormField label="จำนวนวันที่ได้รับค่าจ้าง"><input className="inp" type="number" value={salaryCalculation.payableDays || ''} readOnly placeholder="ระบบคำนวณให้อัตโนมัติ" /></FormField>
                   <FormField label="อัตราต่อวัน"><input className="inp" value={thb(salaryCalculationEmployee.baseSalary / Math.max(1, salaryCalculation.baseDays))} readOnly /></FormField>
                 </div>
                 <FormField label="เหตุผลในการคำนวณรายวัน" required><textarea className="inp" rows={3} maxLength={1000} value={salaryCalculation.reason} onChange={event => setSalaryCalculation(current => current ? { ...current, reason: event.target.value } : current)} placeholder="เช่น เริ่มปฏิบัติงานกลางเดือน หรือลาออกกลางเดือน" /></FormField>

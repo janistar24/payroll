@@ -572,12 +572,17 @@ class PayrollRowSave(BaseModel):
         if self.calculation_method == "DAILY":
             if self.calculation_base_days is None or self.payable_days is None:
                 raise ValueError("กรุณาระบุจำนวนวันสำหรับคำนวณเงินเดือนให้ครบถ้วน")
+            if self.calculation_start_date is None or self.calculation_end_date is None:
+                raise ValueError("กรุณาระบุวันที่เริ่มและวันที่สิ้นสุดการคำนวณ")
             if self.payable_days > self.calculation_base_days:
                 raise ValueError("จำนวนวันที่ได้รับค่าจ้างต้องไม่เกินจำนวนวันฐานคำนวณ")
             if not (self.calculation_reason or "").strip():
                 raise ValueError("กรุณาระบุเหตุผลการจ่ายเงินเดือนไม่เต็มเดือน")
             if self.calculation_start_date and self.calculation_end_date and self.calculation_start_date > self.calculation_end_date:
                 raise ValueError("วันที่เริ่มต้องไม่เกินวันที่สิ้นสุด")
+            calculated_days = (self.calculation_end_date - self.calculation_start_date).days + 1
+            if self.payable_days != calculated_days:
+                raise ValueError("จำนวนวันที่ได้รับค่าจ้างไม่ตรงกับช่วงวันที่ระบุ")
         return self
 
     @field_validator("lines")

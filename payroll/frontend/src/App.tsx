@@ -822,7 +822,7 @@ function Modal({ title, children, onClose, size, closeOnBackdrop = true }: { tit
 
 // ─── Sidebar ─────────────────────────────────────────────────────────────────
 
-function Sidebar({ role, page, setPage }: { role: Role; page: Page; setPage: (p: Page) => void }) {
+function Sidebar({ role, page, setPage, canApprovePayroll }: { role: Role; page: Page; setPage: (p: Page) => void; canApprovePayroll: boolean }) {
   type NavEntry = { id: Page; label: string; icon: string }
   const hrNav: NavEntry[] = [
     { id: 'dashboard', label: 'หน้าหลัก', icon: '🏠' },
@@ -833,6 +833,7 @@ function Sidebar({ role, page, setPage }: { role: Role; page: Page; setPage: (p:
   ]
   const dirNav: NavEntry[] = [
     { id: 'dashboard', label: 'หน้าหลัก', icon: '🏠' },
+    { id: 'director-approvals', label: 'อนุมัติเงินเดือน', icon: '✅' },
     { id: 'periods',   label: 'รอบเงินเดือน', icon: '📅' },
     { id: 'employees', label: 'พนักงาน', icon: '👥' },
     { id: 'payslip-status', label: 'สถานะการส่งอีเมล', icon: '📨' },
@@ -840,6 +841,7 @@ function Sidebar({ role, page, setPage }: { role: Role; page: Page; setPage: (p:
   ]
   const adminNav: NavEntry[] = [
     { id: 'dashboard',     label: 'หน้าหลัก', icon: '🏠' },
+    ...(canApprovePayroll ? [{ id: 'director-approvals' as Page, label: 'อนุมัติเงินเดือน', icon: '✅' }] : []),
     { id: 'periods',       label: 'รอบเงินเดือน', icon: '📅' },
     { id: 'employees',     label: 'พนักงาน', icon: '👥' },
     { id: 'payslip-status',label: 'สถานะการส่งอีเมล', icon: '📨' },
@@ -5515,7 +5517,7 @@ export default function App() {
   return (
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       <Background />
-      <Sidebar role={role} page={page} setPage={setPage} />
+      <Sidebar role={role} page={page} setPage={setPage} canApprovePayroll={canApprovePayroll} />
 
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
         {/* Topbar */}

@@ -273,20 +273,15 @@ class PayrollWorkflow:
             employee_ids = [row["employee_id"] for row in rows]
             if len(employee_ids) != len(set(employee_ids)):
                 raise ValueError("พบข้อมูลพนักงานซ้ำในตารางเงินเดือน")
-            if employee_ids:
-                cursor.execute(
-                    """
-                    SELECT id, base_salary
-                    FROM public.employees
-                    WHERE department_id = %s AND status = 'ACTIVE' AND id = ANY(%s)
-                    """,
-                    (department_id, employee_ids),
-                )
-                salaries = dict(cursor.fetchall())
-                if len(salaries) != len(set(employee_ids)):
-                    raise ValueError("พบพนักงานที่ไม่อยู่ในฝ่ายหรือไม่ได้ใช้งาน")
-            else:
-                salaries = {}
+            cursor.execute(
+                "SELECT id, base_salary FROM public.employees WHERE department_id = %s AND status = 'ACTIVE'",
+                (department_id,),
+            )
+            active_department_salaries = dict(cursor.fetchall())
+            salaries = {employee_id: active_department_salaries[employee_id] for employee_id in employee_ids if employee_id in active_department_salaries}
+            if len(salaries) != len(set(employee_ids)):
+                raise ValueError("พบพนักงานที่ไม่อยู่ในฝ่ายหรือไม่ได้ใช้งาน")
+            active_department_employee_ids = set(active_department_salaries)
 
             cursor.execute(
                 """
@@ -391,7 +386,7 @@ class PayrollWorkflow:
             for note in change_notes:
                 employee_id = note["employee_id"]
                 field_code = note["field_code"]
-                if employee_id not in set(employee_ids) | saved_employee_ids:
+                if employee_id not in set(employee_ids) | saved_employee_ids | active_department_employee_ids:
                     raise ValueError("พบประวัติการแก้ไขของพนักงานที่ไม่อยู่ในรอบเงินเดือน")
                 reason = str(note.get("reason") or "").strip()
                 if field_code in {"__EMPLOYEE_ADDED__", "__EMPLOYEE_REMOVED__"}:
@@ -402,7 +397,7 @@ class PayrollWorkflow:
                     )
                     is_valid_remove = (
                         field_code == "__EMPLOYEE_REMOVED__"
-                        and employee_id in saved_employee_ids
+                        and employee_id in (saved_employee_ids | active_department_employee_ids)
                         and employee_id not in set(employee_ids)
                     )
                     if not (is_valid_add or is_valid_remove):
@@ -411,7 +406,7 @@ class PayrollWorkflow:
                         **note,
                         "reason": reason or (
                             "เพิ่มพนักงานเข้าตารางเงินเดือน"
-                            if is_valid_add else "นำพนักงานออกจากตารางเงินเดือน"
+                            if is_valid_add else "นำพนักงานออกจากรอบเงินเดือนนี้"
                         ),
                         "old_value": Decimal("0") if is_valid_add else Decimal("1"),
                         "new_value": Decimal("1") if is_valid_add else Decimal("0"),

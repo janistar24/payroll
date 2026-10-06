@@ -479,6 +479,7 @@ class UserCreateRequest(BaseModel):
     temporary_password: str = Field(min_length=8, max_length=255)
     employee_id: int
     role: str
+    can_approve_payroll: bool = False
 
     @field_validator("role")
     @classmethod
@@ -490,6 +491,10 @@ class UserCreateRequest(BaseModel):
 
 class PasswordResetRequest(BaseModel):
     temporary_password: str = Field(min_length=8, max_length=255)
+
+
+class UserPayrollApprovalUpdate(BaseModel):
+    enabled: bool
 
 
 class PasswordChangeRequest(BaseModel):
@@ -691,7 +696,8 @@ def _ensure_batch_access(batch_id, user, allow_approval=False):
         raise HTTPException(status_code=404, detail="ไม่พบรายการฝ่ายของรอบเงินเดือน")
     batch = dict(zip(columns, data[0]))
     if allow_approval:
-        _require_global_payroll_role(user)
+        if user["role"] != "director" and not (user["role"] == "admin" and user.get("can_approve_payroll")):
+            raise HTTPException(status_code=403, detail="บัญชีนี้ไม่ได้รับสิทธิ์อนุมัติรอบเงินเดือน")
     else:
         scope = _department_scope(user)
         if scope is not None and batch["department_id"] != scope:
@@ -823,8 +829,8 @@ def get_users(user=Depends(get_current_user)):
 def create_user(request: UserCreateRequest, user=Depends(get_current_user)):
     try:
         _require_admin(user)
-        user_id = auth_service.create_user(request.username.strip(), request.temporary_password, request.employee_id, request.role)
-        audit_logger.log(user["id"], "CREATE_USER", "user", user_id, {"username": request.username, "employee_id": request.employee_id, "role": request.role})
+        user_id = auth_service.create_user(request.username.strip(), request.temporary_password, request.employee_id, request.role, request.can_approve_payroll)
+        audit_logger.log(user["id"], "CREATE_USER", "user", user_id, {"username": request.username, "employee_id": request.employee_id, "role": request.role, "can_approve_payroll": request.can_approve_payroll})
         return {"success": True, "data": {"id": user_id}}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
@@ -872,6 +878,17 @@ def activate_user(user_id: int, user=Depends(get_current_user)):
         username = auth_service.activate_user(user_id)
         audit_logger.log(user["id"], "ACTIVATE_USER", "user", user_id, {"username": username})
         return {"success": True}
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+
+
+@app.patch("/api/users/{user_id}/payroll-approval")
+def update_user_payroll_approval(user_id: int, request: UserPayrollApprovalUpdate, user=Depends(get_current_user)):
+    try:
+        _require_admin(user)
+        auth_service.update_payroll_approval_permission(user_id, request.enabled)
+        audit_logger.log(user["id"], "UPDATE_PAYROLL_APPROVAL_PERMISSION", "user", user_id, {"enabled": request.enabled})
+        return {"success": True, "data": {"enabled": request.enabled}}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))
 
@@ -1476,13 +1493,16 @@ def get_payroll_batch_version(batch_id: int, user=Depends(get_current_user)):
 def change_payroll_batch_status(batch_id: int, request: PayrollBatchAction, user=Depends(get_current_user)):
     try:
         batch = _ensure_batch_access(batch_id, user, allow_approval=request.action in {"approve", "reject"})
-        if request.action in {"approve", "reject"} and batch.get("submitted_by_id") == user["id"]:
+        is_authorized_admin = user["role"] == "admin" and bool(user.get("can_approve_payroll"))
+        if request.action in {"approve", "reject"} and batch.get("submitted_by_id") == user["id"] and not is_authorized_admin:
             raise HTTPException(status_code=403, detail="ไม่สามารถอนุมัติหรือส่งกลับแก้ไขรายการที่ตนเองส่งอนุมัติได้")
         payroll_workflow_service.change_batch_status(
             batch_id, request.action, user["id"], request.reject_reason.strip() if request.reject_reason else None,
             request.expected_version,
         )
-        audit_logger.log(user["id"], request.action.upper(), "payroll_batch", batch_id)
+        audit_logger.log(user["id"], request.action.upper(), "payroll_batch", batch_id, {
+            "submitted_by_same_user": batch.get("submitted_by_id") == user["id"],
+        })
         return {"success": True, "data": {"department_id": batch["department_id"]}}
     except HTTPException:
         raise

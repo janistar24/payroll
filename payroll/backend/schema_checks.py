@@ -1,4 +1,5 @@
 REQUIRED_COLUMNS = {
+    "users": {"can_approve_payroll"},
     "employees": {"organization_id"},
     "payroll_department_batches": {"edit_version", "last_edited_at", "last_edited_by_id"},
     "payroll_change_notes": {"department_batch_id", "employee_id", "field_code", "reason"},

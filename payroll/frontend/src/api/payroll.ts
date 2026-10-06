@@ -23,6 +23,7 @@ export interface PayrollBatchRecord {
   department_name: string
   status: string
   submitted_by_name: string | null
+  submitted_by_id?: number | null
   submitted_at: string | null
   approved_by_name: string | null
   approved_at: string | null

@@ -17,7 +17,7 @@ import {
 import { createPosition, getPositions, type Position } from './api/positions'
 import { getAppData } from './api/bootstrap'
 import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
-import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, type AccessRequest, type SystemUser } from './api/users'
+import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, updatePayrollApprovalPermission, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, restorePayrollBatchVersion, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
 import { createPayItemType, renamePayItemType, savePayrollBatchColumns, type PayItemType } from './api/payItemTypes'
@@ -134,7 +134,7 @@ const PAYROLL_FIELD_LABELS: Record<string, string> = {
   TAX: 'ภาษีหัก ณ ที่จ่าย', SSF: 'ประกันสังคม', FUNERAL_FUND: 'ฌาปนกิจ',
   KTB_BANK: 'ธนาคารกรุงไทย', SAVINGS_BANK_LOAN: 'ธนาคารออมสิน',
   BASE_SALARY: 'เงินเดือน',
-  __EMPLOYEE_ADDED__: 'เพิ่มพนักงาน', __EMPLOYEE_REMOVED__: 'นำพนักงานออก',
+  __EMPLOYEE_ADDED__: 'เพิ่มพนักงาน', __EMPLOYEE_REMOVED__: 'นำพนักงานออกจากรอบนี้',
 }
 
 const PAYROLL_FIELD_CODES: Partial<Record<keyof PayrollRow, string>> = {
@@ -150,6 +150,7 @@ interface DeptPayroll {
   status: DeptStatus
   rows: Record<string, PayrollRow>
   submittedBy?: string
+  submittedById?: number
   submittedAt?: string
   approvedBy?: string
   approvedAt?: string
@@ -409,6 +410,7 @@ const mapPayrollPeriods = (records: PayrollPeriodRecord[], employees: DatabaseEm
       return {
         id: String(batch.id), databaseId: batch.id, periodId: String(record.id), department: batch.department_name,
         status: batchStatus(batch.status), rows, submittedBy: batch.submitted_by_name ?? undefined,
+        submittedById: batch.submitted_by_id ?? undefined,
         submittedAt: batch.submitted_at ?? undefined, approvedBy: batch.approved_by_name ?? undefined,
         approvedAt: batch.approved_at ?? undefined, rejectionReason: batch.reject_reason ?? undefined,
         updatedAt: batch.approved_at ?? batch.submitted_at ?? batch.created_at,
@@ -457,6 +459,7 @@ const mapPayrollHistoryBatch = (batch: PayrollBatchRecord, period: PayrollPeriod
   return {
     id: String(batch.id), databaseId: batch.id, periodId: period.id, department: batch.department_name,
     status: batchStatus(batch.status), rows, submittedBy: batch.submitted_by_name ?? undefined,
+    submittedById: batch.submitted_by_id ?? undefined,
     submittedAt: batch.submitted_at ?? undefined, approvedBy: batch.approved_by_name ?? undefined,
     approvedAt: batch.approved_at ?? undefined, rejectionReason: batch.reject_reason ?? undefined,
     updatedAt: batch.approved_at ?? batch.submitted_at ?? batch.created_at, employees,
@@ -1057,7 +1060,7 @@ function CategoryDonut({ title, total, items, tone }: {
 
 // ─── Login Page ───────────────────────────────────────────────────────────────
 
-function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Role, department: string | null) => void }) {
+function LoginPage({ onLogin }: { onLogin: (id: number, user: string, name: string, role: Role, department: string | null, canApprovePayroll: boolean) => void }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPw, setShowPw] = useState(false)
@@ -1075,7 +1078,7 @@ function LoginPage({ onLogin }: { onLogin: (user: string, name: string, role: Ro
         clearAccessToken()
         throw new Error('บัญชีนี้ยังไม่มีสิทธิ์ใช้งานในหน้าเว็บ Payroll')
       }
-      onLogin(user.username, user.full_name || user.username, user.role, user.department_name)
+      onLogin(user.id, user.username, user.full_name || user.username, user.role, user.department_name, user.role === 'director' || (user.role === 'admin' && user.can_approve_payroll))
     } catch (loginError) {
       setError(loginError instanceof Error ? loginError.message : 'เข้าสู่ระบบไม่สำเร็จ')
       setLoading(false)
@@ -2049,11 +2052,11 @@ const inclusiveCalendarDays = (startDate: string, endDate: string) => {
   return Math.floor((end - start) / 86_400_000) + 1
 }
 
-function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, departments, positions, payItemTypes, setPayItemTypes, reloadPayroll, payrollReferenceReady }: {
+function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databaseEmployees, departments, positions, payItemTypes, setPayItemTypes, reloadPayroll, payrollReferenceReady, canApprovePayroll, currentUserId, currentUserName }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
   setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void;
   databaseEmployees: DatabaseEmployee[]; departments: Department[]; positions: Position[]; payItemTypes: PayItemType[];
-  setPayItemTypes: React.Dispatch<React.SetStateAction<PayItemType[]>>; reloadPayroll: () => Promise<void>; payrollReferenceReady: boolean;
+  setPayItemTypes: React.Dispatch<React.SetStateAction<PayItemType[]>>; reloadPayroll: () => Promise<void>; payrollReferenceReady: boolean; canApprovePayroll: boolean; currentUserId: number | null; currentUserName: string;
 }) {
   // Combine the payroll snapshot with the live employee directory.  A staff member
   // added after this payroll period was first loaded must be available immediately.
@@ -2740,7 +2743,7 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
           field_code: '__EMPLOYEE_REMOVED__',
           old_value: 1,
           new_value: 0,
-          reason: 'นำพนักงานออกจากตารางเงินเดือน',
+          reason: 'นำพนักงานออกจากรอบเงินเดือนนี้',
         }]
       })
     }
@@ -2757,12 +2760,12 @@ function DeptPayrollTable({ period, dept, setPeriods, setPage, showToast, databa
       await payrollBatchAction(dept.databaseId, 'submit', submittedVersion)
       setPeriods(current => current.map(savedPeriod => savedPeriod.id !== period.id ? savedPeriod : {
         ...savedPeriod,
-        depts: savedPeriod.depts.map(savedDept => savedDept.id === dept.id ? { ...savedDept, status: 'pending' } : savedDept),
+        depts: savedPeriod.depts.map(savedDept => savedDept.id === dept.id ? { ...savedDept, status: 'pending', submittedById: currentUserId ?? undefined, submittedBy: currentUserName, submittedAt: new Date().toISOString() } : savedDept),
       }))
       setDirty(false)
       setShowSubmitModal(false)
       showToast('บันทึกและส่งอนุมัติเรียบร้อยแล้ว', 'success')
-      setPage('dept-table')
+      setPage(canApprovePayroll ? 'director-detail' : 'dept-table')
       void reloadPayroll().catch(() => undefined)
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'ส่งอนุมัติไม่สำเร็จ', 'error')
@@ -3495,9 +3498,9 @@ function DirectorApprovals({ periods, setPage, setActivePeriodId, setActiveDeptI
 
 // ─── Director Detail ──────────────────────────────────────────────────────────
 
-function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPayroll, payItemTypes }: {
+function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPayroll, payItemTypes, canApprovePayroll, currentUserId }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
-  setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void; reloadPayroll: () => Promise<void>; payItemTypes: PayItemType[];
+  setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void; reloadPayroll: () => Promise<void>; payItemTypes: PayItemType[]; canApprovePayroll: boolean; currentUserId: number | null;
 }) {
   const emps = useMemo(() => deptEmps(dept), [dept])
   const [showApproveModal, setShowApproveModal] = useState(false)
@@ -3645,7 +3648,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
         title={dept.department}
         subtitle={`${periodLabel(period)} · ส่งโดย ${dept.submittedBy ?? '–'} · ${dept.submittedAt ? formatBuddhistDate(dept.submittedAt) : ''}`}
         breadcrumb={<Crumb items={[{ label: 'หน้าหลัก', onClick: () => setPage('dashboard') }, { label: dept.department }]} />}
-        actions={dept.status === 'pending' ? (
+        actions={dept.status === 'pending' && canApprovePayroll ? (
           <>
             <button className="btn btn-danger" onClick={() => setShowRejectModal(true)}>✕ ไม่อนุมัติ</button>
             <button className="btn btn-approve" onClick={() => setShowApproveModal(true)}>✓ อนุมัติ</button>
@@ -3774,6 +3777,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
                 ))}
             </div>
             <div style={{ fontSize: 13, color: 'var(--text-secondary)' }}>ยืนยันการอนุมัติข้อมูลเงินเดือนของฝ่ายนี้หรือไม่? ระบบจะสร้าง PDF และส่งอีเมลให้พนักงานทุกคนทันที</div>
+            {dept.submittedById === currentUserId && <div style={{ background: '#FFF8E8', border: '1px solid #E9C96B', borderRadius: 10, padding: '11px 13px', color: '#815400', fontSize: 13, lineHeight: 1.6 }}><strong>คุณเป็นผู้จัดทำและผู้อนุมัติรายการนี้</strong><br />ระบบจะบันทึกข้อมูลดังกล่าวไว้ในประวัติการทำรายการ</div>}
             <div className="flex gap-3 justify-end">
               <button className="btn btn-secondary" disabled={processingDecision} onClick={() => setShowApproveModal(false)}>ยกเลิก</button>
               <button className="btn btn-approve" aria-busy={processingDecision} disabled={processingDecision} onClick={handleApprove}><BusyLabel busy={processingDecision} label="กำลังอนุมัติ…">✓ ยืนยันอนุมัติ</BusyLabel></button>
@@ -4798,7 +4802,7 @@ function ReportsPage({ periods }: { periods: PayrollPeriod[] }) {
 
 // ─── Admin Users ──────────────────────────────────────────────────────────────
 
-function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; showToast: (msg: string, type?: 'success' | 'error') => void }) {
+function AdminUsers({ employees, showToast, currentUserId, onCurrentApprovalPermissionChanged }: { employees: DatabaseEmployee[]; showToast: (msg: string, type?: 'success' | 'error') => void; currentUserId: number | null; onCurrentApprovalPermissionChanged: (enabled: boolean) => void }) {
   const roleLabel: Record<Role, string> = { hr: 'พนักงานฝ่ายธุรการ', director: 'ผู้บริหาร', admin: 'แอดมิน' }
   const [users, setUsers] = useState<SystemUser[]>([])
   const [showCreate, setShowCreate] = useState(false)
@@ -4806,6 +4810,7 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
   const [temporaryPassword, setTemporaryPassword] = useState('')
   const [employeeId, setEmployeeId] = useState('')
   const [newRole, setNewRole] = useState<Role>('hr')
+  const [newCanApprovePayroll, setNewCanApprovePayroll] = useState(false)
   const [showInvite, setShowInvite] = useState(false)
   const [inviteEmail, setInviteEmail] = useState('')
   const [inviteRole, setInviteRole] = useState<Role>('hr')
@@ -4822,10 +4827,11 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
   const [reviewingRequest, setReviewingRequest] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [changingAccountStatusId, setChangingAccountStatusId] = useState<number | null>(null)
+  const [changingApprovalPermissionId, setChangingApprovalPermissionId] = useState<number | null>(null)
   const load = useCallback(async () => { try { setUsers(await getUsers()) } catch (error) { showToast(error instanceof Error ? error.message : 'โหลดบัญชีไม่สำเร็จ', 'error') } }, [showToast])
   const loadRequests = useCallback(async () => { try { setAccessRequests(await getAccessRequests()) } catch (error) { showToast(error instanceof Error ? error.message : 'โหลดคำขอไม่สำเร็จ', 'error') } }, [showToast])
   useEffect(() => { void load(); void loadRequests() }, [load, loadRequests])
-  const create = async () => { if (creatingUser) return; setCreatingUser(true); try { await createSystemUser({ username, temporary_password: temporaryPassword, employee_id: Number(employeeId), role: newRole }); showToast('สร้างบัญชีผู้ใช้งานแล้ว', 'success'); setShowCreate(false); setUsername(''); setTemporaryPassword(''); setEmployeeId(''); void load() } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างบัญชีไม่สำเร็จ', 'error') } finally { setCreatingUser(false) } }
+  const create = async () => { if (creatingUser) return; setCreatingUser(true); try { await createSystemUser({ username, temporary_password: temporaryPassword, employee_id: Number(employeeId), role: newRole, can_approve_payroll: newRole === 'admin' && newCanApprovePayroll }); showToast('สร้างบัญชีผู้ใช้งานแล้ว', 'success'); setShowCreate(false); setUsername(''); setTemporaryPassword(''); setEmployeeId(''); setNewCanApprovePayroll(false); void load() } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างบัญชีไม่สำเร็จ', 'error') } finally { setCreatingUser(false) } }
   const reset = async (user: SystemUser) => { const password = window.prompt(`กำหนดรหัสผ่านชั่วคราวใหม่สำหรับ ${user.username} (อย่างน้อย 8 ตัวอักษร)`); if (!password) return; try { await resetSystemUserPassword(user.id, password); showToast('รีเซ็ตรหัสผ่านแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'รีเซ็ตรหัสผ่านไม่สำเร็จ', 'error') } }
   const createInvite = async () => { if (creatingInvite) return; setCreatingInvite(true); try { const result = await createUserInvite(inviteEmail, inviteRole); setInviteUrl(result.data.invite_url); showToast('สร้างลิงก์คำเชิญแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'สร้างคำเชิญไม่สำเร็จ', 'error') } finally { setCreatingInvite(false) } }
   const refreshUsers = async () => {
@@ -4861,19 +4867,35 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
     catch (error) { showToast(error instanceof Error ? error.message : `${nextActive ? 'เปิด' : 'ปิด'}การใช้งานบัญชีไม่สำเร็จ`, 'error') }
     finally { setChangingAccountStatusId(null) }
   }
+  const changeApprovalPermission = async (target: SystemUser) => {
+    if (target.role !== 'admin' || changingApprovalPermissionId !== null) return
+    const enabled = !target.can_approve_payroll
+    setChangingApprovalPermissionId(target.id)
+    try {
+      await updatePayrollApprovalPermission(target.id, enabled)
+      setUsers(current => current.map(user => user.id === target.id ? { ...user, can_approve_payroll: enabled } : user))
+      if (target.id === currentUserId) onCurrentApprovalPermissionChanged(enabled)
+      showToast(`${enabled ? 'เปิด' : 'ปิด'}สิทธิ์อนุมัติเงินเดือนให้ ${target.username} แล้ว`, 'success')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'เปลี่ยนสิทธิ์อนุมัติไม่สำเร็จ', 'error')
+    } finally {
+      setChangingApprovalPermissionId(null)
+    }
+  }
   const linkedEmployeeIds = new Set(users.map(user => user.employee_id).filter((id): id is number => id !== null))
   return (
     <div className="anim">
       <PageHeader title="จัดการผู้ใช้งาน" subtitle="สร้างบัญชีโดยผูกกับข้อมูลพนักงานจริง" actions={<div className="flex gap-2"><button className="btn btn-secondary" aria-busy={refreshing} disabled={refreshing} onClick={() => void refreshUsers()}><BusyLabel busy={refreshing} label="กำลังรีเฟรช…">↻ รีเฟรช</BusyLabel></button><button className="btn btn-secondary" onClick={() => setShowInvite(true)}>✉ สร้างคำเชิญ</button><button className="btn btn-primary" onClick={() => setShowCreate(true)}>+ เพิ่มผู้ใช้งาน</button></div>} />
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
         <table className="tbl">
-          <thead><tr><th>ชื่อผู้ใช้</th><th>ชื่อ</th><th>สิทธิ์การใช้งาน</th><th>สถานะ</th><th>ดำเนินการ</th><th>ลบบัญชี</th></tr></thead>
+          <thead><tr><th>ชื่อผู้ใช้</th><th>ชื่อ</th><th>สิทธิ์การใช้งาน</th><th>สิทธิ์อนุมัติเงินเดือน</th><th>สถานะ</th><th>ดำเนินการ</th><th>ลบบัญชี</th></tr></thead>
           <tbody>
             {users.map(u => (
               <tr key={u.id}>
                 <td style={{ fontFamily: 'monospace', fontSize: 13 }}>{u.username}</td>
                 <td style={{ fontWeight: 500 }}>{u.full_name}</td>
                 <td><span style={{ background: 'var(--purple-100)', color: 'var(--purple-600)', borderRadius: 99, padding: '2px 10px', fontSize: 12, fontWeight: 600 }}>{roleLabel[u.role]}</span></td>
+                <td>{u.role === 'director' ? <span className="badge badge-approved">✓ ตามสิทธิ์ผู้บริหาร</span> : u.role === 'admin' ? <button className={`btn btn-xs ${u.can_approve_payroll ? 'btn-approve' : 'btn-secondary'}`} aria-busy={changingApprovalPermissionId === u.id} disabled={changingApprovalPermissionId !== null} onClick={() => void changeApprovalPermission(u)}><BusyLabel busy={changingApprovalPermissionId === u.id} label="กำลังบันทึก…">{u.can_approve_payroll ? '✓ อนุญาต' : 'ไม่อนุญาต'}</BusyLabel></button> : <span style={{ color: 'var(--text-muted)' }}>–</span>}</td>
                 <td><span className={`badge ${u.is_active ? 'badge-approved' : 'badge-rejected'}`}>{u.is_active ? '● ใช้งานอยู่' : '● ปิดการใช้งาน'}</span></td>
                 <td>
                   <div className="flex gap-1">
@@ -4894,7 +4916,8 @@ function AdminUsers({ employees, showToast }: { employees: DatabaseEmployee[]; s
         <FormField label="พนักงาน" required><select className="inp" value={employeeId} onChange={e => setEmployeeId(e.target.value)}><option value="">เลือกพนักงาน</option>{employees.filter(e => !linkedEmployeeIds.has(e.id)).map(e => <option key={e.id} value={e.id}>{e.prefix}{e.first_name} {e.last_name}</option>)}</select></FormField>
         <FormField label="ชื่อผู้ใช้" required><input className="inp" value={username} onChange={e => setUsername(e.target.value)} /></FormField>
         <FormField label="รหัสผ่านชั่วคราว (อย่างน้อย 8 ตัวอักษร)" required><input className="inp" type="password" value={temporaryPassword} onChange={e => setTemporaryPassword(e.target.value)} /></FormField>
-        <FormField label="สิทธิ์" required><select className="inp" value={newRole} onChange={e => setNewRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้บริหาร</option><option value="admin">แอดมิน</option></select></FormField>
+        <FormField label="สิทธิ์" required><select className="inp" value={newRole} onChange={e => { const role = e.target.value as Role; setNewRole(role); if (role !== 'admin') setNewCanApprovePayroll(false) }}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้บริหาร</option><option value="admin">แอดมิน</option></select></FormField>
+        {newRole === 'admin' && <label className="flex items-center gap-2" style={{ fontSize: 13, cursor: 'pointer' }}><input type="checkbox" checked={newCanApprovePayroll} onChange={event => setNewCanApprovePayroll(event.target.checked)} /><span><strong>อนุญาตให้อนุมัติรอบเงินเดือน</strong><br /><span style={{ color: 'var(--text-muted)' }}>บัญชีนี้สามารถอนุมัติรายการที่ตนเองส่งได้</span></span></label>}
         <div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingUser} onClick={() => setShowCreate(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={creatingUser} disabled={!employeeId || username.trim().length < 3 || temporaryPassword.length < 8 || creatingUser} onClick={() => void create()}><BusyLabel busy={creatingUser} label="กำลังบันทึก…">บันทึกบัญชี</BusyLabel></button></div>
       </div></Modal>}
       {showInvite && <Modal title="สร้างคำเชิญเข้าใช้" onClose={() => !creatingInvite && setShowInvite(false)}><div className="flex flex-col gap-4"><div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>ผู้รับคำเชิญจะกรอกข้อมูลพนักงานและสร้างบัญชีเอง จากนั้นรอให้แอดมินอนุมัติ</div><FormField label="อีเมล" required><input className="inp" type="email" value={inviteEmail} onChange={e => setInviteEmail(e.target.value)} /></FormField><FormField label="สิทธิ์การใช้งานที่ต้องการ" required><select className="inp" value={inviteRole} onChange={e => setInviteRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้บริหาร</option><option value="admin">แอดมิน</option></select></FormField>{inviteUrl && <div style={{ background: '#F4F0FF', borderRadius: 10, padding: 12, wordBreak: 'break-all', fontSize: 12 }}><strong>ลิงก์คำเชิญ (ใช้ได้ 7 วัน)</strong><br />{inviteUrl}<br /><button className="btn btn-ghost btn-xs" style={{ marginTop: 7 }} onClick={() => navigator.clipboard.writeText(inviteUrl)}>คัดลอกลิงก์</button></div>}<div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingInvite} onClick={() => setShowInvite(false)}>ปิด</button><button className="btn btn-primary" aria-busy={creatingInvite} disabled={!inviteEmail || creatingInvite} onClick={() => void createInvite()}><BusyLabel busy={creatingInvite} label="กำลังสร้าง…">สร้างลิงก์คำเชิญ</BusyLabel></button></div></div></Modal>}
@@ -5127,6 +5150,8 @@ export default function App() {
   const [role, setRole] = useState<Role>('hr')
   const [userName, setUserName] = useState('')
   const [accountUsername, setAccountUsername] = useState('')
+  const [currentUserId, setCurrentUserId] = useState<number | null>(null)
+  const [canApprovePayroll, setCanApprovePayroll] = useState(false)
   const [userDepartment, setUserDepartment] = useState<string | null>(null)
   const [profileMenuOpen, setProfileMenuOpen] = useState(false)
   const [announcementOpenSignal, setAnnouncementOpenSignal] = useState(0)
@@ -5406,11 +5431,11 @@ export default function App() {
     }
   }, [loggedIn, checkSystemUpdateAnnouncements])
 
-  const handleLogin = (username: string, name: string, r: Role, department: string | null) => {
-    setUserName(name); setAccountUsername(username); setRole(r); setUserDepartment(department); setLoggedIn(true); setPage('dashboard')
+  const handleLogin = (id: number, username: string, name: string, r: Role, department: string | null, canApprove: boolean) => {
+    setCurrentUserId(id); setUserName(name); setAccountUsername(username); setRole(r); setUserDepartment(department); setCanApprovePayroll(canApprove); setLoggedIn(true); setPage('dashboard')
   }
 
-  const handleLogout = () => { clearAccessToken(); setProfileMenuOpen(false); setLoggedIn(false); setPage('login' as Page) }
+  const handleLogout = () => { clearAccessToken(); setProfileMenuOpen(false); setCurrentUserId(null); setCanApprovePayroll(false); setLoggedIn(false); setPage('login' as Page) }
   const roleLabel: Record<Role, string> = { hr: 'พนักงานฝ่ายธุรการ', director: 'ผู้บริหาร', admin: 'แอดมิน' }
   const saveMyPassword = async () => {
     if (newPassword.length < 8) { showToast('รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร', 'error'); return }
@@ -5509,13 +5534,13 @@ export default function App() {
           )}
           {(page === 'dept-table' || (page === 'period-detail' && role === 'hr')) && activePeriod && activeDept && (
             <DeptPayrollTable period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast}
-              databaseEmployees={visibleEmployees} departments={departments} positions={positions} payItemTypes={payItemTypes} setPayItemTypes={setPayItemTypes} reloadPayroll={loadEmployeeData} payrollReferenceReady={payrollReferenceReady} />
+              databaseEmployees={visibleEmployees} departments={departments} positions={positions} payItemTypes={payItemTypes} setPayItemTypes={setPayItemTypes} reloadPayroll={loadEmployeeData} payrollReferenceReady={payrollReferenceReady} canApprovePayroll={canApprovePayroll} currentUserId={currentUserId} currentUserName={userName} />
           )}
           {page === 'director-approvals' && (
             <DirectorApprovals periods={visiblePeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
           )}
           {page === 'director-detail' && activePeriod && activeDept && (
-            <DirectorDetail period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} reloadPayroll={loadEmployeeData} payItemTypes={payItemTypes} />
+            <DirectorDetail period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} reloadPayroll={loadEmployeeData} payItemTypes={payItemTypes} canApprovePayroll={canApprovePayroll} currentUserId={currentUserId} />
           )}
           {page === 'employees' && (
             <EmployeesPage
@@ -5538,7 +5563,7 @@ export default function App() {
           {page === 'payslip-status' && <PayslipStatus periods={visiblePeriods} onReload={loadEmployeeData} onEmployeeEmailUpdated={updateEmailLocally} showToast={showToast}
             onManageEmployees={() => setPage('employees')} />}
           {page === 'annual-tax' && <AnnualTaxReportPage role={role} periods={visiblePeriods} departments={visibleDepartments} userDepartment={userDepartment} showToast={showToast} />}
-          {page === 'admin-users' && <AdminUsers employees={databaseEmployees} showToast={showToast} />}
+          {page === 'admin-users' && <AdminUsers employees={databaseEmployees} showToast={showToast} currentUserId={currentUserId} onCurrentApprovalPermissionChanged={setCanApprovePayroll} />}
         </main>
       </div>
 

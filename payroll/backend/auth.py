@@ -66,6 +66,7 @@ class AuthService:
                 users.full_name,
                 users.email,
                 roles.code AS role,
+                users.can_approve_payroll,
                 employees.department_id,
                 departments.name AS department_name
             FROM public.users users
@@ -117,6 +118,7 @@ class AuthService:
                 users.full_name,
                 users.email,
                 roles.code AS role,
+                users.can_approve_payroll,
                 employees.department_id,
                 departments.name AS department_name
             FROM public.users users
@@ -137,6 +139,7 @@ class AuthService:
             """
             SELECT users.id, users.username, users.full_name, users.email, users.employee_id,
                    users.is_active, users.created_at, roles.code AS role,
+                   users.can_approve_payroll,
                    employee.employee_code, employee.first_name, employee.last_name,
                    department.name AS department_name,
                    request.id AS access_request_id
@@ -150,7 +153,7 @@ class AuthService:
         )
         return [dict(zip(columns, row)) for row in data]
 
-    def create_user(self, username, temporary_password, employee_id, role_code):
+    def create_user(self, username, temporary_password, employee_id, role_code, can_approve_payroll=False):
         password_hash = bcrypt.hashpw(temporary_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
         with self.db.transaction() as cursor:
             cursor.execute("SELECT id, prefix, first_name, last_name, email FROM public.employees WHERE id = %s", (employee_id,))
@@ -166,11 +169,31 @@ class AuthService:
                 raise ValueError("พนักงานคนนี้มีบัญชีผู้ใช้งานแล้ว")
             full_name = f"{employee[1] or ''}{employee[2]} {employee[3]}".strip()
             cursor.execute(
-                """INSERT INTO public.users (username, password_hash, full_name, email, role_id, employee_id, is_active, created_at)
-                   VALUES (%s, %s, %s, %s, %s, %s, TRUE, NOW()) RETURNING id""",
-                (username, password_hash, full_name, employee[4], role[0], employee_id),
+                """INSERT INTO public.users (username, password_hash, full_name, email, role_id, employee_id, is_active, can_approve_payroll, created_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, TRUE, %s, NOW()) RETURNING id""",
+                (username, password_hash, full_name, employee[4], role[0], employee_id, bool(can_approve_payroll and role_code == "admin")),
             )
             return cursor.fetchone()[0]
+
+    def update_payroll_approval_permission(self, user_id, enabled):
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                """SELECT roles.code
+                   FROM public.users users
+                   JOIN public.roles roles ON roles.id = users.role_id
+                   WHERE users.id = %s
+                   FOR UPDATE""",
+                (user_id,),
+            )
+            record = cursor.fetchone()
+            if record is None:
+                raise ValueError("ไม่พบบัญชีผู้ใช้")
+            if enabled and record[0] != "admin":
+                raise ValueError("กำหนดสิทธิ์อนุมัติเพิ่มเติมได้เฉพาะบัญชีแอดมิน")
+            cursor.execute(
+                "UPDATE public.users SET can_approve_payroll = %s WHERE id = %s",
+                (bool(enabled), user_id),
+            )
 
     def reset_password(self, user_id, temporary_password):
         password_hash = bcrypt.hashpw(temporary_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")

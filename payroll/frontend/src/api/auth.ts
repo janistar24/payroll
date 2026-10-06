@@ -7,6 +7,7 @@ export interface AuthUser {
   full_name: string | null
   email: string | null
   role: string
+  can_approve_payroll: boolean
   department_id: number | null
   department_name: string | null
 }

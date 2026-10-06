@@ -6,6 +6,7 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000/api'
 export interface SystemUser {
   id: number; username: string; full_name: string; email: string | null; employee_id: number | null
   is_active: boolean; role: 'hr' | 'director' | 'admin'; employee_code: string | null; department_name: string | null
+  can_approve_payroll: boolean
   access_request_id: number | null
 }
 
@@ -20,7 +21,8 @@ async function request(path: string, init?: RequestInit) {
 }
 
 export async function getUsers(): Promise<SystemUser[]> { return (await request('/users')).data }
-export async function createSystemUser(input: { username: string; temporary_password: string; employee_id: number; role: SystemUser['role'] }) { return request('/users', { method: 'POST', body: JSON.stringify(input) }) }
+export async function createSystemUser(input: { username: string; temporary_password: string; employee_id: number; role: SystemUser['role']; can_approve_payroll?: boolean }) { return request('/users', { method: 'POST', body: JSON.stringify(input) }) }
+export async function updatePayrollApprovalPermission(id: number, enabled: boolean) { return request(`/users/${id}/payroll-approval`, { method: 'PATCH', body: JSON.stringify({ enabled }) }) }
 export async function resetSystemUserPassword(id: number, temporary_password: string) { return request(`/users/${id}/reset-password`, { method: 'POST', body: JSON.stringify({ temporary_password }) }) }
 export async function deleteSystemUser(id: number) { return request(`/users/${id}`, { method: 'DELETE' }) }
 export async function deactivateSystemUser(id: number) { return request(`/users/${id}/deactivate`, { method: 'POST' }) }

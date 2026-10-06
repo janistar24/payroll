@@ -3498,9 +3498,9 @@ function DirectorApprovals({ periods, setPage, setActivePeriodId, setActiveDeptI
 
 // ─── Director Detail ──────────────────────────────────────────────────────────
 
-function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPayroll, payItemTypes, canApprovePayroll, currentUserId }: {
+function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPayroll, payItemTypes, canApprovePayroll, currentUserId, canManagePayroll }: {
   period: PayrollPeriod; dept: DeptPayroll; setPeriods: React.Dispatch<React.SetStateAction<PayrollPeriod[]>>;
-  setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void; reloadPayroll: () => Promise<void>; payItemTypes: PayItemType[]; canApprovePayroll: boolean; currentUserId: number | null;
+  setPage: (p: Page) => void; showToast: (msg: string, t?: 'success' | 'error') => void; reloadPayroll: () => Promise<void>; payItemTypes: PayItemType[]; canApprovePayroll: boolean; currentUserId: number | null; canManagePayroll: boolean;
 }) {
   const emps = useMemo(() => deptEmps(dept), [dept])
   const [showApproveModal, setShowApproveModal] = useState(false)
@@ -3516,6 +3516,10 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
   const [noteOpen, setNoteOpen] = useState(false)
   const [changeNotes, setChangeNotes] = useState<PayrollChangeNote[]>([])
   const [changeNotesLoading, setChangeNotesLoading] = useState(false)
+  const [showRevisionModal, setShowRevisionModal] = useState(false)
+  const [revisionType, setRevisionType] = useState('')
+  const [revisionReason, setRevisionReason] = useState('')
+  const [creatingRevision, setCreatingRevision] = useState(false)
 
   const t = useMemo(() => deptTotals(dept), [dept])
   const visibleEmployees = useMemo(() => {
@@ -3609,6 +3613,24 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
     }
   }
 
+  const createRevision = async () => {
+    if (!revisionType) { showToast('กรุณาเลือกประเภทการแก้ไข', 'error'); return }
+    if (revisionReason.trim().length < 5) { showToast('กรุณาระบุเหตุผลการแก้ไขอย่างน้อย 5 ตัวอักษร', 'error'); return }
+    if (!dept.databaseId) { showToast('ไม่พบรหัสรายการฝ่ายในฐานข้อมูล', 'error'); return }
+    setCreatingRevision(true)
+    try {
+      await createPayrollRevision(dept.databaseId, revisionType, revisionReason.trim())
+      await reloadPayroll()
+      setShowRevisionModal(false)
+      showToast('สร้างฉบับแก้ไขเพิ่มเติมแล้ว', 'success')
+      setPage('dept-table')
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'สร้างฉบับแก้ไขไม่สำเร็จ', 'error')
+    } finally {
+      setCreatingRevision(false)
+    }
+  }
+
   const openHistory = async () => {
     if (!dept.databaseId) return
     setHistoryOpen(true)
@@ -3653,6 +3675,8 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
             <button className="btn btn-danger" onClick={() => setShowRejectModal(true)}>✕ ไม่อนุมัติ</button>
             <button className="btn btn-approve" onClick={() => setShowApproveModal(true)}>✓ อนุมัติ</button>
           </>
+        ) : (dept.status === 'approved' || dept.status === 'closed') && canManagePayroll ? (
+          <div className="flex items-center gap-2"><StatusBadge s={dept.status} /><button className="btn btn-secondary" onClick={() => { setRevisionType(''); setRevisionReason(''); setShowRevisionModal(true) }}>✏️ แก้ไขเพิ่มเติม</button></div>
         ) : <StatusBadge s={dept.status} />}
       />
 
@@ -3805,6 +3829,7 @@ function DirectorDetail({ period, dept, setPeriods, setPage, showToast, reloadPa
           </div>
         </Modal>
       )}
+      {showRevisionModal && <Modal title="แก้ไขเพิ่มเติมหลังอนุมัติ" onClose={() => !creatingRevision && setShowRevisionModal(false)}><div className="flex flex-col gap-4"><div style={{ background: '#F6F3FF', borderRadius: 10, padding: 13, fontSize: 13, lineHeight: 1.65 }}>ระบบจะสร้างฉบับแก้ไขใหม่เฉพาะ <strong>{dept.department}</strong> ของรอบ <strong>{periodLabel(period)}</strong> โดยเก็บฉบับที่อนุมัติแล้วไว้เป็นประวัติ</div><FormField label="ประเภทการแก้ไข" required><AppSelect className="inp" value={revisionType} onChange={event => setRevisionType(event.target.value)}><option value="">เลือกประเภทการแก้ไข</option><option>เพิ่มพนักงานกลางเดือน</option><option>แก้ไขรายการรับหรือรายการหัก</option><option>พนักงานลาออกหรือปรับยอดสุดท้าย</option><option>อื่น ๆ</option></AppSelect></FormField><FormField label="เหตุผลการแก้ไข" required><textarea className="inp" rows={3} value={revisionReason} onChange={event => setRevisionReason(event.target.value)} placeholder="ระบุเหตุผลอย่างน้อย 5 ตัวอักษร" /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingRevision} onClick={() => setShowRevisionModal(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={creatingRevision} disabled={creatingRevision} onClick={() => void createRevision()}><BusyLabel busy={creatingRevision} label="กำลังสร้าง…">สร้างฉบับแก้ไข</BusyLabel></button></div></div></Modal>}
 
       {historyOpen && createPortal(
         <div style={{ position: 'fixed', inset: 0, zIndex: 70, display: 'flex', justifyContent: 'flex-end', background: 'rgba(28, 21, 46, 0.22)' }} onMouseDown={() => setHistoryOpen(false)}>
@@ -5540,7 +5565,7 @@ export default function App() {
             <DirectorApprovals periods={visiblePeriods} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} />
           )}
           {page === 'director-detail' && activePeriod && activeDept && (
-            <DirectorDetail period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} reloadPayroll={loadEmployeeData} payItemTypes={payItemTypes} canApprovePayroll={canApprovePayroll} currentUserId={currentUserId} />
+            <DirectorDetail period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast} reloadPayroll={loadEmployeeData} payItemTypes={payItemTypes} canApprovePayroll={canApprovePayroll} currentUserId={currentUserId} canManagePayroll={role === 'admin' || role === 'hr'} />
           )}
           {page === 'employees' && (
             <EmployeesPage

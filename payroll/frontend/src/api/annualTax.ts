@@ -14,6 +14,27 @@ export type AnnualTaxRow = {
 
 export type AnnualReportType = 'tax' | 'income' | 'social_security'
 
+export type MonthlyPayItemLine = {
+  code: string
+  name: string
+  category: 'EARNING' | 'DEDUCTION'
+  amount: number
+}
+
+export type MonthlyPayrollRow = {
+  employee_id: number
+  full_name: string
+  department_name: string
+  organization_id: number | null
+  organization_name: string
+  position_name: string
+  base_salary: number
+  total_earnings: number
+  total_deductions: number
+  net_pay: number
+  lines: MonthlyPayItemLine[]
+}
+
 export async function getAnnualTaxReport(year: number, departmentId?: number, reportType: AnnualReportType = 'tax'): Promise<AnnualTaxRow[]> {
   const query = new URLSearchParams({ year: String(year), report_type: reportType })
   if (departmentId) query.set('department_id', String(departmentId))
@@ -24,4 +45,17 @@ export async function getAnnualTaxReport(year: number, departmentId?: number, re
   }
   const body = await response.json()
   return body.data.rows as AnnualTaxRow[]
+}
+
+export async function getMonthlyPayrollReport(year: number, month: number, departmentId?: number, organizationId?: number): Promise<MonthlyPayrollRow[]> {
+  const query = new URLSearchParams({ year: String(year), month: String(month) })
+  if (departmentId) query.set('department_id', String(departmentId))
+  if (organizationId) query.set('organization_id', String(organizationId))
+  const response = await fetch(`${API_URL}/reports/monthly-payroll?${query.toString()}`, { headers: authorizationHeaders(), cache: 'no-store' })
+  if (!response.ok) {
+    const body = await response.json().catch(() => null)
+    throw new Error(typeof body?.detail === 'string' ? body.detail : body?.detail?.message ?? 'ไม่สามารถโหลดรายงานประจำเดือนได้')
+  }
+  const body = await response.json()
+  return body.data.rows as MonthlyPayrollRow[]
 }

@@ -1272,6 +1272,103 @@ def get_annual_tax_report(year: int, department_id: int | None = None, report_ty
         raise HTTPException(status_code=500, detail={"message": "ไม่สามารถโหลดรายงานภาษีประจำปีได้", "error": str(error)})
 
 
+@app.get("/api/reports/monthly-payroll")
+def get_monthly_payroll_report(
+    year: int,
+    month: int,
+    department_id: int | None = None,
+    organization_id: int | None = None,
+    user=Depends(get_current_user),
+):
+    """Return approved payroll snapshots for one month without changing stored data."""
+    try:
+        if year < 2000 or year > 3000 or month < 1 or month > 12:
+            raise HTTPException(status_code=400, detail="เดือนหรือปีที่เลือกไม่ถูกต้อง")
+        scoped_department_id = _department_scope(user)
+        effective_department_id = scoped_department_id if scoped_department_id is not None else department_id
+        query = """
+            SELECT item.id AS payroll_item_id,
+                   employee.id AS employee_id,
+                   COALESCE(employee.prefix, '') AS prefix,
+                   employee.first_name,
+                   employee.last_name,
+                   department.name AS department_name,
+                   organization.id AS organization_id,
+                   COALESCE(organization.name, '–') AS organization_name,
+                   COALESCE(position.name, '–') AS position_name,
+                   item.base_salary,
+                   item.total_earnings,
+                   item.total_deductions,
+                   item.net_pay,
+                   item_type.code AS pay_item_code,
+                   item_type.name AS pay_item_name,
+                   item_type.category::text AS pay_item_category,
+                   line.amount
+            FROM public.payroll_items item
+            JOIN public.payroll_department_batches batch ON batch.id = item.department_batch_id
+            JOIN public.payroll_periods period ON period.id = item.payroll_period_id
+            JOIN public.employees employee ON employee.id = item.employee_id
+            JOIN public.departments department ON department.id = item.department_id
+            LEFT JOIN public.positions position ON position.id = employee.position_id
+            LEFT JOIN public.organizations organization ON organization.id = employee.organization_id
+            LEFT JOIN public.payroll_item_lines line ON line.payroll_item_id = item.id
+            LEFT JOIN public.pay_item_types item_type ON item_type.id = line.pay_item_type_id
+            WHERE period.year = %s
+              AND period.month = %s
+              AND batch.is_current = TRUE
+              AND batch.status IN ('APPROVED', 'PAID')
+              AND (%s::integer IS NULL OR item.department_id = %s)
+              AND (%s::integer IS NULL OR employee.organization_id = %s)
+            ORDER BY department.name, employee.first_name, employee.last_name,
+                     employee.id, item_type.category, item_type.id
+        """
+        data, columns = db.fetch(query, (
+            year, month,
+            effective_department_id, effective_department_id,
+            organization_id, organization_id,
+        ))
+        grouped = {}
+        for value in data:
+            record = dict(zip(columns, value))
+            item_id = record["payroll_item_id"]
+            if item_id not in grouped:
+                grouped[item_id] = {
+                    "employee_id": record["employee_id"],
+                    "full_name": f"{record['prefix']}{record['first_name']} {record['last_name']}",
+                    "department_name": record["department_name"],
+                    "organization_id": record["organization_id"],
+                    "organization_name": record["organization_name"],
+                    "position_name": record["position_name"],
+                    "base_salary": float(record["base_salary"] or 0),
+                    "total_earnings": float(record["total_earnings"] or 0),
+                    "total_deductions": float(record["total_deductions"] or 0),
+                    "net_pay": float(record["net_pay"] or 0),
+                    "lines": [],
+                }
+            if record["pay_item_code"]:
+                grouped[item_id]["lines"].append({
+                    "code": record["pay_item_code"],
+                    "name": record["pay_item_name"],
+                    "category": record["pay_item_category"],
+                    "amount": float(record["amount"] or 0),
+                })
+        return {
+            "success": True,
+            "data": {
+                "year": year,
+                "month": month,
+                "department_id": effective_department_id,
+                "organization_id": organization_id,
+                "rows": list(grouped.values()),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        logging.exception("Unable to load monthly payroll report")
+        raise HTTPException(status_code=500, detail={"message": "ไม่สามารถโหลดรายงานประจำเดือนได้", "error": str(error)})
+
+
 @app.post("/api/payroll_periods", status_code=201)
 def create_payroll_period(request: PayrollPeriodCreate, user=Depends(get_current_user)):
     try:

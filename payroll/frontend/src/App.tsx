@@ -40,7 +40,7 @@ async function saveOpenEditorsBeforeSystemUpdate(onTasksCollected?: (taskCount: 
   }
 }
 import { createOrganization, type Organization } from './api/organizations'
-import { getAnnualTaxReport, type AnnualReportType, type AnnualTaxRow } from './api/annualTax'
+import { getAnnualTaxReport, getMonthlyPayrollReport, type AnnualReportType, type AnnualTaxRow, type MonthlyPayrollRow } from './api/annualTax'
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Role = 'hr' | 'director' | 'admin'
@@ -829,7 +829,7 @@ function Sidebar({ role, page, setPage, canApprovePayroll }: { role: Role; page:
     { id: 'periods',   label: 'รอบเงินเดือน', icon: '📅' },
     { id: 'employees', label: 'พนักงาน', icon: '👥' },
     { id: 'payslip-status', label: 'สถานะการส่งอีเมล', icon: '📨' },
-    { id: 'annual-tax', label: 'รายงานประจำปี', icon: '📊' },
+    { id: 'annual-tax', label: 'รายงาน', icon: '📊' },
   ]
   const dirNav: NavEntry[] = [
     { id: 'dashboard', label: 'หน้าหลัก', icon: '🏠' },
@@ -837,7 +837,7 @@ function Sidebar({ role, page, setPage, canApprovePayroll }: { role: Role; page:
     { id: 'periods',   label: 'รอบเงินเดือน', icon: '📅' },
     { id: 'employees', label: 'พนักงาน', icon: '👥' },
     { id: 'payslip-status', label: 'สถานะการส่งอีเมล', icon: '📨' },
-    { id: 'annual-tax', label: 'รายงานประจำปี', icon: '📊' },
+    { id: 'annual-tax', label: 'รายงาน', icon: '📊' },
   ]
   const adminNav: NavEntry[] = [
     { id: 'dashboard',     label: 'หน้าหลัก', icon: '🏠' },
@@ -845,7 +845,7 @@ function Sidebar({ role, page, setPage, canApprovePayroll }: { role: Role; page:
     { id: 'periods',       label: 'รอบเงินเดือน', icon: '📅' },
     { id: 'employees',     label: 'พนักงาน', icon: '👥' },
     { id: 'payslip-status',label: 'สถานะการส่งอีเมล', icon: '📨' },
-    { id: 'annual-tax',    label: 'รายงานประจำปี', icon: '📊' },
+    { id: 'annual-tax',    label: 'รายงาน', icon: '📊' },
     { id: 'admin-users',   label: 'จัดการผู้ใช้งาน', icon: '👤' },
   ]
   const navItems = role === 'hr' ? hrNav : role === 'director' ? dirNav : adminNav
@@ -4756,6 +4756,95 @@ function AnnualTaxReportPage({ role, periods, departments, userDepartment, showT
   </div>
 }
 
+type ReportMode = 'monthly' | 'annual'
+
+const printMonthlyPayrollReport = (
+  yearBE: number,
+  month: number,
+  departmentLabel: string,
+  organizationLabel: string,
+  rows: MonthlyPayrollRow[],
+) => {
+  const columns = Array.from(new Map(rows.flatMap(row => row.lines).map(line => [line.code, { code: line.code, name: line.name, category: line.category }])).values())
+  const earnings = columns.filter(column => column.category === 'EARNING')
+  const deductions = columns.filter(column => column.category === 'DEDUCTION')
+  const amount = (row: MonthlyPayrollRow, code: string) => row.lines.find(line => line.code === code)?.amount ?? 0
+  const totals = {
+    salary: rows.reduce((sum, row) => sum + row.base_salary, 0),
+    earnings: rows.reduce((sum, row) => sum + row.total_earnings, 0),
+    deductions: rows.reduce((sum, row) => sum + row.total_deductions, 0),
+    net: rows.reduce((sum, row) => sum + row.net_pay, 0),
+  }
+  const columnCount = 7 + earnings.length + deductions.length
+  const body = rows.map((row, index) => `<tr><td class="center">${index + 1}</td><td>${escapeMarkup(row.full_name)}</td><td>${escapeMarkup(row.organization_name)}</td><td>${escapeMarkup(row.position_name)}</td><td class="num">${thb(row.base_salary)}</td>${earnings.map(column => `<td class="num">${thb(amount(row, column.code))}</td>`).join('')}<td class="num">${thb(row.total_earnings)}</td>${deductions.map(column => `<td class="num">${thb(amount(row, column.code))}</td>`).join('')}<td class="num">${thb(row.total_deductions)}</td><td class="num net">${thb(row.net_pay)}</td></tr>`).join('') || `<tr><td colspan="${columnCount}" class="empty">ยังไม่มีข้อมูลจากรอบเงินเดือนที่อนุมัติแล้ว</td></tr>`
+  const printedAt = formatBuddhistDate(new Date(), true)
+  return printHtmlInHiddenFrame(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>รายงานสรุปเงินเดือนประจำเดือน</title><style>@page{size:A4 landscape;margin:9mm 7mm 15mm}@media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}}*{box-sizing:border-box}body{margin:0;font-family:Tahoma,sans-serif;color:#111;font-size:${columnCount > 15 ? '5.8' : '6.8'}pt;padding-bottom:7mm}.head{text-align:center;margin-bottom:3mm}.head h1{font-size:14pt;margin:0}.head h2{font-size:10pt;margin:1mm 0}.meta{font-size:7pt}.footer{position:fixed;right:0;bottom:-10mm;font-size:6.5pt;color:#555}table{border-collapse:collapse;width:100%;table-layout:fixed}thead{display:table-header-group}tr{break-inside:avoid}th,td{border:.45pt solid #555;padding:3px 2px;vertical-align:middle;line-height:1.2;overflow-wrap:anywhere}th{background:#e5e7eb;text-align:center}td.num{text-align:right;font-variant-numeric:tabular-nums}td.center{text-align:center}td.empty{text-align:center;padding:12px;color:#64748b}td.net,tfoot td{font-weight:700;background:#f0ebff}</style></head><body><header class="head"><h1>เทศบาลเมืองตาคลี</h1><h2>รายงานสรุปเงินเดือนประจำเดือน${MONTH_TH[month]} พ.ศ. ${yearBE}</h2><div class="meta">ฝ่าย: ${escapeMarkup(departmentLabel)} · หน่วยงาน: ${escapeMarkup(organizationLabel)} · วันที่พิมพ์: ${escapeMarkup(printedAt)}</div></header><div class="footer">เอกสารรายงานนี้ออกโดยระบบจัดทำสลิปเงินเดือน PayFlow</div><table><thead><tr><th rowspan="2">ที่</th><th rowspan="2">ชื่อ-นามสกุล</th><th rowspan="2">หน่วยงาน</th><th rowspan="2">ตำแหน่ง</th><th colspan="${earnings.length + 2}">รายการรับ</th><th colspan="${deductions.length + 1}">รายการหัก</th><th rowspan="2">ยอดรับสุทธิ</th></tr><tr><th>เงินเดือน</th>${earnings.map(column => `<th>${escapeMarkup(column.name)}</th>`).join('')}<th>รวมรายการรับ</th>${deductions.map(column => `<th>${escapeMarkup(column.name)}</th>`).join('')}<th>รวมรายการหัก</th></tr></thead><tbody>${body}</tbody><tfoot><tr><td colspan="4">รวมทั้งสิ้น</td><td class="num">${thb(totals.salary)}</td>${earnings.map(column => `<td class="num">${thb(rows.reduce((sum, row) => sum + amount(row, column.code), 0))}</td>`).join('')}<td class="num">${thb(totals.earnings)}</td>${deductions.map(column => `<td class="num">${thb(rows.reduce((sum, row) => sum + amount(row, column.code), 0))}</td>`).join('')}<td class="num">${thb(totals.deductions)}</td><td class="num">${thb(totals.net)}</td></tr></tfoot></table></body></html>`)
+}
+
+function CombinedReportsPage({ role, periods, departments, organizations, userDepartment, showToast }: { role: Role; periods: PayrollPeriod[]; departments: Department[]; organizations: Organization[]; userDepartment: string | null; showToast: (msg: string, type?: 'success' | 'error') => void }) {
+  const availableYears = useMemo(() => Array.from(new Set(periods.map(period => period.year + 543))).sort((a, b) => b - a), [periods])
+  const latestPeriod = periods[0]
+  const [mode, setMode] = useState<ReportMode>('monthly')
+  const [yearBE, setYearBE] = useState(availableYears[0] ?? new Date().getFullYear() + 543)
+  const [month, setMonth] = useState(latestPeriod?.month ?? new Date().getMonth() + 1)
+  const [departmentValue, setDepartmentValue] = useState('')
+  const [organizationValue, setOrganizationValue] = useState('')
+  const [annualType, setAnnualType] = useState<AnnualReportType>('tax')
+  const [annualRows, setAnnualRows] = useState<AnnualTaxRow[]>([])
+  const [monthlyRows, setMonthlyRows] = useState<MonthlyPayrollRow[]>([])
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const scopedDepartmentId = role === 'hr' ? departments.find(department => department.name === userDepartment)?.id : undefined
+  const selectedDepartmentId = scopedDepartmentId ?? (departmentValue ? Number(departmentValue) : undefined)
+  const selectedOrganizationId = organizationValue ? Number(organizationValue) : undefined
+  const departmentLabel = role === 'hr' ? userDepartment ?? 'ฝ่ายของฉัน' : departments.find(department => department.id === selectedDepartmentId)?.name ?? 'ทุกฝ่าย'
+  const organizationLabel = organizations.find(organization => organization.id === selectedOrganizationId)?.name ?? 'ทุกหน่วยงาน'
+  const annualLabel = annualType === 'tax' ? 'รายการนำส่งภาษี' : annualType === 'social_security' ? 'รายงานสรุปเงินสมทบประกันสังคมประจำปี' : 'รายงานสรุปรายได้ประจำปี'
+  const dataVersion = useMemo(() => periods.flatMap(period => period.depts.map(department => `${department.databaseId ?? department.id}:${department.status}:${department.editVersion ?? 0}:${department.approvedAt ?? ''}`)).join('|'), [periods])
+
+  useEffect(() => {
+    let active = true
+    setLoading(true); setLoadError('')
+    const request = mode === 'monthly'
+      ? getMonthlyPayrollReport(yearBE - 543, month, selectedDepartmentId, selectedOrganizationId).then(data => { if (active) setMonthlyRows(data) })
+      : getAnnualTaxReport(yearBE - 543, selectedDepartmentId, annualType).then(data => { if (active) setAnnualRows(data) })
+    request.catch(error => { if (active) { if (mode === 'monthly') setMonthlyRows([]); else setAnnualRows([]); setLoadError(error instanceof Error ? error.message : 'ไม่สามารถโหลดรายงานได้') } }).finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [mode, yearBE, month, selectedDepartmentId, selectedOrganizationId, annualType, dataVersion])
+
+  const columns = useMemo(() => Array.from(new Map(monthlyRows.flatMap(row => row.lines).map(line => [line.code, { code: line.code, name: line.name, category: line.category }])).values()), [monthlyRows])
+  const earnings = columns.filter(column => column.category === 'EARNING')
+  const deductions = columns.filter(column => column.category === 'DEDUCTION')
+  const lineAmount = (row: MonthlyPayrollRow, code: string) => row.lines.find(line => line.code === code)?.amount ?? 0
+  const annualMonthlyTotals = Array.from({ length: 12 }, (_, index) => annualRows.reduce((sum, row) => sum + (row.months[index] || 0), 0))
+  const annualTotal = annualMonthlyTotals.reduce((sum, value) => sum + value, 0)
+  const monthlyTotals = { salary: monthlyRows.reduce((sum, row) => sum + row.base_salary, 0), earnings: monthlyRows.reduce((sum, row) => sum + row.total_earnings, 0), deductions: monthlyRows.reduce((sum, row) => sum + row.total_deductions, 0), net: monthlyRows.reduce((sum, row) => sum + row.net_pay, 0) }
+  const print = () => {
+    const opened = mode === 'monthly'
+      ? printMonthlyPayrollReport(yearBE, month, departmentLabel, organizationLabel, monthlyRows)
+      : printAnnualTaxReport(yearBE, departmentLabel, annualLabel, annualRows)
+    if (!opened) showToast('ไม่สามารถเปิดหน้าต่างพิมพ์ได้ กรุณาลองใหม่', 'error')
+  }
+
+  return <div className="anim">
+    <PageHeader title="รายงาน" subtitle="เรียกดูและพิมพ์รายงานเงินเดือนแบบรายเดือนหรือรายปี" actions={<button className="btn btn-secondary" disabled={loading || Boolean(loadError)} onClick={print}>🖨️ พิมพ์รายงาน</button>} />
+    <div className="flex gap-2" style={{ marginBottom: 12 }}><button className={`btn btn-sm ${mode === 'monthly' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setMode('monthly')}>รายเดือน</button><button className={`btn btn-sm ${mode === 'annual' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setMode('annual')}>รายปี</button></div>
+    <div className="card" style={{ padding: '14px 18px', marginBottom: 16 }}><div className="flex items-end gap-3 flex-wrap">
+      {mode === 'annual' && <FormField label="ประเภทรายงาน"><AppSelect className="inp" style={{ width: 300 }} value={annualType} onChange={event => setAnnualType(event.target.value as AnnualReportType)}><option value="tax">รายการนำส่งภาษี</option><option value="income">รายงานสรุปรายได้ประจำปี</option><option value="social_security">รายงานสรุปเงินสมทบประกันสังคมประจำปี</option></AppSelect></FormField>}
+      {mode === 'monthly' && <FormField label="ประเภทรายงาน"><AppSelect className="inp" style={{ width: 300 }} value="monthly_payroll" disabled><option value="monthly_payroll">รายงานสรุปเงินเดือนประจำเดือน</option></AppSelect></FormField>}
+      {mode === 'monthly' && <FormField label="เดือน"><AppSelect className="inp" style={{ width: 170 }} value={String(month)} onChange={event => setMonth(Number(event.target.value))}>{MONTH_TH.slice(1).map((label, index) => <option key={label} value={index + 1}>{label}</option>)}</AppSelect></FormField>}
+      <FormField label="ปี (พ.ศ.)"><AppSelect className="inp" style={{ width: 160 }} value={String(yearBE)} onChange={event => setYearBE(Number(event.target.value))}>{(availableYears.length ? availableYears : [yearBE]).map(year => <option key={year} value={year}>{year}</option>)}</AppSelect></FormField>
+      <FormField label="ฝ่าย"><AppSelect className="inp" style={{ width: 230 }} value={role === 'hr' ? String(scopedDepartmentId ?? '') : departmentValue} onChange={event => setDepartmentValue(event.target.value)} disabled={role === 'hr'}><option value="">ทุกฝ่าย</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField>
+      {mode === 'monthly' && <FormField label="หน่วยงาน"><AppSelect className="inp" style={{ width: 230 }} value={organizationValue} onChange={event => setOrganizationValue(event.target.value)}><option value="">ทุกหน่วยงาน</option>{organizations.filter(organization => organization.is_active).map(organization => <option key={organization.id} value={organization.id}>{organization.name}</option>)}</AppSelect></FormField>}
+      <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', paddingBottom: 10 }}>แสดงเฉพาะรอบเงินเดือนที่อนุมัติแล้ว</span>
+    </div></div>
+    {mode === 'monthly' ? <>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, marginBottom: 16 }}><KpiCard label="พนักงาน" value={String(monthlyRows.length)} unit="คน" icon="◉" accent="#8B5CF6" /><KpiCard label="รวมรายการรับ" value={thb(monthlyTotals.earnings)} unit="บาท" icon="▲" accent="#22C55E" /><KpiCard label="รวมรายการหัก" value={thb(monthlyTotals.deductions)} unit="บาท" icon="▼" accent="#EF4444" /><KpiCard label="ยอดรับสุทธิรวม" value={thb(monthlyTotals.net)} unit="บาท" icon="◈" accent="#3B82F6" /></div>
+      <div className="card" style={{ padding: 0, overflowX: 'auto' }}><div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(0,0,0,.07)' }}><div><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 16 }}>รายงานสรุปเงินเดือนประจำเดือน</div><div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>{MONTH_TH[month]} พ.ศ. {yearBE} · {departmentLabel} · {organizationLabel}</div></div></div><table className="tbl" style={{ minWidth: 1100 + (earnings.length + deductions.length) * 110 }}><thead><tr><th rowSpan={2}>ที่</th><th rowSpan={2}>ชื่อ-นามสกุล</th><th rowSpan={2}>หน่วยงาน</th><th rowSpan={2}>ตำแหน่ง</th><th colSpan={earnings.length + 2} style={{ textAlign: 'center' }}>รายการรับ</th><th colSpan={deductions.length + 1} style={{ textAlign: 'center' }}>รายการหัก</th><th rowSpan={2} className="num">ยอดรับสุทธิ</th></tr><tr><th className="num">เงินเดือน</th>{earnings.map(column => <th key={column.code} className="num">{column.name}</th>)}<th className="num">รวมรายการรับ</th>{deductions.map(column => <th key={column.code} className="num">{column.name}</th>)}<th className="num">รวมรายการหัก</th></tr></thead><tbody>{loading ? <tr><td colSpan={8 + earnings.length + deductions.length} style={{ textAlign: 'center', padding: 28 }}>กำลังโหลดรายงาน…</td></tr> : loadError ? <tr><td colSpan={8 + earnings.length + deductions.length} style={{ textAlign: 'center', padding: 28, color: '#B91C1C' }}>{loadError}</td></tr> : monthlyRows.length === 0 ? <tr><td colSpan={8 + earnings.length + deductions.length} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>ยังไม่มีข้อมูลจากรอบเงินเดือนที่อนุมัติแล้ว</td></tr> : monthlyRows.map((row, index) => <tr key={`${row.employee_id}-${row.department_name}`}><td style={{ textAlign: 'center' }}>{index + 1}</td><td>{row.full_name}</td><td>{row.organization_name}</td><td>{row.position_name}</td><td className="num">{thb(row.base_salary)}</td>{earnings.map(column => <td key={column.code} className="num">{thb(lineAmount(row, column.code))}</td>)}<td className="num total">{thb(row.total_earnings)}</td>{deductions.map(column => <td key={column.code} className="num">{thb(lineAmount(row, column.code))}</td>)}<td className="num">{thb(row.total_deductions)}</td><td className="num total">{thb(row.net_pay)}</td></tr>)}</tbody><tfoot>{!loading && !loadError && monthlyRows.length > 0 && <tr><td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td><td className="num">{thb(monthlyTotals.salary)}</td>{earnings.map(column => <td key={column.code} className="num">{thb(monthlyRows.reduce((sum, row) => sum + lineAmount(row, column.code), 0))}</td>)}<td className="num">{thb(monthlyTotals.earnings)}</td>{deductions.map(column => <td key={column.code} className="num">{thb(monthlyRows.reduce((sum, row) => sum + lineAmount(row, column.code), 0))}</td>)}<td className="num">{thb(monthlyTotals.deductions)}</td><td className="num total">{thb(monthlyTotals.net)}</td></tr>}</tfoot></table></div>
+    </> : <div className="card" style={{ padding: 0, overflowX: 'auto' }}><div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(0,0,0,.07)' }}><div><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 16 }}>{annualLabel}</div><div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>ปี พ.ศ. {yearBE} · {departmentLabel}</div></div><div style={{ fontWeight: 700, color: 'var(--purple-600)' }}>รวม {thb(annualTotal)} บาท</div></div><table className="tbl" style={{ minWidth: 1480 }}><thead><tr><th rowSpan={2}>ที่</th><th rowSpan={2}>ชื่อ-นามสกุล</th><th rowSpan={2}>ฝ่าย</th><th rowSpan={2}>ตำแหน่ง</th><th colSpan={12} style={{ textAlign: 'center' }}>{annualLabel}</th><th rowSpan={2} className="num">รวม</th></tr><tr>{TAX_MONTH_LABELS.map(label => <th key={label} className="num">{label}</th>)}</tr></thead><tbody>{loading ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28 }}>กำลังโหลดรายงาน…</td></tr> : loadError ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: '#B91C1C' }}>{loadError}</td></tr> : annualRows.length === 0 ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>ยังไม่มีข้อมูลจากรอบเงินเดือนที่อนุมัติแล้ว</td></tr> : annualRows.map((row, index) => <tr key={`${row.employee_id}-${row.department_name}`}><td style={{ textAlign: 'center' }}>{index + 1}</td><td>{row.full_name}</td><td>{row.department_name}</td><td>{row.position_name}</td>{row.months.map((amount, index) => <td key={index} className="num">{row.approved_months?.[index] ? thb(amount) : '–'}</td>)}<td className="num total">{thb(row.total)}</td></tr>)}</tbody><tfoot>{!loading && !loadError && annualRows.length > 0 && <tr><td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>{annualMonthlyTotals.map((amount, index) => <td key={index} className="num">{thb(amount)}</td>)}<td className="num total">{thb(annualTotal)}</td></tr>}</tfoot></table></div>}
+  </div>
+}
+
 // ─── Reports ──────────────────────────────────────────────────────────────────
 
 function ReportsPage({ periods }: { periods: PayrollPeriod[] }) {
@@ -5501,7 +5590,7 @@ export default function App() {
   const pageTitle: Partial<Record<Page, string>> = {
     dashboard: 'หน้าหลัก', periods: 'รอบเงินเดือน', employees: 'พนักงาน',
     'payslip-status': 'สถานะการส่งอีเมล', 'director-approvals': 'อนุมัติเงินเดือน',
-    'annual-tax': 'รายงานประจำปี',
+    'annual-tax': 'รายงาน',
     'admin-users': 'จัดการผู้ใช้งาน', 'period-detail': 'รายละเอียดรอบเงินเดือน',
     'dept-table': 'รายละเอียดรอบเงินเดือน', 'director-detail': 'รายละเอียดการอนุมัติ',
     'employee-form': 'ข้อมูลพนักงาน',
@@ -5589,7 +5678,7 @@ export default function App() {
           )}
           {page === 'payslip-status' && <PayslipStatus periods={visiblePeriods} onReload={loadEmployeeData} onEmployeeEmailUpdated={updateEmailLocally} showToast={showToast}
             onManageEmployees={() => setPage('employees')} />}
-          {page === 'annual-tax' && <AnnualTaxReportPage role={role} periods={visiblePeriods} departments={visibleDepartments} userDepartment={userDepartment} showToast={showToast} />}
+          {page === 'annual-tax' && <CombinedReportsPage role={role} periods={visiblePeriods} departments={visibleDepartments} organizations={organizations} userDepartment={userDepartment} showToast={showToast} />}
           {page === 'admin-users' && <AdminUsers employees={databaseEmployees} showToast={showToast} currentUserId={currentUserId} onCurrentApprovalPermissionChanged={setCanApprovePayroll} />}
         </main>
       </div>

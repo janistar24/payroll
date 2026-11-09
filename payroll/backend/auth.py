@@ -265,10 +265,17 @@ class AuthService:
             cursor.execute("UPDATE public.users SET password_hash = %s WHERE id = %s", (password_hash, user_id))
 
     def create_invite(self, email, role, actor_id):
-        token = secrets.token_urlsafe(32)
+        return self.create_invites(email, role, actor_id, 1)[0]
+
+    def create_invites(self, email, role, actor_id, quantity=1):
+        normalized_email = (email or "").lower().strip()
+        tokens = [secrets.token_urlsafe(32) for _ in range(quantity)]
         with self.db.transaction() as cursor:
-            cursor.execute("INSERT INTO public.user_invites (token_hash,email,requested_role,expires_at,created_by_id) VALUES (%s,%s,%s,NOW()+INTERVAL '7 days',%s)", (hashlib.sha256(token.encode()).hexdigest(), email.lower().strip(), role, actor_id))
-        return token
+            cursor.executemany(
+                "INSERT INTO public.user_invites (token_hash,email,requested_role,expires_at,created_by_id) VALUES (%s,%s,%s,NOW()+INTERVAL '7 days',%s)",
+                [(hashlib.sha256(token.encode()).hexdigest(), normalized_email, role, actor_id) for token in tokens],
+            )
+        return tokens
 
     def validate_invite(self, token):
         data, cols = self.db.fetch("SELECT id,email,requested_role,expires_at FROM public.user_invites WHERE token_hash=%s AND used_at IS NULL AND expires_at>NOW()", (hashlib.sha256(token.encode()).hexdigest(),))
@@ -277,7 +284,7 @@ class AuthService:
 
     def submit_access_request(self, token, username, password, employee_data, position_name=None, organization_name=None):
         invite = self.validate_invite(token)
-        if (employee_data.get("email") or "").strip().lower() != invite["email"]:
+        if invite["email"] and (employee_data.get("email") or "").strip().lower() != invite["email"]:
             raise ValueError("อีเมลต้องตรงกับอีเมลที่ได้รับคำเชิญ")
         password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
         with self.db.transaction() as cursor:
@@ -411,7 +418,8 @@ class AuthService:
     def list_access_requests(self):
         data, cols = self.db.fetch(
             """SELECT request.id, request.username, request.requested_role, request.status,
-                      request.employee_data, request.created_at, invite.email AS invited_email
+                      request.employee_data, request.created_at,
+                      COALESCE(NULLIF(invite.email, ''), request.employee_data->>'email') AS invited_email
                  FROM public.access_requests request
                  JOIN public.user_invites invite ON invite.id = request.invite_id
                 ORDER BY request.created_at DESC"""

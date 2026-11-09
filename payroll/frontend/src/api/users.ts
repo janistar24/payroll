@@ -28,7 +28,7 @@ export async function deleteSystemUser(id: number) { return request(`/users/${id
 export async function deactivateSystemUser(id: number) { return request(`/users/${id}/deactivate`, { method: 'POST' }) }
 export async function activateSystemUser(id: number) { return request(`/users/${id}/activate`, { method: 'POST' }) }
 export async function changeMyPassword(current_password: string, new_password: string) { return request('/auth/change-password', { method: 'POST', body: JSON.stringify({ current_password, new_password }) }) }
-export async function createUserInvite(email: string, requested_role: SystemUser['role']) { return request('/admin/invites', { method: 'POST', body: JSON.stringify({ email, requested_role }) }) }
+export async function createUserInvite(email: string, requested_role: SystemUser['role'], quantity: number) { return request('/admin/invites', { method: 'POST', body: JSON.stringify({ email, requested_role, quantity }) }) }
 export interface AccessRequest { id: number; username: string; requested_role: SystemUser['role']; status: 'PENDING' | 'APPROVED' | 'REJECTED'; employee_data: Record<string, unknown>; created_at: string; invited_email: string }
 export async function getAccessRequests(): Promise<AccessRequest[]> { return (await request('/admin/access-requests')).data }
 export async function approveAccessRequest(id: number, actual_role: SystemUser['role']) { return request(`/admin/access-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({ actual_role }) }) }

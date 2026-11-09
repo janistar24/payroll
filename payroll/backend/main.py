@@ -503,8 +503,23 @@ class PasswordChangeRequest(BaseModel):
 
 
 class InviteCreateRequest(BaseModel):
-    email: str = Field(min_length=5, max_length=255)
+    email: str = Field(default="", max_length=255)
     requested_role: str
+    quantity: int = Field(default=1, ge=1, le=100)
+
+    @field_validator("email")
+    @classmethod
+    def validate_optional_email(cls, value):
+        normalized = value.strip().lower()
+        if normalized and ("@" not in normalized or "." not in normalized.rsplit("@", 1)[-1]):
+            raise ValueError("รูปแบบอีเมลไม่ถูกต้อง")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_invite_quantity(self):
+        if self.email and self.quantity != 1:
+            raise ValueError("หากระบุอีเมล จะสร้างลิงก์คำเชิญได้ครั้งละ 1 ลิงก์")
+        return self
 
     @field_validator("requested_role")
     @classmethod
@@ -906,12 +921,13 @@ def change_my_password(request: PasswordChangeRequest, user=Depends(get_current_
 @app.post("/api/admin/invites", status_code=201)
 def create_invite(request: InviteCreateRequest, http_request: Request, user=Depends(get_current_user)):
     _require_admin(user)
-    token = auth_service.create_invite(request.email, request.requested_role, user["id"])
+    tokens = auth_service.create_invites(request.email, request.requested_role, user["id"], request.quantity)
     # The API and the SPA are separate during development; deployment sets this
     # to the public PayFlow domain so an invite always opens the frontend route.
     public_url = os.getenv("PUBLIC_APP_URL") or os.getenv("FRONTEND_URL") or "http://127.0.0.1:5173"
-    audit_logger.log(user["id"], "CREATE_INVITE", "user_invite", None, {"email": request.email, "requested_role": request.requested_role})
-    return {"success": True, "data": {"invite_url": f"{public_url}/invite/{token}", "expires_in_days": 7}}
+    invite_urls = [f"{public_url}/invite/{token}" for token in tokens]
+    audit_logger.log(user["id"], "CREATE_INVITE", "user_invite", None, {"email": request.email or None, "requested_role": request.requested_role, "quantity": request.quantity})
+    return {"success": True, "data": {"invite_url": invite_urls[0], "invite_urls": invite_urls, "expires_in_days": 7}}
 
 
 @app.get("/api/invites/{token}")

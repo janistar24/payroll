@@ -67,6 +67,21 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* Public invite form: keep every control inside a narrow phone viewport. */
+.invite-card,
+.invite-form-grid > *,
+.buddhist-date-grid > * { min-width: 0; }
+
+@media (max-width: 640px) {
+  .invite-page { padding: 18px 10px !important; }
+  .invite-card { width: 100%; padding: 20px 14px !important; border-radius: 14px !important; }
+  .invite-header { align-items: flex-start !important; }
+  .invite-form-grid { grid-template-columns: minmax(0, 1fr) !important; gap: 14px !important; }
+  .invite-form-grid .inp,
+  .buddhist-date-grid .inp { width: 100% !important; min-width: 0 !important; }
+  .buddhist-date-grid { grid-template-columns: minmax(0, .8fr) minmax(0, 1.25fr) minmax(0, 1fr) !important; gap: 6px !important; }
+}
+
 /* ── Glass Surface ─────────────────────────────────────────── */
 .glass {
   background: rgba(255,255,255,0.72);

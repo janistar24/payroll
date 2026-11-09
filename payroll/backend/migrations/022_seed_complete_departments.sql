@@ -6,11 +6,15 @@ WHERE NOT EXISTS (
 );
 
 INSERT INTO public.departments (code, name, is_active)
-SELECT 'WELFARE', 'กองสวัสดิการ', TRUE
+SELECT 'WELFARE', 'กองสวัสดิการสังคม', TRUE
 WHERE NOT EXISTS (
   SELECT 1 FROM public.departments WHERE LOWER(BTRIM(name)) IN (LOWER('กองสวัสดิการ'), LOWER('กองสวัสดิการสังคม'))
 );
 
 UPDATE public.departments
 SET is_active = TRUE
-WHERE LOWER(BTRIM(name)) IN (LOWER('กองการประปา'), LOWER('กองสวัสดิการ'));
+WHERE LOWER(BTRIM(name)) IN (LOWER('กองการประปา'), LOWER('กองสวัสดิการ'), LOWER('กองสวัสดิการสังคม'));
+
+UPDATE public.departments
+SET name = 'กองสวัสดิการสังคม', code = 'WELFARE', is_active = TRUE
+WHERE LOWER(BTRIM(name)) = LOWER('กองสวัสดิการ');

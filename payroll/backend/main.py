@@ -755,11 +755,12 @@ def login(request: LoginRequest, http_request: Request):
         auth_service.ensure_login_allowed(username, client_ip)
         raise HTTPException(status_code=401, detail="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
     auth_service.clear_login_failures(username, client_ip)
+    session_id = auth_service.start_session(user)
     audit_logger.log(user["id"], "LOGIN", "user", user["id"], {"client_ip": client_ip})
     return {
         "success": True,
         "data": {
-            "access_token": auth_service.create_token(user),
+            "access_token": auth_service.create_token(user, session_id),
             "token_type": "bearer",
             "user": user
         }

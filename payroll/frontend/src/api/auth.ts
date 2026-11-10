@@ -32,6 +32,21 @@ export function authorizationHeaders(): Record<string, string> {
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
+export type SessionStatus = 'active' | 'replaced' | 'expired' | 'unavailable'
+
+export async function checkCurrentSession(): Promise<SessionStatus> {
+  if (!getAccessToken()) return 'expired'
+  try {
+    const response = await fetch(`${API_URL}/auth/me`, { headers: authorizationHeaders(), cache: 'no-store' })
+    if (response.ok) return 'active'
+    if (response.status !== 401) return 'unavailable'
+    const body = await response.json().catch(() => null)
+    return body?.detail?.code === 'SESSION_REPLACED' ? 'replaced' : 'expired'
+  } catch {
+    return 'unavailable'
+  }
+}
+
 const wait = (milliseconds: number) => new Promise(resolve => window.setTimeout(resolve, milliseconds))
 
 async function postLoginWithWakeRetry(username: string, password: string): Promise<Response> {

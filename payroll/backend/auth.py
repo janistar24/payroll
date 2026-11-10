@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
+import hmac
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
@@ -88,13 +89,23 @@ class AuthService:
         user.pop("password_hash")
         return user
 
-    def create_token(self, user):
+    def start_session(self, user):
+        """Rotate the account session so only the newest login stays valid."""
+        session_id = str(uuid4())
+        self.db.execute(
+            "UPDATE public.users SET current_session_id = %s WHERE id = %s",
+            (session_id, user["id"]),
+        )
+        return session_id
+
+    def create_token(self, user, session_id):
         now = datetime.now(timezone.utc)
         payload = {
             "sub": str(user["id"]),
             "username": user["username"],
             "role": user["role"],
             "department_id": user["department_id"],
+            "sid": session_id,
             "iat": now,
             "exp": now + timedelta(hours=TOKEN_LIFETIME_HOURS)
         }
@@ -119,6 +130,7 @@ class AuthService:
                 users.email,
                 roles.code AS role,
                 users.can_approve_payroll,
+                users.current_session_id,
                 employees.department_id,
                 departments.name AS department_name
             FROM public.users users
@@ -132,7 +144,15 @@ class AuthService:
         )
         if not data:
             raise HTTPException(status_code=401, detail="ไม่พบบัญชีผู้ใช้ที่เปิดใช้งาน")
-        return dict(zip(columns, data[0]))
+        user = dict(zip(columns, data[0]))
+        token_session_id = str(claims.get("sid") or "")
+        current_session_id = str(user.pop("current_session_id") or "")
+        if not token_session_id or not current_session_id or not hmac.compare_digest(token_session_id, current_session_id):
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "SESSION_REPLACED", "message": "บัญชีนี้เข้าสู่ระบบจากอุปกรณ์อื่นแล้ว"},
+            )
+        return user
 
     def list_users(self):
         data, columns = self.db.fetch(

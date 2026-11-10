@@ -16,7 +16,7 @@ import {
 } from './api/employees'
 import { createPosition, getPositions, type Position } from './api/positions'
 import { getAppData } from './api/bootstrap'
-import { clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
+import { checkCurrentSession, clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
 import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, updatePayrollApprovalPermission, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, restorePayrollBatchVersion, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
@@ -1062,7 +1062,7 @@ function CategoryDonut({ title, total, items, tone }: {
 
 // ─── Login Page ───────────────────────────────────────────────────────────────
 
-function LoginPage({ onLogin }: { onLogin: (id: number, user: string, name: string, role: Role, department: string | null, canApprovePayroll: boolean) => void }) {
+function LoginPage({ onLogin, notice = '' }: { onLogin: (id: number, user: string, name: string, role: Role, department: string | null, canApprovePayroll: boolean) => void; notice?: string }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [showPw, setShowPw] = useState(false)
@@ -1103,6 +1103,7 @@ function LoginPage({ onLogin }: { onLogin: (id: number, user: string, name: stri
       <div className="orb" style={{ width: 500, height: 500, top: -120, left: -80, background: 'radial-gradient(circle,rgba(205,180,255,0.28) 0%,transparent 70%)' }} />
       <div className="orb" style={{ width: 400, height: 400, bottom: -80, right: -60, background: 'radial-gradient(circle,rgba(189,224,254,0.24) 0%,transparent 70%)' }} />
       <div className="glass" style={{ width: '100%', maxWidth: 400, borderRadius: 'var(--radius-xl)', padding: '40px 40px 36px', position: 'relative', zIndex: 1, margin: 'auto' }}>
+        {notice && <div role="alert" style={{ marginBottom: 18, padding: '11px 13px', borderRadius: 10, background: '#FFF5E8', border: '1px solid #F3C980', color: '#7A4A00', fontSize: 13, lineHeight: 1.55 }}>{notice}</div>}
         {/* Logo */}
         <div className="text-center mb-8">
           <img src={takhliLogo} alt="โลโก้หน่วยงาน" style={{ width: 72, height: 72, borderRadius: 18, objectFit: 'cover', margin: '0 auto 14px', display: 'block', boxShadow: '0 8px 24px rgba(108,82,217,0.18)' }} />
@@ -5332,6 +5333,7 @@ export default function App() {
   const [payrollError, setPayrollError] = useState('')
   const [payrollReferenceReady, setPayrollReferenceReady] = useState(false)
   const [loggedIn, setLoggedIn] = useState(false)
+  const [loginNotice, setLoginNotice] = useState('')
   const [role, setRole] = useState<Role>('hr')
   const [userName, setUserName] = useState('')
   const [accountUsername, setAccountUsername] = useState('')
@@ -5617,10 +5619,45 @@ export default function App() {
   }, [loggedIn, checkSystemUpdateAnnouncements])
 
   const handleLogin = (id: number, username: string, name: string, r: Role, department: string | null, canApprove: boolean) => {
-    setCurrentUserId(id); setUserName(name); setAccountUsername(username); setRole(r); setUserDepartment(department); setCanApprovePayroll(canApprove); setLoggedIn(true); setPage('dashboard')
+    setLoginNotice(''); setCurrentUserId(id); setUserName(name); setAccountUsername(username); setRole(r); setUserDepartment(department); setCanApprovePayroll(canApprove); setLoggedIn(true); setPage('dashboard')
   }
 
   const handleLogout = () => { clearAccessToken(); setProfileMenuOpen(false); setCurrentUserId(null); setCanApprovePayroll(false); setLoggedIn(false); setPage('login' as Page) }
+
+  useEffect(() => {
+    if (!loggedIn) return
+    let checking = false
+    const verifySession = async () => {
+      if (checking) return
+      checking = true
+      try {
+        const status = await checkCurrentSession()
+        if (status === 'replaced' || status === 'expired') {
+          clearAccessToken()
+          setProfileMenuOpen(false)
+          setCurrentUserId(null)
+          setCanApprovePayroll(false)
+          setLoginNotice(status === 'replaced'
+            ? 'บัญชีนี้เข้าสู่ระบบจากอุปกรณ์อื่นแล้ว ระบบจึงออกจากระบบบนอุปกรณ์นี้เพื่อความปลอดภัย'
+            : 'เซสชันหมดอายุแล้ว กรุณาเข้าสู่ระบบอีกครั้ง')
+          setLoggedIn(false)
+          setPage('login' as Page)
+        }
+      } finally {
+        checking = false
+      }
+    }
+    void verifySession()
+    const timer = window.setInterval(() => { void verifySession() }, 5_000)
+    const verifyWhenActive = () => { if (document.visibilityState === 'visible') void verifySession() }
+    document.addEventListener('visibilitychange', verifyWhenActive)
+    window.addEventListener('focus', verifySession)
+    return () => {
+      window.clearInterval(timer)
+      document.removeEventListener('visibilitychange', verifyWhenActive)
+      window.removeEventListener('focus', verifySession)
+    }
+  }, [loggedIn])
   const roleLabel: Record<Role, string> = { hr: 'พนักงานฝ่ายธุรการ', director: 'ผู้บริหาร', admin: 'แอดมิน' }
   const saveMyPassword = async () => {
     if (newPassword.length < 8) { showToast('รหัสผ่านใหม่ต้องมีอย่างน้อย 8 ตัวอักษร', 'error'); return }
@@ -5628,7 +5665,7 @@ export default function App() {
     try { setPasswordSaving(true); await changeMyPassword(currentPassword, newPassword); setShowPasswordReset(false); setCurrentPassword(''); setNewPassword(''); setConfirmNewPassword(''); showToast('เปลี่ยนรหัสผ่านเรียบร้อยแล้ว', 'success') } catch (error) { showToast(error instanceof Error ? error.message : 'เปลี่ยนรหัสผ่านไม่สำเร็จ', 'error') } finally { setPasswordSaving(false) }
   }
 
-  if (!loggedIn) return <LoginPage onLogin={handleLogin} />
+  if (!loggedIn) return <LoginPage onLogin={handleLogin} notice={loginNotice} />
 
   if (maintenance) return (
     <div style={{ minHeight: '100vh', display: 'grid', placeItems: 'center', padding: 24, background: 'linear-gradient(145deg, #F6F3FF 0%, #FFFFFF 55%, #F3EEFF 100%)', color: '#24202E' }}>

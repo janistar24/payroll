@@ -5872,8 +5872,8 @@ export default function App() {
           )}
           {page === 'employees' && (
             <EmployeesPage
-              employees={visibleEmployees}
-              departments={visibleDepartments}
+              employees={databaseEmployees}
+              departments={departments}
               positions={positions}
               loading={employeeLoading}
               error={employeeError}
@@ -5885,7 +5885,7 @@ export default function App() {
             />
           )}
           {page === 'employee-form' && (
-            <EmployeeForm empId={editEmpId} employees={visibleEmployees} departments={departments} positions={positions} organizations={organizations}
+            <EmployeeForm empId={editEmpId} employees={databaseEmployees} departments={departments} positions={positions} organizations={organizations}
               setPage={setPage} showToast={showToast} onSaved={applyEmployeeSaved} onOrganizationCreated={organization => setOrganizations(current => current.some(item => item.id === organization.id) ? current : [...current, organization])} />
           )}
           {page === 'payslip-status' && <PayslipStatus periods={visiblePeriods} onReload={loadEmployeeData} onEmployeeEmailUpdated={updateEmailLocally} showToast={showToast}

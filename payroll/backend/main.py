@@ -340,7 +340,8 @@ def get_departments(user=Depends(get_current_user)):
 @app.get("/api/employees")
 def get_employees(user=Depends(get_current_user)):
     try:
-        employees = employees_service.dump(_department_scope(user))
+        _require_payroll_role(user)
+        employees = employees_service.dump()
 
         return {
             "success": True,
@@ -364,10 +365,11 @@ def get_employees(user=Depends(get_current_user)):
 def get_bootstrap(user=Depends(get_current_user)):
     """Load the directory data needed immediately after login in one browser request."""
     try:
+        _require_payroll_role(user)
         return {
             "success": True,
             "data": {
-                "employees": employees_service.dump(_department_scope(user)),
+                "employees": employees_service.dump(),
                 "departments": departments_service.dump(),
                 "positions": positions_service.dump(),
             },
@@ -391,7 +393,10 @@ def get_app_data(user=Depends(get_current_user)):
         # browser, while letting the bounded database pool run the reads in
         # parallel instead of adding their remote latency together.
         with ThreadPoolExecutor(max_workers=6) as executor:
-            employees_future = executor.submit(employees_service.dump, department_id)
+            # The employee directory is shared across departments so an HR
+            # user can find and correct a record assigned to the wrong one.
+            # Payroll periods remain scoped by department below.
+            employees_future = executor.submit(employees_service.dump)
             departments_future = executor.submit(departments_service.dump)
             positions_future = executor.submit(positions_service.dump)
             payroll_future = executor.submit(payroll_periods_service.dump, department_id)
@@ -1196,12 +1201,10 @@ def _employee_changes(before, after):
 
 @app.get("/api/employees/{employee_id}")
 def get_employee(employee_id: int, user=Depends(get_current_user)):
-    department_id = _department_scope(user)
+    _require_payroll_role(user)
     error, employee = employees_service.read(employee_id)
     if error["Is Error"]:
         raise HTTPException(status_code=404, detail=error["Error Message"])
-    if department_id is not None and employee["department_id"] != department_id:
-        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์เข้าถึงพนักงานฝ่ายอื่น")
     return {"success": True, "data": employee}
 
 
@@ -1223,12 +1226,9 @@ def create_employee(request: EmployeeSave, user=Depends(get_current_user)):
 def update_employee(employee_id: int, request: EmployeeSave, user=Depends(get_current_user)):
     try:
         _require_payroll_role(user)
-        scope = _department_scope(user)
         current_error, current_employee = employees_service.read(employee_id)
         if current_error["Is Error"]:
             raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
-        if scope is not None and current_employee["department_id"] != scope:
-            raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์แก้ไขพนักงานฝ่ายอื่น")
         if not employees_service.update(employee_id, request):
             raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
         read_error, saved_employee = employees_service.read(employee_id)
@@ -1247,12 +1247,10 @@ def update_employee(employee_id: int, request: EmployeeSave, user=Depends(get_cu
 
 @app.patch("/api/employees/{employee_id}/status")
 def update_employee_status(employee_id: int, request: EmployeeStatusUpdate, user=Depends(get_current_user)):
-    department_id = _department_scope(user)
+    _require_payroll_role(user)
     error, employee = employees_service.read(employee_id)
     if error["Is Error"]:
         raise HTTPException(status_code=404, detail=error["Error Message"])
-    if department_id is not None and employee["department_id"] != department_id:
-        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์แก้ไขพนักงานฝ่ายอื่น")
     if not employees_service.update_status(employee_id, request.status):
         raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
     audit_logger.log(user["id"], "UPDATE_STATUS", "employee", employee_id, {
@@ -1264,12 +1262,10 @@ def update_employee_status(employee_id: int, request: EmployeeStatusUpdate, user
 
 @app.patch("/api/employees/{employee_id}/email")
 def update_employee_email(employee_id: int, request: EmployeeEmailUpdate, user=Depends(get_current_user)):
-    department_id = _department_scope(user)
+    _require_payroll_role(user)
     error, employee = employees_service.read(employee_id)
     if error["Is Error"]:
         raise HTTPException(status_code=404, detail=error["Error Message"])
-    if department_id is not None and employee["department_id"] != department_id:
-        raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์แก้ไขพนักงานฝ่ายอื่น")
     if not employees_service.update_email(employee_id, request.email):
         raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
     audit_logger.log(user["id"], "UPDATE_EMAIL", "employee", employee_id, {

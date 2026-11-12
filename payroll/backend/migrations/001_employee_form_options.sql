@@ -14,7 +14,7 @@ WITH required_departments(code, name) AS (
         ('HEALTH', 'กองสาธารณสุขและสิ่งแวดล้อม'),
         ('STRATEGY', 'กองยุทธศาสตร์และงบประมาณ'),
         ('EDU', 'กองการศึกษา'),
-        ('WATER', 'กองการประปา'),
+        ('DISASTER_PREVENTION', 'งานป้องกันและบรรเทาสาธารณภัย'),
         ('WELFARE', 'กองสวัสดิการสังคม')
 )
 UPDATE public.departments AS department
@@ -31,7 +31,7 @@ WITH required_departments(code, name) AS (
         ('HEALTH', 'กองสาธารณสุขและสิ่งแวดล้อม'),
         ('STRATEGY', 'กองยุทธศาสตร์และงบประมาณ'),
         ('EDU', 'กองการศึกษา'),
-        ('WATER', 'กองการประปา'),
+        ('DISASTER_PREVENTION', 'งานป้องกันและบรรเทาสาธารณภัย'),
         ('WELFARE', 'กองสวัสดิการสังคม')
 )
 INSERT INTO public.departments (code, name, is_active)

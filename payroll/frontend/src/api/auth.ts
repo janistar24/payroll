@@ -27,6 +27,16 @@ export function clearAccessToken(): void {
   localStorage.removeItem(TOKEN_KEY)
 }
 
+export async function logoutCurrentSession(): Promise<void> {
+  const token = getAccessToken()
+  if (!token) return
+  try {
+    await fetch(`${API_URL}/auth/logout`, { method: 'POST', headers: authorizationHeaders(), cache: 'no-store' })
+  } catch {
+    // Local logout must still complete when the network is unavailable.
+  }
+}
+
 export function authorizationHeaders(): Record<string, string> {
   const token = getAccessToken()
   return token ? { Authorization: `Bearer ${token}` } : {}

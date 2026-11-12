@@ -3,6 +3,9 @@ import time
 import uuid
 import logging
 import json
+import csv
+import io
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -11,7 +14,7 @@ import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from DBHelper import DBHelper
@@ -27,7 +30,7 @@ from payroll_workflow import PayrollWorkflow, StalePayrollVersionError
 from schema_checks import validate_required_schema
 from email_service import PayslipEmailService
 from auth import auth_service, get_current_user
-from audit import AuditLogger
+from audit import AuditLogger, request_audit_context
 
 app = FastAPI(
     title="Payroll API",
@@ -46,6 +49,10 @@ pay_item_types_service = PayItemTypes()
 payroll_workflow_service = PayrollWorkflow()
 payslip_email_service = PayslipEmailService()
 audit_logger = AuditLogger()
+access_log_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="access-log")
+log_retention_days = max(90, min(int(os.getenv("LOG_RETENTION_DAYS", "90")), 730))
+bangkok_timezone = timezone(timedelta(hours=7))
+access_log_polling_paths = {"/api/auth/me", "/api/payroll-sync-version", "/api/announcements"}
 environment = os.getenv("APP_ENV", "development").lower()
 release_id = os.getenv("RAILWAY_GIT_COMMIT_SHA", "").strip() or str(uuid.uuid4())
 allowed_origins = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if origin.strip()]
@@ -88,6 +95,30 @@ def _client_ip(request: Request) -> str:
         if forwarded:
             return forwarded[:64]
     return peer[:64]
+
+
+def _safe_log_path(path: str) -> str:
+    """Keep useful routes without retaining invitation secrets in traffic logs."""
+    path = re.sub(r"^(/api/invites/)[^/]+", r"\1:token", path)
+    return path[:500]
+
+
+def _request_actor(request: Request):
+    actor = getattr(request.state, "audit_actor", None)
+    if actor:
+        return actor
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        try:
+            claims = auth_service.decode_token(authorization.split(" ", 1)[1])
+            return {
+                "id": int(claims["sub"]),
+                "username": str(claims.get("username") or "")[:100] or None,
+                "role": str(claims.get("role") or "")[:30] or None,
+            }
+        except Exception:
+            return None
+    return None
 
 
 @app.middleware("http")
@@ -164,6 +195,7 @@ def warm_database_connections():
     try:
         db.warm_pool()
         validate_required_schema(db)
+        audit_logger.purge_expired(log_retention_days)
     except Exception:
         # Keep local development bootable when the database is temporarily
         # offline; healthcheck and the request handlers still report the error.
@@ -174,6 +206,7 @@ def warm_database_connections():
 
 @app.on_event("shutdown")
 def close_database_connections():
+    access_log_executor.shutdown(wait=True, cancel_futures=False)
     DBHelper.close_pool()
 
 
@@ -199,24 +232,33 @@ async def unexpected_error(request: Request, error: Exception):
 async def add_utf8_charset(request, call_next):
     started_at = time.perf_counter()
     request_id = str(uuid.uuid4())
+    user_agent = request.headers.get("user-agent", "")[:500] or None
+    context_token = request_audit_context.set({
+        "request_id": request_id,
+        "ip_address": _client_ip(request),
+        "user_agent": user_agent,
+    })
 
     # Bearer tokens are never accepted from cookies.  Reject cross-site state
     # changes as an additional CSRF boundary before a handler reads the body.
-    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-        origin = request.headers.get("origin")
-        fetch_site = request.headers.get("sec-fetch-site", "")
-        origin_is_allowed = bool(origin and origin in allowed_origins)
-        # Railway hosts the SPA and API on separate *.up.railway.app domains,
-        # which browsers correctly classify as cross-site.  An exact allowlist
-        # match is authoritative; Sec-Fetch-Site is only a fallback when a
-        # cross-site mutation arrives without an Origin header.
-        if (origin and not origin_is_allowed) or (not origin and fetch_site == "cross-site"):
-            logging.warning("Blocked cross-site mutation method=%s path=%s", request.method, request.url.path)
-            response = JSONResponse(status_code=403, content={"detail": "ไม่อนุญาตคำขอจากเว็บไซต์อื่น"})
+    try:
+        if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+            origin = request.headers.get("origin")
+            fetch_site = request.headers.get("sec-fetch-site", "")
+            origin_is_allowed = bool(origin and origin in allowed_origins)
+            # Railway hosts the SPA and API on separate *.up.railway.app domains,
+            # which browsers correctly classify as cross-site.  An exact allowlist
+            # match is authoritative; Sec-Fetch-Site is only a fallback when a
+            # cross-site mutation arrives without an Origin header.
+            if (origin and not origin_is_allowed) or (not origin and fetch_site == "cross-site"):
+                logging.warning("Blocked cross-site mutation method=%s path=%s", request.method, request.url.path)
+                response = JSONResponse(status_code=403, content={"detail": "ไม่อนุญาตคำขอจากเว็บไซต์อื่น"})
+            else:
+                response = await call_next(request)
         else:
             response = await call_next(request)
-    else:
-        response = await call_next(request)
+    finally:
+        request_audit_context.reset(context_token)
 
     if response.headers.get("content-type", "").startswith("application/json"):
         response.headers["content-type"] = "application/json; charset=utf-8"
@@ -242,6 +284,27 @@ async def add_utf8_charset(request, call_next):
         (time.perf_counter() - started_at) * 1000,
         _client_ip(request),
     )
+
+    should_log_access = (
+        request.url.path.startswith("/api/")
+        and request.method != "OPTIONS"
+        and not (request.method == "GET" and request.url.path in access_log_polling_paths)
+    )
+    if should_log_access:
+        actor = _request_actor(request) or {}
+        access_log_executor.submit(
+            audit_logger.log_access,
+            actor_user_id=actor.get("id"),
+            username=actor.get("username"),
+            role=actor.get("role"),
+            ip_address=_client_ip(request),
+            user_agent=user_agent,
+            method=request.method,
+            path=_safe_log_path(request.url.path),
+            status_code=response.status_code,
+            request_id=request_id,
+            duration_ms=(time.perf_counter() - started_at) * 1000,
+        )
 
     return response
 
@@ -745,10 +808,12 @@ def _ensure_payroll_item_access(payroll_item_id, user):
 def login(request: LoginRequest, http_request: Request):
     username = request.username.strip()
     client_ip = _client_ip(http_request)
+    http_request.state.audit_actor = {"id": None, "username": username[:100], "role": None}
     auth_service.ensure_login_allowed(username, client_ip)
     user = auth_service.authenticate(username, request.password)
     if user is None:
         auth_service.record_login_failure(username, client_ip)
+        audit_logger.log(None, "LOGIN_FAILED", "user", None, {"reason": "INVALID_CREDENTIALS"}, outcome="FAILED", actor_username=username)
         logging.warning("login_failed username=%s client=%s", username, client_ip)
         # The third failed attempt is the start of the five-minute lock, not a
         # free extra attempt before the next request discovers the lock.
@@ -756,6 +821,7 @@ def login(request: LoginRequest, http_request: Request):
         raise HTTPException(status_code=401, detail="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
     auth_service.clear_login_failures(username, client_ip)
     session_id = auth_service.start_session(user)
+    http_request.state.audit_actor = {"id": user["id"], "username": user["username"], "role": user["role"]}
     audit_logger.log(user["id"], "LOGIN", "user", user["id"], {"client_ip": client_ip})
     return {
         "success": True,
@@ -772,9 +838,98 @@ def auth_me(user=Depends(get_current_user)):
     return {"success": True, "data": user}
 
 
+@app.post("/api/auth/logout")
+def logout(http_request: Request, user=Depends(get_current_user)):
+    authorization = http_request.headers.get("authorization", "")
+    claims = auth_service.decode_token(authorization.split(" ", 1)[1])
+    audit_logger.log(user["id"], "LOGOUT", "user", user["id"])
+    auth_service.end_session(user["id"], claims.get("sid"))
+    return {"success": True}
+
+
+@app.post("/api/auth/logout")
+def logout(http_request: Request, user=Depends(get_current_user)):
+    authorization = http_request.headers.get("authorization", "")
+    claims = auth_service.decode_token(authorization.split(" ", 1)[1])
+    audit_logger.log(user["id"], "LOGOUT", "user", user["id"])
+    auth_service.end_session(user["id"], claims.get("sid"))
+    return {"success": True}
+
+
 def _require_admin(user):
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="เฉพาะผู้ดูแลระบบเท่านั้น")
+
+
+def _audit_log_filters(source, date_from, date_to, username, action, outcome):
+    if source not in {"all", "audit", "access"}:
+        raise HTTPException(status_code=400, detail="ประเภท log ไม่ถูกต้อง")
+    if outcome and outcome not in {"SUCCESS", "FAILED"}:
+        raise HTTPException(status_code=400, detail="สถานะ log ไม่ถูกต้อง")
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(status_code=400, detail="ช่วงวันที่ไม่ถูกต้อง")
+    return {
+        "source": source,
+        "date_from": datetime.combine(date_from, datetime.min.time(), tzinfo=bangkok_timezone).astimezone(timezone.utc) if date_from else None,
+        "date_to": datetime.combine(date_to + timedelta(days=1), datetime.min.time(), tzinfo=bangkok_timezone).astimezone(timezone.utc) if date_to else None,
+        "username": (username or "").strip()[:100] or None,
+        "action": (action or "").strip()[:100] or None,
+        "outcome": outcome,
+    }
+
+
+def _csv_safe(value):
+    text = "" if value is None else str(value)
+    return "'" + text if text[:1] in {"=", "+", "-", "@"} else text
+
+
+@app.get("/api/admin/audit-logs")
+def get_audit_logs(
+    source: str = "all", date_from: date | None = None, date_to: date | None = None,
+    username: str | None = None, action: str | None = None, outcome: str | None = None,
+    page: int = 1, page_size: int = 100, user=Depends(get_current_user),
+):
+    _require_admin(user)
+    page = max(1, page)
+    page_size = max(20, min(page_size, 200))
+    filters = _audit_log_filters(source, date_from, date_to, username, action, outcome)
+    rows = audit_logger.list_logs(**filters, limit=page_size, offset=(page - 1) * page_size)
+    return {
+        "success": True,
+        "data": rows,
+        "pagination": {"page": page, "page_size": page_size, "total": rows[0]["total_count"] if rows else 0},
+        "retention_days": log_retention_days,
+    }
+
+
+@app.get("/api/admin/audit-logs/export.csv")
+def export_audit_logs(
+    source: str = "all", date_from: date | None = None, date_to: date | None = None,
+    username: str | None = None, action: str | None = None, outcome: str | None = None,
+    user=Depends(get_current_user),
+):
+    _require_admin(user)
+    filters = _audit_log_filters(source, date_from, date_to, username, action, outcome)
+    rows = audit_logger.list_logs(**filters, limit=50_000, offset=0)
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(["วันเวลา", "ประเภท", "ชื่อผู้ใช้", "สิทธิ์", "เหตุการณ์", "ทรัพยากร", "รหัสรายการ", "ผลลัพธ์", "IP", "Browser / อุปกรณ์", "Request ID", "รายละเอียด"])
+    for row in rows:
+        writer.writerow([
+            row["occurred_at"].astimezone(timezone(timedelta(hours=7))).strftime("%Y-%m-%d %H:%M:%S"),
+            "กิจกรรมผู้ใช้" if row["log_type"] == "audit" else "การเข้าใช้งาน",
+            _csv_safe(row.get("username")), _csv_safe(row.get("role")), _csv_safe(row.get("action")),
+            _csv_safe(row.get("resource_type")), _csv_safe(row.get("resource_id")),
+            "สำเร็จ" if row.get("outcome") == "SUCCESS" else "ไม่สำเร็จ",
+            _csv_safe(row.get("ip_address")), _csv_safe(row.get("user_agent")),
+            _csv_safe(row.get("request_id")), _csv_safe(json.dumps(row.get("details") or {}, ensure_ascii=False, default=str)),
+        ])
+    audit_logger.log(user["id"], "EXPORT_AUDIT_LOG_CSV", "audit_log", None, {"source": source, "row_count": len(rows)})
+    filename = f"payflow_logs_{datetime.now(timezone.utc).strftime('%Y%m%d')}.csv"
+    return StreamingResponse(
+        iter(["\ufeff" + output.getvalue()]), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"', "X-Content-Type-Options": "nosniff"},
+    )
 
 
 @app.get("/api/announcements")
@@ -948,6 +1103,7 @@ def submit_access_request(token: str, request: AccessRequestSubmit):
             request.employee.model_dump(mode="json"),
             request.position_name, request.organization_name,
         )
+        audit_logger.log(None, "SUBMIT_ACCESS_REQUEST", "access_request", None, {}, actor_username=request.username, actor_role="applicant")
         return {"success": True, "message": "ส่งคำขอเรียบร้อยแล้ว"}
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error))

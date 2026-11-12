@@ -111,6 +111,12 @@ class AuthService:
         }
         return jwt.encode(payload, self.secret, algorithm=TOKEN_ALGORITHM)
 
+    def end_session(self, user_id, session_id):
+        self.db.execute(
+            "UPDATE public.users SET current_session_id = NULL WHERE id = %s AND current_session_id = %s",
+            (user_id, session_id),
+        )
+
     def decode_token(self, token):
         try:
             return jwt.decode(token, self.secret, algorithms=[TOKEN_ALGORITHM])
@@ -240,7 +246,6 @@ class AuthService:
                 cursor.execute("DELETE FROM public.payroll_batch_employee_exclusions WHERE employee_id = %s", (employee_id,))
                 cursor.execute("DELETE FROM public.user_invites WHERE id IN (SELECT invite_id FROM public.access_requests WHERE employee_id = %s)", (employee_id,))
                 cursor.execute("DELETE FROM public.access_requests WHERE employee_id = %s", (employee_id,))
-            cursor.execute("DELETE FROM public.audit_logs WHERE (entity_type = 'user' AND entity_id = %s) OR actor_user_id = %s", (str(user_id), user_id))
             cursor.execute("DELETE FROM public.login_failures WHERE username = %s", (username,))
             # Clear every ownership/audit reference to the account.  Payroll
             # periods and batches are shared department records, so deleting the

@@ -16,12 +16,13 @@ import {
 } from './api/employees'
 import { createPosition, getPositions, type Position } from './api/positions'
 import { getAppData } from './api/bootstrap'
-import { checkCurrentSession, clearAccessToken, loginWithDatabase, type AuthUser } from './api/auth'
+import { checkCurrentSession, clearAccessToken, loginWithDatabase, logoutCurrentSession, type AuthUser } from './api/auth'
 import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, updatePayrollApprovalPermission, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, restorePayrollBatchVersion, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
 import { createPayItemType, renamePayItemType, savePayrollBatchColumns, type PayItemType } from './api/payItemTypes'
 import { closeAnnouncement, createAnnouncement, getAnnouncementSnapshot, getAnnouncements, getSystemReleaseId, type SystemAnnouncement } from './api/announcements'
+import { exportAuditLogsCsv, getAuditLogs, type AuditLogFilters, type AuditLogRow } from './api/auditLogs'
 
 const SYSTEM_UPDATE_EVENT = 'payflow:before-system-update'
 type SystemUpdateEventDetail = { register: (saveTask: Promise<boolean>) => void }
@@ -90,6 +91,7 @@ type Page =
   | 'payslip-status'
   | 'annual-tax'
   | 'admin-users'
+  | 'admin-logs'
 
 interface Employee {
   id: string
@@ -847,6 +849,7 @@ function Sidebar({ role, page, setPage, canApprovePayroll }: { role: Role; page:
     { id: 'payslip-status',label: 'สถานะการส่งอีเมล', icon: '📨' },
     { id: 'annual-tax',    label: 'รายงาน', icon: '📊' },
     { id: 'admin-users',   label: 'จัดการผู้ใช้งาน', icon: '👤' },
+    { id: 'admin-logs',    label: 'บันทึกการใช้งาน', icon: '🛡️' },
   ]
   const navItems = role === 'hr' ? hrNav : role === 'director' ? dirNav : adminNav
 
@@ -4972,6 +4975,97 @@ function ReportsPage({ periods }: { periods: PayrollPeriod[] }) {
   )
 }
 
+// ─── Compliance logs (Admin only) ────────────────────────────────────────────
+
+const AUDIT_ACTION_LABELS: Record<string, string> = {
+  LOGIN: 'เข้าสู่ระบบ', LOGOUT: 'ออกจากระบบ', LOGIN_FAILED: 'เข้าสู่ระบบไม่สำเร็จ', SUBMIT_ACCESS_REQUEST: 'ส่งคำขอใช้งาน', CREATE: 'เพิ่มข้อมูล', UPDATE: 'แก้ไขข้อมูล',
+  UPDATE_STATUS: 'เปลี่ยนสถานะพนักงาน', UPDATE_EMAIL: 'แก้ไขอีเมล', CREATE_USER: 'สร้างบัญชีผู้ใช้',
+  RESET_PASSWORD: 'รีเซ็ตรหัสผ่าน', CHANGE_PASSWORD: 'เปลี่ยนรหัสผ่าน', DELETE_USER_AND_EMPLOYEE: 'ลบบัญชีและพนักงาน',
+  DEACTIVATE_USER: 'ปิดบัญชี', ACTIVATE_USER: 'เปิดบัญชี', CREATE_INVITE: 'สร้างคำเชิญ',
+  APPROVE_ACCESS_REQUEST: 'อนุมัติคำขอใช้งาน', REJECT_ACCESS_REQUEST: 'ไม่อนุมัติคำขอใช้งาน',
+  CREATE_OR_OPEN: 'สร้างหรือเปิดรอบเงินเดือน', DELETE_PAYROLL_PERIOD: 'ลบรอบเงินเดือน',
+  CREATE_PAYROLL_REVISION: 'สร้างฉบับแก้ไข', SAVE_ITEMS: 'บันทึกตารางเงินเดือน', SUBMIT: 'ส่งอนุมัติ',
+  APPROVE: 'อนุมัติเงินเดือน', REJECT: 'ส่งกลับแก้ไข', SEND_EMAIL: 'ส่งสลิปเงินเดือน',
+  CREATE_PAY_ITEM_TYPE: 'เพิ่มประเภทรายการ', RENAME_PAY_ITEM_TYPE: 'แก้ชื่อประเภทรายการ',
+  UPDATE_PAYROLL_COLUMNS: 'แก้คอลัมน์ตาราง', CREATE_ANNOUNCEMENT: 'สร้างประกาศ',
+  DELETE_ANNOUNCEMENT: 'ลบประกาศ', EXPORT_AUDIT_LOG_CSV: 'ส่งออกบันทึก CSV',
+}
+
+function localDateInput(date: Date) {
+  const offset = date.getTimezoneOffset() * 60_000
+  return new Date(date.getTime() - offset).toISOString().slice(0, 10)
+}
+
+function AdminAuditLogs({ showToast }: { showToast: (msg: string, type?: 'success' | 'error' | 'info') => void }) {
+  const today = new Date()
+  const weekAgo = new Date(today); weekAgo.setDate(weekAgo.getDate() - 7)
+  const initialFilters: AuditLogFilters = { source: 'all', date_from: localDateInput(weekAgo), date_to: localDateInput(today), username: '', action: '', outcome: '' }
+  const [draft, setDraft] = useState<AuditLogFilters>(initialFilters)
+  const [filters, setFilters] = useState<AuditLogFilters>(initialFilters)
+  const [rows, setRows] = useState<AuditLogRow[]>([])
+  const [total, setTotal] = useState(0)
+  const [retentionDays, setRetentionDays] = useState(90)
+  const [pageNumber, setPageNumber] = useState(1)
+  const [loading, setLoading] = useState(true)
+  const [exporting, setExporting] = useState(false)
+  const [error, setError] = useState('')
+  const [selected, setSelected] = useState<AuditLogRow | null>(null)
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('')
+    try {
+      const result = await getAuditLogs(filters, pageNumber)
+      setRows(result.rows); setTotal(result.total); setRetentionDays(result.retentionDays)
+    } catch (loadError) {
+      setRows([]); setError(loadError instanceof Error ? loadError.message : 'โหลดบันทึกการใช้งานไม่สำเร็จ')
+    } finally { setLoading(false) }
+  }, [filters, pageNumber])
+  useEffect(() => { void load() }, [load])
+
+  const applyFilters = () => { setPageNumber(1); setFilters({ ...draft }) }
+  const resetFilters = () => { setDraft(initialFilters); setPageNumber(1); setFilters(initialFilters) }
+  const exportCsv = async () => {
+    if (exporting) return
+    setExporting(true)
+    try { await exportAuditLogsCsv(filters); showToast('ส่งออกไฟล์ CSV เรียบร้อยแล้ว', 'success') }
+    catch (exportError) { showToast(exportError instanceof Error ? exportError.message : 'ส่งออก CSV ไม่สำเร็จ', 'error') }
+    finally { setExporting(false) }
+  }
+  const pages = Math.max(1, Math.ceil(total / 100))
+  const actionLabel = (row: AuditLogRow) => row.log_type === 'access' ? row.action : (AUDIT_ACTION_LABELS[row.action] ?? row.action)
+  const roleLabel = (value: string | null) => value === 'admin' ? 'แอดมิน' : value === 'director' ? 'ผู้บริหาร' : value === 'hr' ? 'พนักงานฝ่ายธุรการ' : '–'
+
+  return <div className="anim">
+    <PageHeader title="บันทึกการใช้งานระบบ" subtitle={`ตรวจสอบการเข้าใช้งานและกิจกรรมสำคัญ ระบบเก็บข้อมูล ${retentionDays} วัน`} actions={<button className="btn btn-primary" aria-busy={exporting} disabled={exporting || loading} onClick={() => void exportCsv()}><BusyLabel busy={exporting} label="กำลังส่งออก…">⬇ ส่งออก CSV</BusyLabel></button>} />
+    <div className="card" style={{ padding: 16, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 12, alignItems: 'end' }}>
+        <FormField label="ตั้งแต่วันที่"><input className="inp" type="date" value={draft.date_from} onChange={event => setDraft(current => ({ ...current, date_from: event.target.value }))} /></FormField>
+        <FormField label="ถึงวันที่"><input className="inp" type="date" value={draft.date_to} onChange={event => setDraft(current => ({ ...current, date_to: event.target.value }))} /></FormField>
+        <FormField label="ประเภท"><select className="inp" value={draft.source} onChange={event => setDraft(current => ({ ...current, source: event.target.value as AuditLogFilters['source'] }))}><option value="all">ทั้งหมด</option><option value="audit">กิจกรรมผู้ใช้</option><option value="access">การเข้าใช้งาน</option></select></FormField>
+        <FormField label="ผลลัพธ์"><select className="inp" value={draft.outcome} onChange={event => setDraft(current => ({ ...current, outcome: event.target.value as AuditLogFilters['outcome'] }))}><option value="">ทั้งหมด</option><option value="SUCCESS">สำเร็จ</option><option value="FAILED">ไม่สำเร็จ</option></select></FormField>
+        <FormField label="ชื่อผู้ใช้"><input className="inp" value={draft.username} onChange={event => setDraft(current => ({ ...current, username: event.target.value }))} placeholder="ค้นหาชื่อผู้ใช้" /></FormField>
+        <FormField label="เหตุการณ์"><input className="inp" value={draft.action} onChange={event => setDraft(current => ({ ...current, action: event.target.value }))} placeholder="เช่น LOGIN หรือ SAVE" /></FormField>
+      </div>
+      <div className="flex justify-end gap-2" style={{ marginTop: 14 }}><button className="btn btn-ghost" onClick={resetFilters}>ล้างตัวกรอง</button><button className="btn btn-secondary" disabled={loading} onClick={applyFilters}>ค้นหา</button></div>
+    </div>
+    {error && <div className="card" style={{ padding: 16, marginBottom: 16, color: '#B91C1C', background: '#FFF7F7' }}>{error} <button className="btn btn-ghost btn-xs" onClick={() => void load()}>ลองใหม่</button></div>}
+    <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+      <div className="table-scroll"><table className="tbl" style={{ minWidth: 1120 }}><thead><tr><th>วันเวลา</th><th>ประเภท</th><th>ผู้ใช้งาน</th><th>สิทธิ์</th><th>เหตุการณ์</th><th>ผลลัพธ์</th><th>IP Address</th><th>รายละเอียด</th></tr></thead><tbody>
+        {loading ? <tr><td colSpan={8} style={{ textAlign: 'center', padding: 30 }}><span className="btn-spinner" /> กำลังโหลด…</td></tr> : rows.length === 0 ? <tr><td colSpan={8} style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>ไม่พบบันทึกตามตัวกรอง</td></tr> : rows.map(row => <tr key={row.id}>
+          <td style={{ whiteSpace: 'nowrap' }}>{new Date(row.occurred_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'medium' })}</td>
+          <td><span className="badge" style={{ background: row.log_type === 'audit' ? '#F1ECFF' : '#EAF5FF', color: row.log_type === 'audit' ? '#6C45B8' : '#24658E' }}>{row.log_type === 'audit' ? 'กิจกรรม' : 'การเข้าใช้'}</span></td>
+          <td style={{ fontWeight: 600 }}>{row.username || 'ไม่ทราบบัญชี'}</td><td>{roleLabel(row.role)}</td>
+          <td style={{ maxWidth: 310, wordBreak: 'break-word' }}>{actionLabel(row)}</td>
+          <td><span className={`badge ${row.outcome === 'SUCCESS' ? 'badge-approved' : 'badge-rejected'}`}>{row.outcome === 'SUCCESS' ? 'สำเร็จ' : 'ไม่สำเร็จ'}</span></td>
+          <td style={{ fontFamily: 'monospace' }}>{row.ip_address || '–'}</td>
+          <td><button className="btn btn-ghost btn-xs" onClick={() => setSelected(row)}>ดูรายละเอียด</button></td>
+        </tr>)}</tbody></table></div>
+      <div className="flex items-center justify-between" style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', fontSize: 12.5, color: 'var(--text-secondary)' }}><span>ทั้งหมด {total.toLocaleString('th-TH')} รายการ</span><div className="flex items-center gap-2"><button className="btn btn-ghost btn-xs" disabled={pageNumber <= 1 || loading} onClick={() => setPageNumber(current => current - 1)}>← ก่อนหน้า</button><span>หน้า {pageNumber}/{pages}</span><button className="btn btn-ghost btn-xs" disabled={pageNumber >= pages || loading} onClick={() => setPageNumber(current => current + 1)}>ถัดไป →</button></div></div>
+    </div>
+    {selected && <Modal title="รายละเอียดบันทึกการใช้งาน" size="lg" onClose={() => setSelected(null)}><div style={{ display: 'grid', gridTemplateColumns: '130px minmax(0,1fr)', gap: '10px 16px', fontSize: 13 }}><span style={{ color: 'var(--text-secondary)' }}>เหตุการณ์</span><strong>{actionLabel(selected)}</strong><span style={{ color: 'var(--text-secondary)' }}>ทรัพยากร</span><span>{selected.resource_type}{selected.resource_id ? ` #${selected.resource_id}` : ''}</span><span style={{ color: 'var(--text-secondary)' }}>IP Address</span><strong style={{ fontFamily: 'monospace' }}>{selected.ip_address || '–'}</strong><span style={{ color: 'var(--text-secondary)' }}>Request ID</span><span style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{selected.request_id || '–'}</span><span style={{ color: 'var(--text-secondary)' }}>Browser / อุปกรณ์</span><span style={{ wordBreak: 'break-word' }}>{selected.user_agent || '–'}</span><span style={{ color: 'var(--text-secondary)' }}>ข้อมูลเพิ่มเติม</span><pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', padding: 12, borderRadius: 8, background: '#F7F7FA', fontSize: 12 }}>{JSON.stringify(selected.details || {}, null, 2)}</pre></div></Modal>}
+  </div>
+}
+
 // ─── Admin Users ──────────────────────────────────────────────────────────────
 
 function AdminUsers({ employees, showToast, currentUserId, onCurrentApprovalPermissionChanged }: { employees: DatabaseEmployee[]; showToast: (msg: string, type?: 'success' | 'error') => void; currentUserId: number | null; onCurrentApprovalPermissionChanged: (enabled: boolean) => void }) {
@@ -5622,7 +5716,7 @@ export default function App() {
     setLoginNotice(''); setCurrentUserId(id); setUserName(name); setAccountUsername(username); setRole(r); setUserDepartment(department); setCanApprovePayroll(canApprove); setLoggedIn(true); setPage('dashboard')
   }
 
-  const handleLogout = () => { clearAccessToken(); setProfileMenuOpen(false); setCurrentUserId(null); setCanApprovePayroll(false); setLoggedIn(false); setPage('login' as Page) }
+  const handleLogout = () => { void logoutCurrentSession(); clearAccessToken(); setProfileMenuOpen(false); setCurrentUserId(null); setCanApprovePayroll(false); setLoggedIn(false); setPage('login' as Page) }
 
   useEffect(() => {
     if (!loggedIn) return
@@ -5698,6 +5792,7 @@ export default function App() {
     'payslip-status': 'สถานะการส่งอีเมล', 'director-approvals': 'อนุมัติเงินเดือน',
     'annual-tax': 'รายงาน',
     'admin-users': 'จัดการผู้ใช้งาน', 'period-detail': 'รายละเอียดรอบเงินเดือน',
+    'admin-logs': 'บันทึกการใช้งานระบบ',
     'dept-table': 'รายละเอียดรอบเงินเดือน', 'director-detail': 'รายละเอียดการอนุมัติ',
     'employee-form': 'ข้อมูลพนักงาน',
   }
@@ -5786,6 +5881,7 @@ export default function App() {
             onManageEmployees={() => setPage('employees')} />}
           {page === 'annual-tax' && <CombinedReportsPage role={role} periods={visiblePeriods} departments={visibleDepartments} organizations={organizations} userDepartment={userDepartment} showToast={showToast} />}
           {page === 'admin-users' && <AdminUsers employees={databaseEmployees} showToast={showToast} currentUserId={currentUserId} onCurrentApprovalPermissionChanged={setCanApprovePayroll} />}
+          {page === 'admin-logs' && role === 'admin' && <AdminAuditLogs showToast={showToast} />}
         </main>
       </div>
 

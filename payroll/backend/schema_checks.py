@@ -4,6 +4,8 @@ REQUIRED_COLUMNS = {
     "payroll_department_batches": {"edit_version", "last_edited_at", "last_edited_by_id"},
     "payroll_change_notes": {"department_batch_id", "employee_id", "field_code", "reason"},
     "payslip_email_deliveries": {"payroll_item_id", "status", "updated_at"},
+    "audit_logs": {"actor_username", "outcome", "ip_address", "request_id"},
+    "access_logs": {"username", "ip_address", "path", "status_code", "request_id", "occurred_at"},
 }
 
 

@@ -5415,11 +5415,11 @@ function InvitePage({ token }: { token: string }) {
     if (!form.base_salary) invalid.add('base_salary')
     if (form.prefix === 'OTHER' && !form.custom_prefix.trim()) invalid.add('custom_prefix')
     if (form.employee_type === 'OTHER' && !form.employee_type_other.trim()) invalid.add('employee_type_other')
-    if (form.username.trim().length < 3) invalid.add('username')
-    if (form.password.length < 8) invalid.add('password')
-    if (form.confirm_password !== form.password) invalid.add('confirm_password')
+    if (form.username.length < 3 || !/^[A-Za-z0-9._-]+$/.test(form.username)) invalid.add('username')
+    if (form.password.length < 8 || !/^[\x21-\x7E]+$/.test(form.password)) invalid.add('password')
+    if (form.confirm_password !== form.password || !/^[\x21-\x7E]+$/.test(form.confirm_password)) invalid.add('confirm_password')
     setInvalidFields(invalid)
-    if (invalid.size) { setError('กรุณาตรวจสอบช่องสีแดงและกรอกข้อมูลที่จำเป็นให้ถูกต้อง'); return }
+    if (invalid.size) { setError('กรุณาตรวจสอบช่องสีแดง โดยชื่อผู้ใช้และรหัสผ่านต้องไม่มีภาษาไทยหรือช่องว่าง'); return }
     setSaving(true)
     try {
       await submitInvite(token, { username: form.username, password: form.password, employee: {
@@ -5448,7 +5448,7 @@ function InvitePage({ token }: { token: string }) {
       <div style={{ marginTop: -8, marginBottom: 24 }}><FormField label="หน่วยงาน (ไม่บังคับ)"><input className="inp" list="invite-organization-options" value={form.organization_name} onChange={e => set('organization_name', e.target.value)} /><datalist id="invite-organization-options">{invite.organizations.filter(organization => organization.is_active).map(organization => <option key={organization.id} value={organization.name} />)}</datalist></FormField></div>
       <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลเงินเดือน</div>
       <div className="invite-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16 }}>{field('base_salary','ฐานเงินเดือน (บาท)','number',true,{ min: 0, step: '0.01' })}{field('bank_name','ธนาคาร')}{field('bank_account_no','เลขบัญชีธนาคาร')}</div>
-      <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>สร้างบัญชี</div><div className="invite-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16 }}>{field('username','ชื่อผู้ใช้','text',true)}{passwordField('password','รหัสผ่าน',showPassword,setShowPassword)}{passwordField('confirm_password','ยืนยันรหัสผ่าน',showConfirmPassword,setShowConfirmPassword)}</div>
+      <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>สร้างบัญชี</div><div className="invite-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16 }}>{field('username','ชื่อผู้ใช้','text',true,{ pattern: '[A-Za-z0-9._-]+', title: 'ใช้ภาษาอังกฤษ ตัวเลข จุด ขีดกลาง หรือขีดล่างเท่านั้น ห้ามเว้นวรรค' })}{passwordField('password','รหัสผ่าน',showPassword,setShowPassword)}{passwordField('confirm_password','ยืนยันรหัสผ่าน',showConfirmPassword,setShowConfirmPassword)}</div><div style={{ marginTop: 8, color: 'var(--text-secondary)', fontSize: 12 }}>ชื่อผู้ใช้และรหัสผ่านใช้ภาษาอังกฤษ ตัวเลข หรือสัญลักษณ์เท่านั้น และห้ามเว้นวรรค</div>
       <button aria-busy={saving} disabled={saving} type="submit" style={{ marginTop: 26, width: '100%', border: 0, borderRadius: 10, padding: 13, background: '#7C4DDB', color: 'white', fontWeight: 700, fontSize: 15, display: 'inline-flex', justifyContent: 'center', alignItems: 'center', gap: 6, cursor: saving ? 'progress' : 'pointer' }}><BusyLabel busy={saving} label="กำลังส่งคำขอ…">ส่งคำขอให้แอดมินตรวจสอบ</BusyLabel></button>
     </form>}
   </div></div>

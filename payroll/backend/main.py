@@ -551,12 +551,34 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=255)
 
 
+def _validate_new_username(value: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", value):
+        raise ValueError("ชื่อผู้ใช้ต้องเป็นภาษาอังกฤษ ตัวเลข จุด ขีดกลาง หรือขีดล่างเท่านั้น และห้ามเว้นวรรค")
+    return value
+
+
+def _validate_new_password(value: str) -> str:
+    if not re.fullmatch(r"[\x21-\x7E]+", value):
+        raise ValueError("รหัสผ่านต้องใช้อักษรภาษาอังกฤษ ตัวเลข หรือสัญลักษณ์เท่านั้น และห้ามเว้นวรรค")
+    return value
+
+
 class UserCreateRequest(BaseModel):
     username: str = Field(min_length=3, max_length=100)
     temporary_password: str = Field(min_length=8, max_length=255)
     employee_id: int
     role: str
     can_approve_payroll: bool = False
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value):
+        return _validate_new_username(value)
+
+    @field_validator("temporary_password")
+    @classmethod
+    def validate_temporary_password(cls, value):
+        return _validate_new_password(value)
 
     @field_validator("role")
     @classmethod
@@ -569,6 +591,11 @@ class UserCreateRequest(BaseModel):
 class PasswordResetRequest(BaseModel):
     temporary_password: str = Field(min_length=8, max_length=255)
 
+    @field_validator("temporary_password")
+    @classmethod
+    def validate_temporary_password(cls, value):
+        return _validate_new_password(value)
+
 
 class UserPayrollApprovalUpdate(BaseModel):
     enabled: bool
@@ -577,6 +604,11 @@ class UserPayrollApprovalUpdate(BaseModel):
 class PasswordChangeRequest(BaseModel):
     current_password: str = Field(min_length=1, max_length=255)
     new_password: str = Field(min_length=8, max_length=255)
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value):
+        return _validate_new_password(value)
 
 
 class InviteCreateRequest(BaseModel):
@@ -612,6 +644,16 @@ class AccessRequestSubmit(BaseModel):
     position_name: str | None = Field(default=None, max_length=255)
     organization_name: str | None = Field(default=None, max_length=255)
     employee: EmployeeSave
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value):
+        return _validate_new_username(value)
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value):
+        return _validate_new_password(value)
 
     @model_validator(mode="after")
     def validate_required_invite_employee_data(self):

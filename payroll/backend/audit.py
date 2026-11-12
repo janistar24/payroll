@@ -114,7 +114,15 @@ class AuditLogger:
                        CASE WHEN status_code < 400 THEN 'SUCCESS' ELSE 'FAILED' END,
                        ip_address, user_agent, request_id::text,
                        jsonb_build_object('status_code', status_code, 'duration_ms', duration_ms)
-                  FROM public.access_logs
+                  FROM public.access_logs access
+                 WHERE NOT (
+                       access.status_code < 400
+                   AND access.method IN ('POST','PUT','PATCH','DELETE')
+                   AND EXISTS (
+                       SELECT 1 FROM public.audit_logs audit
+                        WHERE audit.request_id = access.request_id
+                   )
+                 )
             ), filtered AS (
                 SELECT * FROM combined{where}
             )

@@ -5032,7 +5032,18 @@ function AdminAuditLogs({ showToast }: { showToast: (msg: string, type?: 'succes
     finally { setExporting(false) }
   }
   const pages = Math.max(1, Math.ceil(total / 100))
-  const actionLabel = (row: AuditLogRow) => row.log_type === 'access' ? row.action : (AUDIT_ACTION_LABELS[row.action] ?? row.action)
+  const actionLabel = (row: AuditLogRow) => {
+    if (row.log_type === 'access') return row.action
+    const employeeName = typeof row.details?.employee_name === 'string' ? row.details.employee_name : ''
+    if (row.action === 'CREATE' && row.resource_type === 'employee') return `เพิ่มพนักงาน${employeeName ? ` ${employeeName}` : ''}`
+    if (['UPDATE', 'UPDATE_STATUS', 'UPDATE_EMAIL'].includes(row.action) && row.resource_type === 'employee') {
+      const fields = Array.isArray(row.details?.changed_fields)
+        ? row.details.changed_fields.map(item => typeof item === 'object' && item !== null && 'label' in item ? String(item.label) : '').filter(Boolean)
+        : []
+      return `แก้ไขข้อมูลพนักงาน${employeeName ? ` ${employeeName}` : ''}${fields.length ? `: ${fields.join(', ')}` : ''}`
+    }
+    return AUDIT_ACTION_LABELS[row.action] ?? row.action
+  }
   const roleLabel = (value: string | null) => value === 'admin' ? 'แอดมิน' : value === 'director' ? 'ผู้บริหาร' : value === 'hr' ? 'พนักงานฝ่ายธุรการ' : '–'
 
   return <div className="anim">

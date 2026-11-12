@@ -1162,6 +1162,38 @@ def _employee_database_error(error):
     )
 
 
+EMPLOYEE_AUDIT_FIELDS = {
+    "national_id": "เลขประจำตัวประชาชน", "prefix": "คำนำหน้า", "first_name": "ชื่อ",
+    "last_name": "นามสกุล", "department_id": "ฝ่าย/กอง", "organization_id": "หน่วยงาน",
+    "position_id": "ตำแหน่ง", "employee_type": "ประเภทพนักงาน",
+    "employee_type_other": "ประเภทพนักงานอื่น", "status": "สถานะ", "birth_date": "วันเดือนปีเกิด",
+    "start_date": "วันที่เริ่มงาน", "end_date": "วันที่สิ้นสุด", "email": "อีเมล", "phone": "โทรศัพท์",
+    "bank_name": "ธนาคาร", "bank_account_no": "เลขบัญชีธนาคาร", "base_salary": "ฐานเงินเดือน",
+}
+EMPLOYEE_SENSITIVE_AUDIT_FIELDS = {"national_id", "birth_date", "email", "phone", "bank_account_no", "base_salary"}
+EMPLOYEE_RELATION_DISPLAY_FIELDS = {
+    "department_id": "department_name", "organization_id": "organization_name", "position_id": "position_name",
+}
+
+
+def _employee_name(employee):
+    return f"{employee.get('prefix') or ''}{employee.get('first_name') or ''} {employee.get('last_name') or ''}".strip()
+
+
+def _employee_changes(before, after):
+    changes = []
+    for field, label in EMPLOYEE_AUDIT_FIELDS.items():
+        if before.get(field) == after.get(field):
+            continue
+        item = {"field": field, "label": label}
+        if field not in EMPLOYEE_SENSITIVE_AUDIT_FIELDS:
+            display_field = EMPLOYEE_RELATION_DISPLAY_FIELDS.get(field, field)
+            item["old_value"] = before.get(display_field)
+            item["new_value"] = after.get(display_field)
+        changes.append(item)
+    return changes
+
+
 @app.get("/api/employees/{employee_id}")
 def get_employee(employee_id: int, user=Depends(get_current_user)):
     department_id = _department_scope(user)
@@ -1178,13 +1210,10 @@ def create_employee(request: EmployeeSave, user=Depends(get_current_user)):
     try:
         _require_employee_creation_role(user)
         employee_id = employees_service.create(request)
-        try:
-            audit_logger.log(user["id"], "CREATE", "employee", employee_id, {"employee_code": request.employee_code})
-        except Exception:
-            logging.exception("Unable to record employee creation audit event")
         read_error, saved_employee = employees_service.read(employee_id)
         if read_error["Is Error"]:
             raise ValueError("บันทึกแล้วแต่ไม่สามารถอ่านข้อมูลพนักงานกลับมาได้")
+        audit_logger.log(user["id"], "CREATE", "employee", employee_id, {"employee_name": _employee_name(saved_employee)})
         return {"success": True, "data": saved_employee}
     except Exception as error:
         _employee_database_error(error)
@@ -1202,13 +1231,13 @@ def update_employee(employee_id: int, request: EmployeeSave, user=Depends(get_cu
             raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์แก้ไขพนักงานฝ่ายอื่น")
         if not employees_service.update(employee_id, request):
             raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
-        try:
-            audit_logger.log(user["id"], "UPDATE", "employee", employee_id, {"employee_code": request.employee_code})
-        except Exception:
-            logging.exception("Unable to record employee update audit event")
         read_error, saved_employee = employees_service.read(employee_id)
         if read_error["Is Error"]:
             raise ValueError("บันทึกแล้วแต่ไม่สามารถอ่านข้อมูลพนักงานกลับมาได้")
+        changes = _employee_changes(current_employee, saved_employee)
+        audit_logger.log(user["id"], "UPDATE", "employee", employee_id, {
+            "employee_name": _employee_name(saved_employee), "changed_fields": changes,
+        })
         return {"success": True, "data": saved_employee}
     except HTTPException:
         raise
@@ -1226,7 +1255,10 @@ def update_employee_status(employee_id: int, request: EmployeeStatusUpdate, user
         raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์แก้ไขพนักงานฝ่ายอื่น")
     if not employees_service.update_status(employee_id, request.status):
         raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
-    audit_logger.log(user["id"], "UPDATE_STATUS", "employee", employee_id, {"status": request.status})
+    audit_logger.log(user["id"], "UPDATE_STATUS", "employee", employee_id, {
+        "employee_name": _employee_name(employee),
+        "changed_fields": [{"field": "status", "label": "สถานะ", "old_value": employee.get("status"), "new_value": request.status}],
+    })
     return {"success": True}
 
 
@@ -1240,7 +1272,10 @@ def update_employee_email(employee_id: int, request: EmployeeEmailUpdate, user=D
         raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์แก้ไขพนักงานฝ่ายอื่น")
     if not employees_service.update_email(employee_id, request.email):
         raise HTTPException(status_code=404, detail="ไม่พบพนักงาน")
-    audit_logger.log(user["id"], "UPDATE_EMAIL", "employee", employee_id, {"email": request.email})
+    audit_logger.log(user["id"], "UPDATE_EMAIL", "employee", employee_id, {
+        "employee_name": _employee_name(employee),
+        "changed_fields": [{"field": "email", "label": "อีเมล"}],
+    })
     return {"success": True, "data": {"email": request.email}}
 
 @app.get("/api/positions")

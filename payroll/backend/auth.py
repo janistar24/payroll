@@ -308,11 +308,35 @@ class AuthService:
         return dict(zip(cols,data[0]))
 
     def submit_access_request(self, token, username, password, employee_data, position_name=None, organization_name=None):
-        invite = self.validate_invite(token)
-        if invite["email"] and (employee_data.get("email") or "").strip().lower() != invite["email"]:
-            raise ValueError("อีเมลต้องตรงกับอีเมลที่ได้รับคำเชิญ")
         password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
         with self.db.transaction() as cursor:
+            # Re-check (and lock) the invite inside the transaction instead of
+            # trusting the earlier unlocked validate_invite() read. Without
+            # FOR UPDATE here, two submissions for the same invite (a
+            # double-click, a retried request after a dropped response, or a
+            # second manual attempt after the UI showed an error) can both
+            # pass the "not used yet" check before either commits, and both
+            # end up inserting an access_requests row -- which is exactly how
+            # duplicate applicant data was getting into the database even
+            # though the user was shown a failure/"already used" message.
+            # SELECT ... FOR UPDATE on a WHERE clause over a mutable column
+            # (used_at) makes the second request block until the first
+            # transaction commits, then re-evaluate the condition against the
+            # now-current row, so it correctly sees the invite as used.
+            cursor.execute(
+                """SELECT id, email, requested_role
+                     FROM public.user_invites
+                    WHERE token_hash = %s AND used_at IS NULL AND expires_at > NOW()
+                    FOR UPDATE""",
+                (token_hash,),
+            )
+            invite_row = cursor.fetchone()
+            if invite_row is None:
+                raise ValueError("ลิงก์เชิญไม่ถูกต้อง หมดอายุ หรือถูกใช้แล้ว")
+            invite = {"id": invite_row[0], "email": invite_row[1], "requested_role": invite_row[2]}
+            if invite["email"] and (employee_data.get("email") or "").strip().lower() != invite["email"]:
+                raise ValueError("อีเมลต้องตรงกับอีเมลที่ได้รับคำเชิญ")
             if position_name and position_name.strip():
                 normalized_position = " ".join(position_name.split())
                 cursor.execute("SELECT id FROM public.positions WHERE LOWER(BTRIM(name)) = LOWER(BTRIM(%s)) LIMIT 1", (normalized_position,))
@@ -346,6 +370,10 @@ class AuthService:
                 if previous_request[2] != "REJECTED":
                     raise ValueError("ชื่อผู้ใช้นี้มีคำขอที่กำลังดำเนินการอยู่")
                 cursor.execute("DELETE FROM public.user_invites WHERE id = %s", (previous_request[1],))
+            # Kept as a defense-in-depth check: with the invite now locked
+            # above, this should never find a row, but it costs nothing and
+            # guards against any other code path that might reuse an
+            # invite_id.
             cursor.execute("SELECT id FROM public.access_requests WHERE invite_id = %s", (invite["id"],))
             if cursor.fetchone() is not None:
                 raise ValueError("คำเชิญนี้ถูกส่งข้อมูลแล้ว")

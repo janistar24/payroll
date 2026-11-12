@@ -12,6 +12,7 @@ from decimal import Decimal
 
 import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -228,6 +229,22 @@ async def unexpected_error(request: Request, error: Exception):
         status_code=500,
         content={"detail": {"message": "ระบบขัดข้องชั่วคราว กรุณาลองใหม่อีกครั้ง"}},
     )
+
+@app.exception_handler(RequestValidationError)
+async def friendly_validation_errors(request: Request, error: RequestValidationError):
+    """Surface pydantic validation messages the same way other 4xx errors are
+    shaped (a plain string in `detail`), instead of FastAPI's default list of
+    raw error objects, which the frontend's error parsers cannot read and
+    silently replace with a generic failure message."""
+    errors = error.errors()
+    message = "ข้อมูลที่กรอกไม่ถูกต้อง กรุณาตรวจสอบและลองใหม่"
+    if errors:
+        raw_message = str(errors[0].get("msg", "")) or message
+        prefix = "Value error, "
+        message = raw_message[len(prefix):] if raw_message.startswith(prefix) else raw_message
+    return JSONResponse(status_code=422, content={"detail": message})
+
+
 
 @app.middleware("http")
 async def add_utf8_charset(request, call_next):

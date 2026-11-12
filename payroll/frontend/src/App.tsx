@@ -5392,12 +5392,18 @@ function InvitePage({ token }: { token: string }) {
   const [invite, setInvite] = useState<InviteData | null>(null)
   const [error, setError] = useState('')
   const [submitted, setSubmitted] = useState(false)
+  const [linkConsumed, setLinkConsumed] = useState(false)
   const [saving, setSaving] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
   const [invalidFields, setInvalidFields] = useState<Set<string>>(new Set())
   const [form, setForm] = useState<Record<string, string>>({ national_id: '', prefix: '', custom_prefix: '', first_name: '', last_name: '', department_id: '', position_name: '', organization_name: '', employee_type: 'CIVIL_SERVANT', employee_type_other: '', birth_date: '', start_date: '', end_date: '', email: '', phone: '', bank_name: '', bank_account_no: '', base_salary: '', username: '', password: '', confirm_password: '' })
   useEffect(() => { getInvite(token).then(data => { setInvite(data); setForm(current => ({ ...current, email: data.email })) }).catch(e => setError(e.message)) }, [token])
+  useEffect(() => {
+    if (!submitted) return
+    const timer = window.setTimeout(() => { window.location.href = '/' }, 4000)
+    return () => window.clearTimeout(timer)
+  }, [submitted])
   const set = (key: string, value: string) => {
     setForm(current => ({ ...current, [key]: value }))
     setInvalidFields(current => { const next = new Set(current); next.delete(key); return next })
@@ -5429,7 +5435,18 @@ function InvitePage({ token }: { token: string }) {
         bank_name: form.bank_name || null, bank_account_no: form.bank_account_no || null, base_salary: Number(form.base_salary || 0), employee_type_other: form.employee_type === 'OTHER' ? form.employee_type_other : null
       }, position_name: form.position_name, organization_name: form.organization_name })
       setSubmitted(true)
-    } catch (e) { setError(e instanceof Error ? e.message : 'ส่งคำขอไม่สำเร็จ') } finally { setSaving(false) }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'ส่งคำขอไม่สำเร็จ'
+      setError(message)
+      // These two messages mean the invite link is permanently spent (either
+      // this attempt just consumed it, or a previous attempt already did).
+      // Leaving the form active here is what let people keep clicking "submit"
+      // after seeing this exact error -- harmless now that the backend closes
+      // the race with a row lock, but still confusing, since nothing they do
+      // in the form can fix an already-used link. Lock the page instead so the
+      // only next step offered is asking the admin for a new link.
+      if (message.includes('ถูกใช้แล้ว') || message.includes('หมดอายุ') || message.includes('ถูกส่งข้อมูลแล้ว')) setLinkConsumed(true)
+    } finally { setSaving(false) }
   }
   const field = (key: string, label: string, type = 'text', required = false, extra?: React.InputHTMLAttributes<HTMLInputElement>) => <FormField label={required ? label : `${label} (ไม่บังคับ)`} required={required}><input required={required} aria-invalid={invalidFields.has(key)} className="inp" type={type} value={form[key]} onChange={e => set(key, e.target.value)} {...extra} /></FormField>
   const passwordField = (key: 'password' | 'confirm_password', label: string, visible: boolean, setVisible: (visible: boolean) => void) => <FormField label={label} required><div style={{ position: 'relative' }}><input required minLength={8} aria-invalid={invalidFields.has(key)} className="inp" type={visible ? 'text' : 'password'} value={form[key]} onChange={e => set(key, e.target.value)} style={{ paddingRight: 44 }} /><button type="button" onClick={() => setVisible(!visible)} aria-label={visible ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'} title={visible ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', border: 0, background: 'transparent', cursor: 'pointer', color: '#6B6480', display: 'grid', placeItems: 'center', padding: 5 }}><EyeIcon off={visible} /></button></div></FormField>
@@ -5438,7 +5455,7 @@ function InvitePage({ token }: { token: string }) {
     <div className="invite-header" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 22 }}><img src={takhliLogo} style={{ width: 46, height: 46, borderRadius: '50%' }} /><div><strong style={{ fontSize: 22 }}>PayFlow</strong><div style={{ color: '#746D84', fontSize: 13 }}>ลงทะเบียนขอเข้าใช้งานระบบ</div></div></div>
     {error && <div className="form-error-banner" role="alert">{error}</div>}
     {!invite && !error && <div>กำลังตรวจสอบลิงก์คำเชิญ…</div>}
-    {submitted ? <div style={{ textAlign: 'center', padding: '40px 0' }}><div style={{ fontSize: 42 }}>✓</div><h2>ส่งคำขอเรียบร้อย</h2><p style={{ color: '#6B7280' }}>แอดมินจะตรวจสอบข้อมูลพนักงานและกำหนดสิทธิ์ก่อนเปิดใช้งานบัญชี</p></div> : invite && <form noValidate className={invalidFields.size ? 'validation-show-errors' : ''} onSubmit={save}>
+    {linkConsumed ? <div style={{ textAlign: 'center', padding: '40px 0' }}><div style={{ fontSize: 42 }}>⚠️</div><h2>ลิงก์นี้ใช้งานไม่ได้แล้ว</h2><p style={{ color: '#6B7280' }}>ลิงก์คำเชิญนี้ถูกใช้ไปแล้วหรือหมดอายุ กรุณาติดต่อแอดมินเพื่อขอลิงก์ใหม่ ไม่ต้องกดส่งคำขอซ้ำที่หน้านี้</p></div> : submitted ? <div style={{ textAlign: 'center', padding: '40px 0' }}><div style={{ fontSize: 42 }}>✓</div><h2>ส่งคำขอเรียบร้อย</h2><p style={{ color: '#6B7280' }}>แอดมินจะตรวจสอบข้อมูลพนักงานและกำหนดสิทธิ์ก่อนเปิดใช้งานบัญชี ยังเข้าสู่ระบบไม่ได้จนกว่าจะได้รับการอนุมัติ</p><p style={{ color: '#9B94AC', fontSize: 13, marginTop: 4 }}>กำลังพาไปหน้าเข้าสู่ระบบ…</p><button type="button" onClick={() => { window.location.href = '/' }} style={{ marginTop: 18, border: 0, borderRadius: 10, padding: '10px 20px', background: '#7C4DDB', color: 'white', fontWeight: 700, fontSize: 14, cursor: 'pointer' }}>ไปหน้าเข้าสู่ระบบตอนนี้</button></div> : invite && <form noValidate className={invalidFields.size ? 'validation-show-errors' : ''} onSubmit={save}>
       <div style={{ background: '#F0ECFF', padding: '12px 14px', borderRadius: 10, marginBottom: 22, fontSize: 14 }}>{invite.email ? <>อีเมลคำเชิญ: <strong>{invite.email}</strong> · </> : <>ลิงก์คำเชิญทั่วไป · </>}สิทธิ์การใช้งานที่ต้องการ: <strong>{roleLabel(invite.requested_role)}</strong></div>
       <p style={{ color: '#737080', fontSize: 13, marginBottom: 20 }}><span style={{ color: '#EF4444' }}>*</span> จำเป็นต้องกรอก · ช่องที่ระบุ “ไม่บังคับ” สามารถเว้นได้</p>
       <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลส่วนตัว</div>

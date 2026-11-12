@@ -297,7 +297,7 @@ class AuthService:
         tokens = [secrets.token_urlsafe(32) for _ in range(quantity)]
         with self.db.transaction() as cursor:
             cursor.executemany(
-                "INSERT INTO public.user_invites (token_hash,email,requested_role,expires_at,created_by_id) VALUES (%s,%s,%s,NOW()+INTERVAL '7 days',%s)",
+                "INSERT INTO public.user_invites (token_hash,email,requested_role,expires_at,created_by_id) VALUES (%s,%s,%s,NOW()+INTERVAL '14 days',%s)",
                 [(hashlib.sha256(token.encode()).hexdigest(), normalized_email, role, actor_id) for token in tokens],
             )
         return tokens

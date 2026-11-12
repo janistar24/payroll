@@ -53,11 +53,15 @@ export async function closeAnnouncement(id: number): Promise<void> {
 }
 
 export async function getSystemReleaseId(): Promise<string> {
+  return (await getSystemReleaseSnapshot()).releaseId
+}
+
+export async function getSystemReleaseSnapshot(): Promise<{ releaseId: string; serverStartedAt: string }> {
   const backendRoot = API_URL.replace(/\/api\/?$/, '')
   const response = await fetch(`${backendRoot}/healthz`, { cache: 'no-store' })
   const body = await response.json().catch(() => null)
-  if (!response.ok || body?.status !== 'ok' || !body?.release_id) {
+  if (!response.ok || body?.status !== 'ok' || !body?.release_id || !body?.server_started_at) {
     throw new Error('ระบบเวอร์ชันใหม่ยังไม่พร้อมใช้งาน')
   }
-  return String(body.release_id)
+  return { releaseId: String(body.release_id), serverStartedAt: String(body.server_started_at) }
 }

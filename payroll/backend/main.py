@@ -55,6 +55,7 @@ bangkok_timezone = timezone(timedelta(hours=7))
 access_log_polling_paths = {"/api/auth/me", "/api/payroll-sync-version", "/api/announcements"}
 environment = os.getenv("APP_ENV", "development").lower()
 release_id = os.getenv("RAILWAY_GIT_COMMIT_SHA", "").strip() or str(uuid.uuid4())
+server_started_at = datetime.now(timezone.utc)
 allowed_origins = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if origin.strip()]
 trusted_hosts = [host.strip() for host in os.getenv("TRUSTED_HOSTS", "localhost,127.0.0.1").split(",") if host.strip()]
 trusted_proxy_ips = {ip.strip() for ip in os.getenv("TRUSTED_PROXY_IPS", "127.0.0.1,::1").split(",") if ip.strip()}
@@ -315,7 +316,7 @@ def healthcheck():
     except Exception as error:
         logging.exception("Healthcheck failed")
         raise HTTPException(status_code=503, detail="ระบบยังไม่พร้อมให้บริการ") from error
-    return {"status": "ok", "release_id": release_id}
+    return {"status": "ok", "release_id": release_id, "server_started_at": server_started_at}
 
 @app.get("/api/departments")
 def get_departments(user=Depends(get_current_user)):
@@ -753,10 +754,9 @@ def _require_payroll_role(user):
 
 def _department_scope(user):
     _require_payroll_role(user)
-    if user["role"] == "hr":
-        if user["department_id"] is None:
-            raise HTTPException(status_code=403, detail="บัญชีพนักงานฝ่ายธุรการยังไม่ได้ผูกกับฝ่าย")
-        return user["department_id"]
+    # The payroll team shares one live dataset. Department membership remains
+    # profile metadata rather than a visibility boundary, so incorrectly
+    # assigned records can always be found and corrected.
     return None
 
 
@@ -1088,7 +1088,7 @@ def create_invite(request: InviteCreateRequest, http_request: Request, user=Depe
     public_url = os.getenv("PUBLIC_APP_URL") or os.getenv("FRONTEND_URL") or "http://127.0.0.1:5173"
     invite_urls = [f"{public_url}/invite/{token}" for token in tokens]
     audit_logger.log(user["id"], "CREATE_INVITE", "user_invite", None, {"email": request.email or None, "requested_role": request.requested_role, "quantity": request.quantity})
-    return {"success": True, "data": {"invite_url": invite_urls[0], "invite_urls": invite_urls, "expires_in_days": 7}}
+    return {"success": True, "data": {"invite_url": invite_urls[0], "invite_urls": invite_urls, "expires_in_days": 14}}
 
 
 @app.get("/api/invites/{token}")
@@ -1578,15 +1578,9 @@ def create_payroll_period(request: PayrollPeriodCreate, user=Depends(get_current
     try:
         if user["role"] not in {"hr", "admin"}:
             raise HTTPException(status_code=403, detail="ไม่มีสิทธิ์สร้างรอบเงินเดือน")
-        own_department_id = _department_scope(user)
-        if user["role"] == "admin":
-            if request.department_id is None:
-                raise HTTPException(status_code=400, detail="กรุณาเลือกฝ่ายที่ต้องการจัดทำ")
-            department_id = request.department_id
-        else:
-            if request.department_id is not None and request.department_id != own_department_id:
-                raise HTTPException(status_code=403, detail="พนักงานฝ่ายธุรการสร้างรอบได้เฉพาะฝ่ายของตน")
-            department_id = own_department_id
+        if request.department_id is None:
+            raise HTTPException(status_code=400, detail="กรุณาเลือกฝ่ายที่ต้องการจัดทำ")
+        department_id = request.department_id
         result = payroll_workflow_service.create_or_get_department_batch(
             request.year, request.month, request.pay_date,
             request.note.strip() if request.note else None, user["id"], department_id
@@ -1614,7 +1608,9 @@ def delete_payroll_period(period_id: int, user=Depends(get_current_user)):
             cursor.execute("SELECT id, status FROM public.payroll_department_batches WHERE payroll_period_id = %s FOR UPDATE", (period_id,))
             batches = cursor.fetchall()
             if user["role"] == "hr":
-                department_id = _department_scope(user)
+                department_id = user.get("department_id")
+                if department_id is None:
+                    raise HTTPException(status_code=403, detail="บัญชีพนักงานฝ่ายธุรการยังไม่ได้ผูกกับฝ่าย จึงไม่สามารถลบรอบได้")
                 cursor.execute(
                     "SELECT id, status FROM public.payroll_department_batches WHERE payroll_period_id = %s AND department_id = %s FOR UPDATE",
                     (period_id, department_id),

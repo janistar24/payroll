@@ -21,7 +21,7 @@ import { activateSystemUser, approveAccessRequest, changeMyPassword, createSyste
 import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, restorePayrollBatchVersion, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
 import { createPayItemType, renamePayItemType, savePayrollBatchColumns, type PayItemType } from './api/payItemTypes'
-import { closeAnnouncement, createAnnouncement, getAnnouncementSnapshot, getAnnouncements, getSystemReleaseId, type SystemAnnouncement } from './api/announcements'
+import { closeAnnouncement, createAnnouncement, getAnnouncementSnapshot, getAnnouncements, getSystemReleaseId, getSystemReleaseSnapshot, type SystemAnnouncement } from './api/announcements'
 import { exportAuditLogsCsv, getAuditLogs, type AuditLogFilters, type AuditLogRow } from './api/auditLogs'
 
 const SYSTEM_UPDATE_EVENT = 'payflow:before-system-update'
@@ -217,6 +217,7 @@ const DEPARTMENTS = [
   'กองการศึกษา',
   'กองการประปา',
   'กองสวัสดิการสังคม',
+  'หน่วยตรวจสอบภายใน',
 ]
 
 const EMPLOYEES: Employee[] = [
@@ -1274,11 +1275,10 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
     ...(currentPeriod?.depts.map(department => department.department) ?? []),
   ])]
   useEffect(() => {
-    if (role === 'hr') return
     if (dashboardDepartment !== 'all' && !dashboardDepartmentNames.includes(dashboardDepartment)) {
       setDashboardDepartment('all')
     }
-  }, [role, dashboardDepartment, dashboardDepartmentNames.join('|')])
+  }, [dashboardDepartment, dashboardDepartmentNames.join('|')])
   const currentPeriodIndex = periods.findIndex(period => period.id === currentPeriod?.id)
   const prevPeriod = currentPeriodIndex >= 0 ? periods[currentPeriodIndex + 1] : undefined
   const dashboardYears = [...new Set(periods.map(period => period.year))].sort((a, b) => b - a)
@@ -1292,9 +1292,7 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
   const [isRecentPeriodsHighlighted, setIsRecentPeriodsHighlighted] = useState(false)
   const recentPeriodsRef = useRef<HTMLDivElement>(null)
   const recentPeriodsHighlightTimer = useRef<number | null>(null)
-  const reportDepartment = role === 'hr'
-    ? userDepartment ?? ''
-    : dashboardDepartment === 'all' ? '' : dashboardDepartment
+  const reportDepartment = dashboardDepartment === 'all' ? '' : dashboardDepartment
   const departmentsForReport = (period: PayrollPeriod) => reportDepartment
     ? period.depts.filter(department => department.department === reportDepartment)
     : period.depts
@@ -1496,8 +1494,8 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
         }}>
           {dashboardYears.map(year => <option key={year} value={year}>{year + 543}</option>)}
         </AppSelect>
-        <AppSelect className="inp" style={{ width: 230 }} value={role === 'hr' ? userDepartment ?? '' : dashboardDepartment} onChange={event => setDashboardDepartment(event.target.value)} disabled={role === 'hr'} aria-label="เลือกฝ่ายที่ต้องการดูรายงาน">
-          {role !== 'hr' && <option value="all">ทุกฝ่าย</option>}
+        <AppSelect className="inp" style={{ width: 230 }} value={dashboardDepartment} onChange={event => setDashboardDepartment(event.target.value)} aria-label="เลือกฝ่ายที่ต้องการดูรายงาน">
+          <option value="all">ทุกฝ่าย</option>
           {dashboardDepartmentNames.map(department => <option key={department} value={department}>{department}</option>)}
         </AppSelect>
       </div>
@@ -1625,11 +1623,9 @@ function Dashboard({ role, userName, userDepartment, periods, employees, departm
               {periods.slice(0, 6).map(period => {
                 // HR and the Director's selected report view describe one
                 // department, not an aggregate such as "remaining 1/6".
-                const scopedDepartment = role === 'hr'
-                  ? period.depts.find(department => department.department === userDepartment) ?? period.depts[0]
-                  : reportDepartment
-                    ? period.depts.find(department => department.department === reportDepartment)
-                    : undefined
+                const scopedDepartment = reportDepartment
+                  ? period.depts.find(department => department.department === reportDepartment)
+                  : undefined
                 const totals = scopedDepartment
                   ? (() => {
                       const departmentTotals = deptTotals(scopedDepartment)
@@ -1750,7 +1746,8 @@ function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActi
     setCreating(true)
     try {
       const gregorianYear = parseInt(createYear) - 543
-      const result = await createPayrollPeriod({ year: gregorianYear, month: parseInt(createMonth), pay_date: createPayDate, note: createNote, department_id: role === 'admin' ? Number(createDepartmentId) : undefined })
+      if (!createDepartmentId) throw new Error('กรุณาเลือกฝ่ายที่ต้องการจัดทำ')
+      const result = await createPayrollPeriod({ year: gregorianYear, month: parseInt(createMonth), pay_date: createPayDate, note: createNote, department_id: Number(createDepartmentId) })
       await reloadPayroll()
       setActivePeriodId(String(result.period_id))
       setActiveDeptId(String(result.batch_id))
@@ -1808,12 +1805,7 @@ function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActi
             <div key={p.id} className="card" style={{ padding: '20px 24px', cursor: 'pointer', transition: 'box-shadow 0.15s' }}
               onClick={() => {
                 setActivePeriodId(p.id)
-                if (role === 'hr' && p.depts[0]) {
-                  setActiveDeptId(p.depts[0].id)
-                  setPage('dept-table')
-                } else {
-                  setPage('period-detail')
-                }
+                setPage('period-detail')
               }}
               onMouseEnter={e => (e.currentTarget.style.boxShadow = 'var(--shadow-md)')}
               onMouseLeave={e => (e.currentTarget.style.boxShadow = 'var(--shadow-sm)')}>
@@ -1830,11 +1822,7 @@ function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActi
                     <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 18, color: '#1A1A1A' }}>{thbInt(Math.round(t.net))} บาท</div>
                   </div>
                   <div className="flex gap-2 flex-wrap justify-end" style={{ maxWidth: 220 }}>
-                    {role === 'hr' ? (
-                      p.depts[0] ? <StatusBadge s={p.depts[0].status} /> : null
-                    ) : (
-                      <span className={`badge badge-${periodStatus.type}`}>{periodStatus.label}</span>
-                    )}
+                    <span className={`badge badge-${periodStatus.type}`}>{periodStatus.label}</span>
                   </div>
                   {editingPeriods && (
                     <button type="button" className="btn btn-danger btn-xs" title="ลบรอบเงินเดือน" onClick={event => { event.stopPropagation(); setPeriodToDelete(p) }}>−</button>
@@ -1862,7 +1850,7 @@ function PeriodsPage({ periods, departments, setPage, setActivePeriodId, setActi
                 <input className="inp" type="number" min="2500" max="2700" value={createYear} onChange={e => setCreateYear(e.target.value)} />
               </div>
             </div>
-            {role === 'admin' && <FormField label="ฝ่ายที่ต้องการจัดทำ" required><AppSelect className="inp" value={createDepartmentId} onChange={event => setCreateDepartmentId(event.target.value)}><option value="">เลือกฝ่าย</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField>}
+            {(role === 'admin' || role === 'hr') && <FormField label="ฝ่ายที่ต้องการจัดทำ" required><AppSelect className="inp" value={createDepartmentId} onChange={event => setCreateDepartmentId(event.target.value)}><option value="" disabled>เลือกฝ่าย</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField>}
             <div>
               <label style={{ display: 'block', fontSize: 13, fontWeight: 600, marginBottom: 6 }}>วันที่จ่ายเงินเดือน (พ.ศ.) <span style={{ color: 'red' }}>*</span></label>
               <BuddhistDateInput value={createPayDate} onChange={setCreatePayDate} required />
@@ -4065,12 +4053,10 @@ function EmployeesPage({ employees, departments, positions, loading, error, role
       <div className="card" style={{ padding: '14px 18px', marginBottom: 14 }}>
         <div className="flex items-center gap-3">
           <input className="inp" style={{ maxWidth: 240 }} placeholder="ค้นหาชื่อพนักงาน..." value={search} onChange={e => setSearch(e.target.value)} />
-          {role !== 'hr' && (
-            <AppSelect className="inp" style={{ maxWidth: 220 }} value={filterDept} onChange={e => setFilterDept(e.target.value)}>
-              <option value="all">ทุกฝ่าย</option>
-              {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </AppSelect>
-          )}
+          <AppSelect className="inp" style={{ maxWidth: 220 }} value={filterDept} onChange={e => setFilterDept(e.target.value)}>
+            <option value="all">ทุกฝ่าย</option>
+            {departments.filter(d => d.is_active).map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </AppSelect>
         </div>
       </div>
       <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -4308,8 +4294,8 @@ function EmployeeForm({ empId, employees, departments, positions, organizations,
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.04em' }}>ข้อมูลการทำงาน</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
           <FormField label="ฝ่าย" required>
-            <AppSelect className="inp" value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
-              <option value="">ไม่ระบุ</option>
+            <AppSelect className="inp" required value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
+              <option value="" disabled>กรุณาเลือกฝ่าย</option>
               {departments
                 .filter(d => d.is_active)
                 .filter((department, index, options) => options.findIndex(option => option.name === department.name) === index)
@@ -4731,9 +4717,8 @@ function AnnualTaxReportPage({ role, periods, departments, userDepartment, showT
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [exporting, setExporting] = useState(false)
-  const scopedDepartmentId = role === 'hr' ? departments.find(department => department.name === userDepartment)?.id : undefined
-  const selectedDepartmentId = scopedDepartmentId ?? (departmentValue ? Number(departmentValue) : undefined)
-  const selectedDepartmentLabel = role === 'hr' ? userDepartment ?? 'ฝ่ายของฉัน' : departments.find(department => department.id === selectedDepartmentId)?.name ?? 'ทุกฝ่าย'
+  const selectedDepartmentId = departmentValue ? Number(departmentValue) : undefined
+  const selectedDepartmentLabel = departments.find(department => department.id === selectedDepartmentId)?.name ?? 'ทุกฝ่าย'
   const reportLabel = reportType === 'tax'
     ? 'รายการนำส่งภาษี'
     : reportType === 'social_security'
@@ -4755,7 +4740,7 @@ function AnnualTaxReportPage({ role, periods, departments, userDepartment, showT
   const total = monthlyTotals.reduce((sum, amount) => sum + amount, 0)
   return <div className="anim">
     <PageHeader title="รายงานประจำปี" subtitle="สรุปรายการนำส่งภาษี รายได้ และเงินสมทบประกันสังคมจากรอบเงินเดือนที่อนุมัติแล้ว" actions={<button className="btn btn-secondary" disabled={loading || Boolean(loadError)} onClick={() => { if (!printAnnualTaxReport(yearBE, selectedDepartmentLabel, reportLabel, rows)) showToast('ไม่สามารถเปิดหน้าต่างพิมพ์ได้ กรุณาลองใหม่', 'error') }}>🖨️ พิมพ์รายงาน</button>} />
-    <div className="card" style={{ padding: '14px 18px', marginBottom: 16 }}><div className="flex items-end gap-3 flex-wrap"><FormField label="ประเภทรายงาน"><AppSelect className="inp" style={{ width: 290 }} value={reportType} onChange={event => setReportType(event.target.value as AnnualReportType)}><option value="tax">รายการนำส่งภาษี</option><option value="income">รายงานสรุปรายได้ประจำปี</option><option value="social_security">รายงานสรุปเงินสมทบประกันสังคมประจำปี</option></AppSelect></FormField><FormField label="ปี (พ.ศ.)"><AppSelect className="inp" style={{ width: 180 }} value={String(yearBE)} onChange={event => setYearBE(Number(event.target.value))}>{(reportYears.length ? reportYears : [yearBE]).map(year => <option key={year} value={year}>{year}</option>)}</AppSelect></FormField><FormField label="ฝ่าย"><AppSelect className="inp" style={{ width: 260 }} value={role === 'hr' ? String(scopedDepartmentId ?? '') : departmentValue} onChange={event => setDepartmentValue(event.target.value)} disabled={role === 'hr'}><option value="">ทุกฝ่าย</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField><span style={{ fontSize: 12.5, color: 'var(--text-secondary)', paddingBottom: 10 }}>แสดงเฉพาะรอบเงินเดือนที่อนุมัติแล้ว</span></div></div>
+    <div className="card" style={{ padding: '14px 18px', marginBottom: 16 }}><div className="flex items-end gap-3 flex-wrap"><FormField label="ประเภทรายงาน"><AppSelect className="inp" style={{ width: 290 }} value={reportType} onChange={event => setReportType(event.target.value as AnnualReportType)}><option value="tax">รายการนำส่งภาษี</option><option value="income">รายงานสรุปรายได้ประจำปี</option><option value="social_security">รายงานสรุปเงินสมทบประกันสังคมประจำปี</option></AppSelect></FormField><FormField label="ปี (พ.ศ.)"><AppSelect className="inp" style={{ width: 180 }} value={String(yearBE)} onChange={event => setYearBE(Number(event.target.value))}>{(reportYears.length ? reportYears : [yearBE]).map(year => <option key={year} value={year}>{year}</option>)}</AppSelect></FormField><FormField label="ฝ่าย"><AppSelect className="inp" style={{ width: 260 }} value={departmentValue} onChange={event => setDepartmentValue(event.target.value)}><option value="">ทุกฝ่าย</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField><span style={{ fontSize: 12.5, color: 'var(--text-secondary)', paddingBottom: 10 }}>แสดงเฉพาะรอบเงินเดือนที่อนุมัติแล้ว</span></div></div>
     <div className="card" style={{ padding: 0, overflowX: 'auto' }}><div className="px-6 py-4 flex items-center justify-between" style={{ borderBottom: '1px solid rgba(0,0,0,.07)' }}><div><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 16 }}>{reportLabel}</div><div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>ปี พ.ศ. {yearBE} · {selectedDepartmentLabel}</div></div><div style={{ fontWeight: 700, color: 'var(--purple-600)' }}>รวม {thb(total)} บาท</div></div><table className="tbl" style={{ minWidth: 1480 }}><thead><tr><th rowSpan={2} style={{ width: 52 }}>ที่</th><th rowSpan={2} style={{ minWidth: 190 }}>ชื่อ-นามสกุล</th><th rowSpan={2} style={{ minWidth: 145 }}>ฝ่าย</th><th rowSpan={2} style={{ minWidth: 190 }}>ตำแหน่ง</th><th colSpan={12} style={{ textAlign: 'center' }}>{reportLabel}</th><th rowSpan={2} style={{ minWidth: 115, textAlign: 'right' }}>รวม</th></tr><tr>{TAX_MONTH_LABELS.map(label => <th key={label} style={{ minWidth: 77, textAlign: 'right' }}>{label}</th>)}</tr></thead><tbody>{loading ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>กำลังโหลดรายงาน…</td></tr> : loadError ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: '#B91C1C' }}>{loadError}</td></tr> : rows.length === 0 ? <tr><td colSpan={17} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>ยังไม่มีข้อมูล{reportLabel}จากรอบเงินเดือนที่อนุมัติแล้ว</td></tr> : rows.map((row, index) => <tr key={`${row.employee_id}-${row.department_name}`}><td style={{ textAlign: 'center' }}>{index + 1}</td><td>{row.full_name}</td><td>{row.department_name}</td><td>{row.position_name}</td>{row.months.map((amount, month) => <td key={month} style={{ textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{row.approved_months?.[month] ? thb(amount) : '–'}</td>)}<td style={{ textAlign: 'right', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{thb(row.total)}</td></tr>)}</tbody><tfoot>{!loading && !loadError && <tr><td colSpan={4} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td>{monthlyTotals.map((amount, month) => <td key={month} style={{ textAlign: 'right', fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{thb(amount)}</td>)}<td style={{ textAlign: 'right', fontWeight: 700, color: 'var(--purple-600)', fontVariantNumeric: 'tabular-nums' }}>{thb(total)}</td></tr>}</tfoot></table></div>
   </div>
 }
@@ -4845,10 +4830,9 @@ function CombinedReportsPage({ role, periods, departments, organizations, userDe
   const [monthlyRows, setMonthlyRows] = useState<MonthlyPayrollRow[]>([])
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
-  const scopedDepartmentId = role === 'hr' ? departments.find(department => department.name === userDepartment)?.id : undefined
-  const selectedDepartmentId = scopedDepartmentId ?? (departmentValue ? Number(departmentValue) : undefined)
+  const selectedDepartmentId = departmentValue ? Number(departmentValue) : undefined
   const selectedOrganizationId = organizationValue ? Number(organizationValue) : undefined
-  const departmentLabel = role === 'hr' ? userDepartment ?? 'ฝ่ายของฉัน' : departments.find(department => department.id === selectedDepartmentId)?.name ?? 'ทุกฝ่าย'
+  const departmentLabel = departments.find(department => department.id === selectedDepartmentId)?.name ?? 'ทุกฝ่าย'
   const organizationLabel = organizations.find(organization => organization.id === selectedOrganizationId)?.name ?? 'ทุกหน่วยงาน'
   const annualLabel = annualType === 'tax' ? 'รายการนำส่งภาษี' : annualType === 'social_security' ? 'รายงานสรุปเงินสมทบประกันสังคมประจำปี' : 'รายงานสรุปรายได้ประจำปี'
   const dataVersion = useMemo(() => periods.flatMap(period => period.depts.map(department => `${department.databaseId ?? department.id}:${department.status}:${department.editVersion ?? 0}:${department.approvedAt ?? ''}`)).join('|'), [periods])
@@ -4883,7 +4867,7 @@ function CombinedReportsPage({ role, periods, departments, organizations, userDe
       {mode === 'annual' && <FormField label="ประเภทรายงาน"><AppSelect className="inp" style={{ width: 300 }} value={annualType} onChange={event => setAnnualType(event.target.value as AnnualReportType)}><option value="tax">รายการนำส่งภาษี</option><option value="income">รายงานสรุปรายได้ประจำปี</option><option value="social_security">รายงานสรุปเงินสมทบประกันสังคมประจำปี</option></AppSelect></FormField>}
       {mode === 'monthly' && <FormField label="เดือน"><AppSelect className="inp" style={{ width: 170 }} value={String(month)} onChange={event => setMonth(Number(event.target.value))}>{MONTH_TH.slice(1).map((label, index) => <option key={label} value={index + 1}>{label}</option>)}</AppSelect></FormField>}
       <FormField label="ปี (พ.ศ.)"><AppSelect className="inp" style={{ width: 160 }} value={String(yearBE)} onChange={event => setYearBE(Number(event.target.value))}>{(availableYears.length ? availableYears : [yearBE]).map(year => <option key={year} value={year}>{year}</option>)}</AppSelect></FormField>
-      <FormField label="ฝ่าย/กอง"><AppSelect className="inp" style={{ width: 230 }} value={role === 'hr' ? String(scopedDepartmentId ?? '') : departmentValue} onChange={event => setDepartmentValue(event.target.value)} disabled={role === 'hr'}><option value="">ทุกฝ่าย/กอง</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField>
+      <FormField label="ฝ่าย/กอง"><AppSelect className="inp" style={{ width: 230 }} value={departmentValue} onChange={event => setDepartmentValue(event.target.value)}><option value="">ทุกฝ่าย/กอง</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField>
       <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', paddingBottom: 10 }}>แสดงเฉพาะรอบเงินเดือนที่อนุมัติแล้ว</span>
     </div></div>
     {mode === 'monthly' ? <>
@@ -5211,7 +5195,7 @@ function AdminUsers({ employees, showToast, currentUserId, onCurrentApprovalPerm
         {newRole === 'admin' && <label className="flex items-center gap-2" style={{ fontSize: 13, cursor: 'pointer' }}><input type="checkbox" checked={newCanApprovePayroll} onChange={event => setNewCanApprovePayroll(event.target.checked)} /><span><strong>อนุญาตให้อนุมัติรอบเงินเดือน</strong><br /><span style={{ color: 'var(--text-muted)' }}>บัญชีนี้สามารถอนุมัติรายการที่ตนเองส่งได้</span></span></label>}
         <div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingUser} onClick={() => setShowCreate(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={creatingUser} disabled={!employeeId || username.trim().length < 3 || temporaryPassword.length < 8 || creatingUser} onClick={() => void create()}><BusyLabel busy={creatingUser} label="กำลังบันทึก…">บันทึกบัญชี</BusyLabel></button></div>
       </div></Modal>}
-      {showInvite && <Modal title="สร้างคำเชิญเข้าใช้" onClose={() => !creatingInvite && setShowInvite(false)}><div className="flex flex-col gap-4"><div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>ผู้รับคำเชิญจะกรอกข้อมูลพนักงานและสร้างบัญชีเอง จากนั้นรอให้แอดมินอนุมัติ ลิงก์แต่ละรายการใช้สมัครได้หนึ่งครั้ง</div><FormField label="อีเมลผู้รับ (ไม่บังคับ)"><input className="inp" type="email" value={inviteEmail} onChange={e => { setInviteEmail(e.target.value); if (e.target.value.trim()) setInviteQuantity('1') }} placeholder="เว้นว่างเพื่อสร้างลิงก์สำหรับหลายคน" /></FormField><FormField label="สิทธิ์การใช้งาน" required><select className="inp" value={inviteRole} onChange={e => setInviteRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้บริหาร</option><option value="admin">แอดมิน</option></select></FormField><FormField label="จำนวนผู้ใช้งานที่ต้องการสมัคร" required><input className="inp" type="number" min={1} max={100} step={1} value={inviteQuantity} disabled={Boolean(inviteEmail.trim())} onChange={e => setInviteQuantity(e.target.value)} /></FormField>{inviteUrls.length > 0 && <div style={{ background: '#F4F0FF', borderRadius: 10, padding: 12, fontSize: 12 }}><div className="flex items-center justify-between gap-2" style={{ marginBottom: 8 }}><strong>ลิงก์คำเชิญ {inviteUrls.length} รายการ (ใช้ได้ 7 วัน)</strong><button className="btn btn-ghost btn-xs" onClick={() => navigator.clipboard.writeText(inviteUrls.join('\n'))}>คัดลอกทั้งหมด</button></div><div style={{ maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>{inviteUrls.map((url, index) => <div key={url} style={{ background: 'white', borderRadius: 8, padding: '8px 10px', wordBreak: 'break-all' }}><strong>ลิงก์ที่ {index + 1}</strong><br />{url}<br /><button className="btn btn-ghost btn-xs" style={{ marginTop: 5 }} onClick={() => navigator.clipboard.writeText(url)}>คัดลอก</button></div>)}</div></div>}<div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingInvite} onClick={() => setShowInvite(false)}>ปิด</button><button className="btn btn-primary" aria-busy={creatingInvite} disabled={creatingInvite || !inviteQuantity} onClick={() => void createInvite()}><BusyLabel busy={creatingInvite} label="กำลังสร้าง…">สร้างลิงก์คำเชิญ</BusyLabel></button></div></div></Modal>}
+      {showInvite && <Modal title="สร้างคำเชิญเข้าใช้" onClose={() => !creatingInvite && setShowInvite(false)}><div className="flex flex-col gap-4"><div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>ผู้รับคำเชิญจะกรอกข้อมูลพนักงานและสร้างบัญชีเอง จากนั้นรอให้แอดมินอนุมัติ ลิงก์แต่ละรายการใช้สมัครได้หนึ่งครั้ง</div><FormField label="อีเมลผู้รับ (ไม่บังคับ)"><input className="inp" type="email" value={inviteEmail} onChange={e => { setInviteEmail(e.target.value); if (e.target.value.trim()) setInviteQuantity('1') }} placeholder="เว้นว่างเพื่อสร้างลิงก์สำหรับหลายคน" /></FormField><FormField label="สิทธิ์การใช้งาน" required><select className="inp" value={inviteRole} onChange={e => setInviteRole(e.target.value as Role)}><option value="hr">พนักงานฝ่ายธุรการ</option><option value="director">ผู้บริหาร</option><option value="admin">แอดมิน</option></select></FormField><FormField label="จำนวนผู้ใช้งานที่ต้องการสมัคร" required><input className="inp" type="number" min={1} max={100} step={1} value={inviteQuantity} disabled={Boolean(inviteEmail.trim())} onChange={e => setInviteQuantity(e.target.value)} /></FormField>{inviteUrls.length > 0 && <div style={{ background: '#F4F0FF', borderRadius: 10, padding: 12, fontSize: 12 }}><div className="flex items-center justify-between gap-2" style={{ marginBottom: 8 }}><strong>ลิงก์คำเชิญ {inviteUrls.length} รายการ (ใช้ได้ 14 วัน)</strong><button className="btn btn-ghost btn-xs" onClick={() => navigator.clipboard.writeText(inviteUrls.join('\n'))}>คัดลอกทั้งหมด</button></div><div style={{ maxHeight: 220, overflowY: 'auto', display: 'grid', gap: 8 }}>{inviteUrls.map((url, index) => <div key={url} style={{ background: 'white', borderRadius: 8, padding: '8px 10px', wordBreak: 'break-all' }}><strong>ลิงก์ที่ {index + 1}</strong><br />{url}<br /><button className="btn btn-ghost btn-xs" style={{ marginTop: 5 }} onClick={() => navigator.clipboard.writeText(url)}>คัดลอก</button></div>)}</div></div>}<div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={creatingInvite} onClick={() => setShowInvite(false)}>ปิด</button><button className="btn btn-primary" aria-busy={creatingInvite} disabled={creatingInvite || !inviteQuantity} onClick={() => void createInvite()}><BusyLabel busy={creatingInvite} label="กำลังสร้าง…">สร้างลิงก์คำเชิญ</BusyLabel></button></div></div></Modal>}
     </div>
   )
 }
@@ -5415,7 +5399,7 @@ function InvitePage({ token }: { token: string }) {
       <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลส่วนตัว</div>
       <div className="invite-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16, marginBottom: 24 }}>{field('national_id','เลขประจำตัวประชาชน','text',true,{ inputMode: 'numeric', maxLength: 13, onChange: e => set('national_id', e.target.value.replace(/\D/g, '')) })}<FormField label="คำนำหน้า (ไม่บังคับ)"><select className="inp" value={form.prefix} onChange={e => set('prefix', e.target.value)}><option value="">ไม่ระบุ</option>{EMPLOYEE_PREFIXES.map(option => <option key={option} value={option}>{option}</option>)}<option value="OTHER">อื่นๆ (โปรดระบุ)</option></select></FormField>{form.prefix === 'OTHER' && field('custom_prefix','คำนำหน้าอื่นๆ','text',true,{ maxLength: 20 })}{field('first_name','ชื่อ','text',true)}{field('last_name','นามสกุล','text',true)}<FormField label="วันเดือนปีเกิด (พ.ศ.)" required><BuddhistDateInput value={form.birth_date} onChange={value => set('birth_date', value)} required /></FormField><FormField label="อีเมล" required><input required className="inp" type="email" value={form.email} readOnly={Boolean(invite.email)} onChange={e => set('email', e.target.value)} style={invite.email ? { background: '#F6F5F9' } : undefined} placeholder={invite.email ? undefined : 'กรอกอีเมลของผู้สมัคร'} /></FormField>{field('phone','โทรศัพท์','tel')}</div>
       <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลการทำงาน</div>
-      <div className="invite-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16, marginBottom: 24 }}><FormField label="ฝ่าย" required><select className="inp" required value={form.department_id} onChange={e => set('department_id', e.target.value)}><option value="">ไม่ระบุ</option>{uniqueDepartments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></FormField><FormField label="ตำแหน่ง (ไม่บังคับ)"><input className="inp" list="invite-position-options" value={form.position_name} onChange={e => set('position_name', e.target.value)} /><datalist id="invite-position-options">{invite.positions.map(position => <option key={position.id} value={position.name} />)}</datalist></FormField><FormField label="ประเภทพนักงาน" required><select className="inp" value={form.employee_type} onChange={e => set('employee_type', e.target.value)}>{EMPLOYEE_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></FormField>{form.employee_type === 'OTHER' && field('employee_type_other','ประเภทพนักงานอื่นๆ','text',true,{ maxLength: 150 })}<FormField label="วันที่เริ่มงาน (พ.ศ.) (ไม่บังคับ)"><BuddhistDateInput value={form.start_date} onChange={value => set('start_date', value)} /></FormField><FormField label="วันที่สิ้นสุด (พ.ศ.) (ไม่บังคับ)"><BuddhistDateInput value={form.end_date} onChange={value => set('end_date', value)} /></FormField></div>
+      <div className="invite-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16, marginBottom: 24 }}><FormField label="ฝ่าย" required><select className="inp" required value={form.department_id} onChange={e => set('department_id', e.target.value)}><option value="" disabled>กรุณาเลือกฝ่าย</option>{uniqueDepartments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}</select></FormField><FormField label="ตำแหน่ง (ไม่บังคับ)"><input className="inp" list="invite-position-options" value={form.position_name} onChange={e => set('position_name', e.target.value)} /><datalist id="invite-position-options">{invite.positions.map(position => <option key={position.id} value={position.name} />)}</datalist></FormField><FormField label="ประเภทพนักงาน" required><select className="inp" value={form.employee_type} onChange={e => set('employee_type', e.target.value)}>{EMPLOYEE_TYPE_OPTIONS.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select></FormField>{form.employee_type === 'OTHER' && field('employee_type_other','ประเภทพนักงานอื่นๆ','text',true,{ maxLength: 150 })}<FormField label="วันที่เริ่มงาน (พ.ศ.) (ไม่บังคับ)"><BuddhistDateInput value={form.start_date} onChange={value => set('start_date', value)} /></FormField><FormField label="วันที่สิ้นสุด (พ.ศ.) (ไม่บังคับ)"><BuddhistDateInput value={form.end_date} onChange={value => set('end_date', value)} /></FormField></div>
       <div style={{ marginTop: -8, marginBottom: 24 }}><FormField label="หน่วยงาน (ไม่บังคับ)"><input className="inp" list="invite-organization-options" value={form.organization_name} onChange={e => set('organization_name', e.target.value)} /><datalist id="invite-organization-options">{invite.organizations.filter(organization => organization.is_active).map(organization => <option key={organization.id} value={organization.name} />)}</datalist></FormField></div>
       <div className="divider" /><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลเงินเดือน</div>
       <div className="invite-form-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0,1fr))', gap: 16 }}>{field('base_salary','ฐานเงินเดือน (บาท)','number',true,{ min: 0, step: '0.01' })}{field('bank_name','ธนาคาร')}{field('bank_account_no','เลขบัญชีธนาคาร')}</div>
@@ -5463,7 +5447,6 @@ export default function App() {
   const toastKey = useRef(0)
   const payrollSyncVersionRef = useRef<string | null>(null)
   const payrollSyncCheckingRef = useRef(false)
-  const initialAnnouncementIdsRef = useRef<Set<number> | null>(null)
   const announcementRefreshInProgressRef = useRef(false)
   const announcementRetryAfterRef = useRef<Record<number, number>>({})
   const currentReleaseIdRef = useRef<string | null>(null)
@@ -5638,19 +5621,21 @@ export default function App() {
       const snapshot = await getAnnouncementSnapshot()
       const announcements = snapshot.announcements
       const now = new Date(snapshot.server_time).getTime()
-      if (initialAnnouncementIdsRef.current === null) {
-        initialAnnouncementIdsRef.current = new Set(
-          announcements.filter(item => new Date(item.starts_at).getTime() <= now).map(item => item.id),
-        )
-        return
-      }
       const due = announcements.find(item => {
         if (new Date(item.starts_at).getTime() > now) return false
-        if (initialAnnouncementIdsRef.current?.has(item.id)) return false
         if (sessionStorage.getItem(`payflow-update-refreshed:${item.id}`)) return false
         return (announcementRetryAfterRef.current[item.id] ?? 0) <= now
       })
       if (!due) return
+
+      const releaseSnapshot = await getSystemReleaseSnapshot()
+      // If this backend process started after the scheduled maintenance time,
+      // the deployment has already completed. Do not trap a late login on the
+      // maintenance screen for an old announcement.
+      if (new Date(releaseSnapshot.serverStartedAt).getTime() > new Date(due.starts_at).getTime()) {
+        sessionStorage.setItem(`payflow-update-refreshed:${due.id}`, releaseSnapshot.serverStartedAt)
+        return
+      }
 
       announcementRefreshInProgressRef.current = true
       const saveResult = await saveOpenEditorsBeforeSystemUpdate(taskCount => {
@@ -5661,7 +5646,7 @@ export default function App() {
         showToast('ยังรีเฟรชไม่ได้ เนื่องจากมีข้อมูลที่บันทึกไม่สำเร็จ กรุณาตรวจสอบช่องที่แจ้งเตือน ระบบจะลองใหม่อีกครั้ง', 'error')
         return
       }
-      const currentReleaseId = currentReleaseIdRef.current ?? await getSystemReleaseId()
+      const currentReleaseId = currentReleaseIdRef.current ?? releaseSnapshot.releaseId
       currentReleaseIdRef.current = currentReleaseId
       setMaintenance({ announcement: due, releaseId: currentReleaseId })
     } catch {
@@ -5705,10 +5690,7 @@ export default function App() {
   }, [maintenance])
 
   useEffect(() => {
-    if (!loggedIn) {
-      initialAnnouncementIdsRef.current = null
-      return
-    }
+    if (!loggedIn) return
     void checkSystemUpdateAnnouncements()
     const timer = window.setInterval(() => { void checkSystemUpdateAnnouncements() }, 10_000)
     const checkWhenVisible = () => {
@@ -5784,16 +5766,9 @@ export default function App() {
     </div>
   )
 
-  const visiblePeriods = role === 'hr' && userDepartment
-    ? periods.map(period => ({ ...period, depts: period.depts.filter(department => department.department === userDepartment) }))
-    : periods
-  const visibleDepartments = role === 'hr' && userDepartment
-    ? departments.filter(department => department.name === userDepartment)
-    : departments
-  const visibleDepartmentIds = new Set(visibleDepartments.map(department => department.id))
-  const visibleEmployees = role === 'hr'
-    ? databaseEmployees.filter(employee => employee.department_id !== null && visibleDepartmentIds.has(employee.department_id))
-    : databaseEmployees
+  const visiblePeriods = periods
+  const visibleDepartments = departments
+  const visibleEmployees = databaseEmployees
 
   const activePeriod = visiblePeriods.find(p => p.id === activePeriodId) ?? visiblePeriods[0]
   const activeDept = activePeriod?.depts.find(d => d.id === activeDeptId) ?? activePeriod?.depts[0]
@@ -5857,10 +5832,10 @@ export default function App() {
           {page === 'periods' && (
             <PeriodsPage periods={visiblePeriods} departments={visibleDepartments} setPage={setPage} setActivePeriodId={setActivePeriodId} setActiveDeptId={setActiveDeptId} role={role} userDepartment={userDepartment} reloadPayroll={loadEmployeeData} error={payrollError} showToast={showToast} />
           )}
-          {page === 'period-detail' && activePeriod && role !== 'hr' && (
+          {page === 'period-detail' && activePeriod && (
             <PeriodDetail period={activePeriod} setPage={setPage} setActiveDeptId={setActiveDeptId} role={role} />
           )}
-          {(page === 'dept-table' || (page === 'period-detail' && role === 'hr')) && activePeriod && activeDept && (
+          {page === 'dept-table' && activePeriod && activeDept && (
             <DeptPayrollTable period={activePeriod} dept={activeDept} setPeriods={setPeriods} setPage={setPage} showToast={showToast}
               databaseEmployees={visibleEmployees} departments={departments} positions={positions} payItemTypes={payItemTypes} setPayItemTypes={setPayItemTypes} reloadPayroll={loadEmployeeData} payrollReferenceReady={payrollReferenceReady} canApprovePayroll={canApprovePayroll} currentUserId={currentUserId} currentUserName={userName} />
           )}

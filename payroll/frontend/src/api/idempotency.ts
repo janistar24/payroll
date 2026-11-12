@@ -17,14 +17,18 @@ export async function idempotentFetch(url: string, init: RequestInit, operationK
   const headers = new Headers(init.headers)
   headers.set('X-Idempotency-Key', requestId)
 
-  try {
-    const response = await fetch(url, { ...init, headers })
-    // A real response means the backend knows the outcome. PROCESSING keeps the
-    // same key so the next attempt asks for that result instead of starting over.
-    if (response.status !== 409) sessionStorage.removeItem(storageKey)
-    return response
-  } catch (error) {
-    // Keep the key after a network failure. The caller can retry safely.
-    throw error
+  let lastError: unknown
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const response = await fetch(url, { ...init, headers })
+      const retryable = response.status === 409 || [502, 503, 504].includes(response.status)
+      if (!retryable) sessionStorage.removeItem(storageKey)
+      if (!retryable || attempt === 3) return response
+    } catch (error) {
+      lastError = error
+      if (attempt === 3) throw error
+    }
+    await new Promise(resolve => window.setTimeout(resolve, 500 * (attempt + 1)))
   }
+  throw lastError instanceof Error ? lastError : new Error('ไม่สามารถเชื่อมต่อระบบได้')
 }

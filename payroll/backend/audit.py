@@ -80,7 +80,48 @@ class AuditLogger:
                 (retention_days,),
             )
 
-    def list_logs(self, *, source="all", date_from=None, date_to=None, username=None, action=None, outcome=None, limit=100, offset=0):
+    @staticmethod
+    def _describe_location(row):
+        if row.get("log_type") == "access":
+            path = str((row.get("details") or {}).get("path") or "")
+            method = str((row.get("details") or {}).get("method") or "")
+            routes = (
+                ("/api/employees", "หน้าพนักงาน", "ดู/เพิ่ม/แก้ไขข้อมูลพนักงาน"),
+                ("/api/payroll_periods", "หน้ารอบเงินเดือน", "สร้าง/ดู/ลบรอบเงินเดือน"),
+                ("/api/payroll_department_batches", "ตารางรอบเงินเดือน", "บันทึกหรือเปลี่ยนสถานะรอบเงินเดือน"),
+                ("/api/reports/", "หน้ารายงาน", "เรียกดูรายงาน"),
+                ("/api/admin/audit-logs", "หน้าบันทึกการใช้งาน", "ค้นหาหรือส่งออกบันทึก"),
+                ("/api/admin/invites", "หน้าจัดการผู้ใช้งาน", "สร้างลิงก์คำเชิญ"),
+                ("/api/admin/access-requests", "หน้าจัดการผู้ใช้งาน", "ตรวจสอบคำขอใช้งาน"),
+                ("/api/users", "หน้าจัดการผู้ใช้งาน", "จัดการบัญชีผู้ใช้"),
+                ("/api/announcements", "หน้าหลัก", "ประกาศการอัปเดตระบบ"),
+                ("/api/invites/", "หน้าสมัครขอใช้งาน", "เปิดหรือส่งแบบฟอร์มสมัคร"),
+                ("/api/auth/", "หน้าเข้าสู่ระบบ/ข้อมูลของฉัน", "จัดการการเข้าสู่ระบบ"),
+            )
+            for prefix, page, feature in routes:
+                if path.startswith(prefix):
+                    return f"{page} · {feature} ({method})"
+            return f"API {path or 'ไม่ทราบเส้นทาง'}"
+
+        resource = str(row.get("resource_type") or "")
+        action = str(row.get("action") or "")
+        resource_locations = {
+            "employee": ("หน้าพนักงาน", "เพิ่ม/แก้ไข/เปลี่ยนสถานะพนักงาน"),
+            "payroll_period": ("หน้ารอบเงินเดือน", "จัดการรอบเงินเดือน"),
+            "payroll_department_batch": ("ตารางรอบเงินเดือน", "บันทึก/ส่งอนุมัติ/อนุมัติ/แก้ไขรอบ"),
+            "pay_item_type": ("ตารางรอบเงินเดือน", "แก้ไขประเภทรายการรับ/หัก"),
+            "payslip_email": ("หน้าสถานะการส่งอีเมล", "ส่งสลิปเงินเดือน"),
+            "user_invite": ("หน้าจัดการผู้ใช้งาน", "สร้างลิงก์คำเชิญ"),
+            "access_request": ("หน้าจัดการผู้ใช้งาน", "อนุมัติหรือปฏิเสธคำขอ"),
+            "user": ("หน้าจัดการผู้ใช้งาน", "จัดการบัญชีผู้ใช้"),
+            "system_announcement": ("หน้าหลัก", "สร้างหรือลบประกาศ"),
+            "audit_log": ("หน้าบันทึกการใช้งาน", "ส่งออก CSV"),
+            "auth": ("หน้าเข้าสู่ระบบ/ข้อมูลของฉัน", "เข้าสู่ระบบ ออกจากระบบ หรือเปลี่ยนรหัสผ่าน"),
+        }
+        page, feature = resource_locations.get(resource, ("ระบบ", action))
+        return f"{page} · {feature}"
+
+    def list_logs(self, *, source="all", date_from=None, date_to=None, username=None, action=None, outcome=None, ip_address=None, limit=100, offset=0):
         conditions = []
         params = []
         if date_from:
@@ -98,6 +139,9 @@ class AuditLogger:
         if outcome:
             conditions.append("outcome = %s")
             params.append(outcome)
+        if ip_address:
+            conditions.append("ip_address ILIKE %s")
+            params.append(f"%{ip_address.strip()}%")
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         source_filter = " WHERE log_type = %s" if source in {"audit", "access"} else ""
         outer_params = [source] if source_filter else []
@@ -113,7 +157,8 @@ class AuditLogger:
                        method || ' ' || path, 'http_request', NULL,
                        CASE WHEN status_code < 400 THEN 'SUCCESS' ELSE 'FAILED' END,
                        ip_address, user_agent, request_id::text,
-                       jsonb_build_object('status_code', status_code, 'duration_ms', duration_ms)
+                       jsonb_build_object('status_code', status_code, 'duration_ms', duration_ms,
+                                          'path', path, 'method', method)
                   FROM public.access_logs access
                  WHERE NOT (
                        access.status_code < 400
@@ -133,4 +178,7 @@ class AuditLogger:
         """
         query_params = params + outer_params + [limit, offset]
         data, columns = self.db.fetch(sql, tuple(query_params))
-        return [dict(zip(columns, row)) for row in data]
+        rows = [dict(zip(columns, row)) for row in data]
+        for row in rows:
+            row["location"] = self._describe_location(row)
+        return rows

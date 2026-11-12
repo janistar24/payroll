@@ -16,6 +16,7 @@ export type AuditLogRow = {
   resource_id: string | null
   outcome: 'SUCCESS' | 'FAILED'
   ip_address: string | null
+  location: string
   user_agent: string | null
   request_id: string | null
   details: Record<string, unknown>
@@ -29,6 +30,7 @@ export type AuditLogFilters = {
   username: string
   action: string
   outcome: AuditLogOutcome
+  ip_address: string
 }
 
 function queryString(filters: AuditLogFilters, page?: number) {

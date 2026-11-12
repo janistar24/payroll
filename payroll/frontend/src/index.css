@@ -432,6 +432,31 @@ select.inp {
 @keyframes button-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .btn-spinner { animation: none; } }
 
+.inp[aria-invalid="true"], .field-invalid .inp, .inp:user-invalid, .validation-show-errors .inp:invalid {
+  border-color: #EF4444 !important;
+  background: #FFF7F7 !important;
+  box-shadow: 0 0 0 3px rgba(239,68,68,.10) !important;
+}
+.form-error-banner {
+  margin-bottom: 16px; padding: 12px 14px; border: 1px solid #FCA5A5;
+  border-radius: 10px; background: #FEF2F2; color: #B91C1C;
+  font-size: 13px; font-weight: 600;
+}
+.multi-select-filter { position: relative; width: 280px; }
+.multi-select-filter summary {
+  list-style: none; cursor: pointer; min-height: 40px; padding: 9px 34px 9px 12px;
+  border: 1px solid var(--border); border-radius: 9px; background: white;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 13px;
+}
+.multi-select-filter summary::after { content: '⌄'; position: absolute; right: 12px; }
+.multi-select-options {
+  position: absolute; z-index: 20; top: calc(100% + 6px); left: 0; width: 340px;
+  max-height: 300px; overflow: auto; padding: 8px; border: 1px solid var(--border);
+  border-radius: 10px; background: white; box-shadow: var(--shadow-md);
+}
+.multi-select-options label { display: flex; gap: 9px; align-items: center; padding: 8px; border-radius: 7px; font-size: 13px; cursor: pointer; }
+.multi-select-options label:hover { background: var(--purple-100); }
+
 /* ── Status Badges ─────────────────────────────────────────── */
 .badge {
   display: inline-flex; align-items: center; gap: 4px;

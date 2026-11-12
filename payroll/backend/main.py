@@ -479,7 +479,7 @@ class EmployeeSave(BaseModel):
     birth_date: date | None = None
     start_date: date | None = None
     end_date: date | None = None
-    email: str | None = Field(default=None, max_length=255)
+    email: str = Field(min_length=5, max_length=255)
     phone: str | None = Field(default=None, max_length=30)
     bank_name: str | None = Field(default=None, max_length=150)
     bank_account_no: str | None = Field(default=None, max_length=50)
@@ -505,6 +505,14 @@ class EmployeeSave(BaseModel):
         if value not in EMPLOYEE_STATUSES:
             raise ValueError("สถานะพนักงานไม่ถูกต้อง")
         return value
+
+    @field_validator("email")
+    @classmethod
+    def validate_required_email(cls, value):
+        normalized = value.strip().lower()
+        if "@" not in normalized or "." not in normalized.rsplit("@", 1)[-1]:
+            raise ValueError("กรุณากรอกอีเมลให้ถูกต้อง")
+        return normalized
 
     @model_validator(mode="after")
     def validate_employee_type_other(self):
@@ -866,7 +874,7 @@ def _require_admin(user):
         raise HTTPException(status_code=403, detail="เฉพาะผู้ดูแลระบบเท่านั้น")
 
 
-def _audit_log_filters(source, date_from, date_to, username, action, outcome):
+def _audit_log_filters(source, date_from, date_to, username, action, outcome, ip_address):
     if source not in {"all", "audit", "access"}:
         raise HTTPException(status_code=400, detail="ประเภท log ไม่ถูกต้อง")
     if outcome and outcome not in {"SUCCESS", "FAILED"}:
@@ -880,6 +888,7 @@ def _audit_log_filters(source, date_from, date_to, username, action, outcome):
         "username": (username or "").strip()[:100] or None,
         "action": (action or "").strip()[:100] or None,
         "outcome": outcome,
+        "ip_address": (ip_address or "").strip()[:64] or None,
     }
 
 
@@ -892,12 +901,13 @@ def _csv_safe(value):
 def get_audit_logs(
     source: str = "all", date_from: date | None = None, date_to: date | None = None,
     username: str | None = None, action: str | None = None, outcome: str | None = None,
+    ip_address: str | None = None,
     page: int = 1, page_size: int = 100, user=Depends(get_current_user),
 ):
     _require_admin(user)
     page = max(1, page)
     page_size = max(20, min(page_size, 200))
-    filters = _audit_log_filters(source, date_from, date_to, username, action, outcome)
+    filters = _audit_log_filters(source, date_from, date_to, username, action, outcome, ip_address)
     rows = audit_logger.list_logs(**filters, limit=page_size, offset=(page - 1) * page_size)
     return {
         "success": True,
@@ -911,19 +921,21 @@ def get_audit_logs(
 def export_audit_logs(
     source: str = "all", date_from: date | None = None, date_to: date | None = None,
     username: str | None = None, action: str | None = None, outcome: str | None = None,
+    ip_address: str | None = None,
     user=Depends(get_current_user),
 ):
     _require_admin(user)
-    filters = _audit_log_filters(source, date_from, date_to, username, action, outcome)
+    filters = _audit_log_filters(source, date_from, date_to, username, action, outcome, ip_address)
     rows = audit_logger.list_logs(**filters, limit=50_000, offset=0)
     output = io.StringIO(newline="")
     writer = csv.writer(output)
-    writer.writerow(["วันเวลา", "ประเภท", "ชื่อผู้ใช้", "สิทธิ์", "เหตุการณ์", "ทรัพยากร", "รหัสรายการ", "ผลลัพธ์", "IP", "Browser / อุปกรณ์", "Request ID", "รายละเอียด"])
+    writer.writerow(["วันเวลา", "ประเภท", "ชื่อผู้ใช้", "สิทธิ์", "เหตุการณ์", "หน้าและฟีเจอร์", "ทรัพยากร", "รหัสรายการ", "ผลลัพธ์", "IP", "Browser / อุปกรณ์", "Request ID", "รายละเอียด"])
     for row in rows:
         writer.writerow([
             row["occurred_at"].astimezone(timezone(timedelta(hours=7))).strftime("%Y-%m-%d %H:%M:%S"),
             "กิจกรรมผู้ใช้" if row["log_type"] == "audit" else "การเข้าใช้งาน",
             _csv_safe(row.get("username")), _csv_safe(row.get("role")), _csv_safe(row.get("action")),
+            _csv_safe(row.get("location")),
             _csv_safe(row.get("resource_type")), _csv_safe(row.get("resource_id")),
             "สำเร็จ" if row.get("outcome") == "SUCCESS" else "ไม่สำเร็จ",
             _csv_safe(row.get("ip_address")), _csv_safe(row.get("user_agent")),
@@ -1364,17 +1376,28 @@ def get_payroll_sync_version(user=Depends(get_current_user)):
     try:
         department_id = _department_scope(user)
         rows, _ = db.fetch(
-            """SELECT COALESCE(
-                       MD5(STRING_AGG(
-                           CONCAT_WS(':', batch.id, batch.status, batch.edit_version,
-                               batch.is_current, batch.submitted_at, batch.approved_at,
-                               batch.reject_reason),
-                           '|' ORDER BY batch.id
-                       )),
-                       MD5('')
-                   ) AS version
-               FROM public.payroll_department_batches batch
-               WHERE (%s::INTEGER IS NULL OR batch.department_id = %s::INTEGER)""",
+            """SELECT MD5(CONCAT(
+                       COALESCE((
+                           SELECT STRING_AGG(
+                               CONCAT_WS(':', batch.id, batch.status, batch.edit_version,
+                                   batch.is_current, batch.submitted_at, batch.approved_at,
+                                   batch.reject_reason),
+                               '|' ORDER BY batch.id
+                           )
+                           FROM public.payroll_department_batches batch
+                           WHERE (%s::INTEGER IS NULL OR batch.department_id = %s::INTEGER)
+                       ), ''),
+                       '|employees|',
+                       COALESCE((
+                           SELECT STRING_AGG(
+                               CONCAT_WS(':', employee.id, employee.updated_at, employee.status,
+                                   employee.department_id, employee.organization_id, employee.position_id,
+                                   employee.first_name, employee.last_name, employee.email, employee.base_salary),
+                               '|' ORDER BY employee.id
+                           )
+                           FROM public.employees employee
+                       ), '')
+                   )) AS version""",
             (department_id, department_id),
         )
         return {"success": True, "data": {"version": rows[0][0]}}

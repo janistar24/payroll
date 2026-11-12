@@ -4193,6 +4193,7 @@ function EmployeeForm({ empId, employees, departments, positions, organizations,
   const [baseSalary, setBaseSalary] = useState(emp?.base_salary ?? '')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
+  const [invalidFields, setInvalidFields] = useState<Set<string>>(new Set())
 
   useEffect(() => {
     if (!positionName && emp?.position_id) {
@@ -4201,8 +4202,19 @@ function EmployeeForm({ empId, employees, departments, positions, organizations,
   }, [emp?.position_id, positionName, positions])
 
   const handleSave = async (): Promise<boolean> => {
-    if (nationalId.length !== 13 || !firstName.trim() || !lastName.trim() || !birthDate || !baseSalary || (prefixChoice === 'OTHER' && !customPrefix.trim()) || (employeeType === 'OTHER' && !employeeTypeOther.trim())) {
-      setSaveError('กรุณากรอกช่องที่จำเป็นให้ครบ รวมถึงวันเดือนปีเกิด และเลขประจำตัวประชาชนต้องมี 13 หลัก')
+    const invalid = new Set<string>()
+    if (nationalId.length !== 13) invalid.add('national_id')
+    if (!firstName.trim()) invalid.add('first_name')
+    if (!lastName.trim()) invalid.add('last_name')
+    if (!birthDate) invalid.add('birth_date')
+    if (!email.trim() || !/^\S+@\S+\.\S+$/.test(email.trim())) invalid.add('email')
+    if (!departmentId) invalid.add('department_id')
+    if (!baseSalary) invalid.add('base_salary')
+    if (prefixChoice === 'OTHER' && !customPrefix.trim()) invalid.add('custom_prefix')
+    if (employeeType === 'OTHER' && !employeeTypeOther.trim()) invalid.add('employee_type_other')
+    setInvalidFields(invalid)
+    if (invalid.size) {
+      setSaveError('กรุณาตรวจสอบช่องสีแดงและกรอกข้อมูลที่จำเป็นให้ถูกต้องก่อนบันทึก')
       return false
     }
 
@@ -4234,7 +4246,7 @@ function EmployeeForm({ empId, employees, departments, positions, organizations,
         birth_date: birthDate || null,
         start_date: startDate || null,
         end_date: endDate || null,
-        email: email.trim() || null,
+        email: email.trim(),
         phone: phone.trim() || null,
         bank_name: bankName.trim() || null,
         bank_account_no: bankAccountNo.trim() || null,
@@ -4270,10 +4282,11 @@ function EmployeeForm({ empId, employees, departments, positions, organizations,
         title={empId ? 'แก้ไขข้อมูลพนักงาน' : 'เพิ่มพนักงาน'}
         breadcrumb={<Crumb items={[{ label: 'พนักงาน', onClick: () => setPage('employees') }, { label: empId ? 'แก้ไข' : 'เพิ่มใหม่' }]} />}
       />
+      {saveError && <div className="form-error-banner" role="alert">{saveError}</div>}
       <div className="card" style={{ padding: 28 }}>
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.04em' }}>ข้อมูลส่วนตัว</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
-          <FormField label="เลขประจำตัวประชาชน" required><input className="inp" inputMode="numeric" maxLength={13} value={nationalId} onChange={e => setNationalId(e.target.value.replace(/\D/g, '').slice(0, 13))} /></FormField>
+          <FormField label="เลขประจำตัวประชาชน" required><input className="inp" aria-invalid={invalidFields.has('national_id')} inputMode="numeric" maxLength={13} value={nationalId} onChange={e => setNationalId(e.target.value.replace(/\D/g, '').slice(0, 13))} /></FormField>
           <FormField label="คำนำหน้า">
             <AppSelect className="inp" value={prefixChoice} onChange={e => setPrefixChoice(e.target.value)}>
               <option value="">ไม่ระบุ</option>
@@ -4282,19 +4295,19 @@ function EmployeeForm({ empId, employees, departments, positions, organizations,
             </AppSelect>
           </FormField>
           {prefixChoice === 'OTHER' && (
-            <FormField label="คำนำหน้าอื่นๆ"><input className="inp" value={customPrefix} onChange={e => setCustomPrefix(e.target.value)} maxLength={20} placeholder="โปรดระบุคำนำหน้า" /></FormField>
+            <FormField label="คำนำหน้าอื่นๆ" required><input className="inp" aria-invalid={invalidFields.has('custom_prefix')} value={customPrefix} onChange={e => setCustomPrefix(e.target.value)} maxLength={20} placeholder="โปรดระบุคำนำหน้า" /></FormField>
           )}
-          <FormField label="ชื่อ" required><input className="inp" value={firstName} onChange={e => setFirstName(e.target.value)} placeholder="ชื่อ" /></FormField>
-          <FormField label="นามสกุล" required><input className="inp" value={lastName} onChange={e => setLastName(e.target.value)} placeholder="นามสกุล" /></FormField>
-          <FormField label="วันเดือนปีเกิด (พ.ศ.)" required><BuddhistDateInput value={birthDate} onChange={setBirthDate} required /></FormField>
-          <FormField label="อีเมล"><input className="inp" type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="example@muni.go.th" /></FormField>
+          <FormField label="ชื่อ" required><input className="inp" aria-invalid={invalidFields.has('first_name')} value={firstName} onChange={e => setFirstName(e.target.value)} placeholder="ชื่อ" /></FormField>
+          <FormField label="นามสกุล" required><input className="inp" aria-invalid={invalidFields.has('last_name')} value={lastName} onChange={e => setLastName(e.target.value)} placeholder="นามสกุล" /></FormField>
+          <FormField label="วันเดือนปีเกิด (พ.ศ.)" required><div className={invalidFields.has('birth_date') ? 'field-invalid' : ''}><BuddhistDateInput value={birthDate} onChange={setBirthDate} required /></div></FormField>
+          <FormField label="อีเมล" required><input required className="inp" aria-invalid={invalidFields.has('email')} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="example@muni.go.th" /></FormField>
           <FormField label="โทรศัพท์"><input className="inp" value={phone} onChange={e => setPhone(e.target.value)} /></FormField>
         </div>
         <div className="divider" />
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.04em' }}>ข้อมูลการทำงาน</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 24 }}>
           <FormField label="ฝ่าย" required>
-            <AppSelect className="inp" required value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
+            <AppSelect className="inp" aria-invalid={invalidFields.has('department_id')} required value={departmentId} onChange={e => setDepartmentId(e.target.value)}>
               <option value="" disabled>กรุณาเลือกฝ่าย</option>
               {departments
                 .filter(d => d.is_active)
@@ -4319,7 +4332,7 @@ function EmployeeForm({ empId, employees, departments, positions, organizations,
           </FormField>
           {employeeType === 'OTHER' && (
             <FormField label="ประเภทพนักงานอื่นๆ" required>
-              <input className="inp" value={employeeTypeOther} onChange={e => setEmployeeTypeOther(e.target.value)} maxLength={150} placeholder="โปรดระบุประเภทพนักงาน" />
+              <input className="inp" aria-invalid={invalidFields.has('employee_type_other')} value={employeeTypeOther} onChange={e => setEmployeeTypeOther(e.target.value)} maxLength={150} placeholder="โปรดระบุประเภทพนักงาน" />
             </FormField>
           )}
           <FormField label="สถานะ" required>
@@ -4334,12 +4347,11 @@ function EmployeeForm({ empId, employees, departments, positions, organizations,
         <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14, textTransform: 'uppercase', letterSpacing: '0.04em' }}>ข้อมูลเงินเดือน</div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
           <FormField label="ฐานเงินเดือน (บาท)" required>
-            <input className="inp" type="number" min="0" step="0.01" value={baseSalary} onChange={e => setBaseSalary(e.target.value)} placeholder="0.00" />
+            <input className="inp" aria-invalid={invalidFields.has('base_salary')} type="number" min="0" step="0.01" value={baseSalary} onChange={e => setBaseSalary(e.target.value)} placeholder="0.00" />
           </FormField>
           <FormField label="ธนาคาร"><input className="inp" value={bankName} onChange={e => setBankName(e.target.value)} /></FormField>
           <FormField label="เลขบัญชีธนาคาร"><input className="inp" value={bankAccountNo} onChange={e => setBankAccountNo(e.target.value)} /></FormField>
         </div>
-        {saveError && <div style={{ marginTop: 16, padding: 12, borderRadius: 10, background: '#FEF3F2', color: '#B42318', fontSize: 13 }}>{saveError}</div>}
         <div className="flex gap-3 justify-end mt-8">
           <button className="btn btn-secondary" onClick={() => setPage('employees')}>ยกเลิก</button>
           <button className="btn btn-primary" aria-busy={saving} onClick={handleSave} disabled={saving}><BusyLabel busy={saving} label="กำลังบันทึก…">บันทึก</BusyLabel></button>
@@ -4824,6 +4836,8 @@ function CombinedReportsPage({ role, periods, departments, organizations, userDe
   const [yearBE, setYearBE] = useState(availableYears[0] ?? new Date().getFullYear() + 543)
   const [month, setMonth] = useState(latestPeriod?.month ?? new Date().getMonth() + 1)
   const [departmentValue, setDepartmentValue] = useState('')
+  const activeReportDepartments = useMemo(() => departments.filter(department => department.is_active), [departments])
+  const [monthlyDepartmentIds, setMonthlyDepartmentIds] = useState<number[]>([])
   const [organizationValue, setOrganizationValue] = useState('')
   const [annualType, setAnnualType] = useState<AnnualReportType>('tax')
   const [annualRows, setAnnualRows] = useState<AnnualTaxRow[]>([])
@@ -4833,19 +4847,31 @@ function CombinedReportsPage({ role, periods, departments, organizations, userDe
   const selectedDepartmentId = departmentValue ? Number(departmentValue) : undefined
   const selectedOrganizationId = organizationValue ? Number(organizationValue) : undefined
   const departmentLabel = departments.find(department => department.id === selectedDepartmentId)?.name ?? 'ทุกฝ่าย'
+  const monthlyDepartmentLabel = monthlyDepartmentIds.length === activeReportDepartments.length
+    ? 'ทุกฝ่าย'
+    : activeReportDepartments.filter(department => monthlyDepartmentIds.includes(department.id)).map(department => department.name).join(', ') || 'ยังไม่ได้เลือกฝ่าย'
   const organizationLabel = organizations.find(organization => organization.id === selectedOrganizationId)?.name ?? 'ทุกหน่วยงาน'
   const annualLabel = annualType === 'tax' ? 'รายการนำส่งภาษี' : annualType === 'social_security' ? 'รายงานสรุปเงินสมทบประกันสังคมประจำปี' : 'รายงานสรุปรายได้ประจำปี'
   const dataVersion = useMemo(() => periods.flatMap(period => period.depts.map(department => `${department.databaseId ?? department.id}:${department.status}:${department.editVersion ?? 0}:${department.approvedAt ?? ''}`)).join('|'), [periods])
 
   useEffect(() => {
+    setMonthlyDepartmentIds(current => current.length ? current.filter(id => activeReportDepartments.some(department => department.id === id)) : activeReportDepartments.map(department => department.id))
+  }, [activeReportDepartments])
+
+  useEffect(() => {
     let active = true
     setLoading(true); setLoadError('')
+    const monthlyRequest = monthlyDepartmentIds.length === 0
+      ? Promise.resolve([] as MonthlyPayrollRow[])
+      : monthlyDepartmentIds.length === activeReportDepartments.length
+        ? getMonthlyPayrollReport(yearBE - 543, month, undefined, selectedOrganizationId)
+        : Promise.all(monthlyDepartmentIds.map(departmentId => getMonthlyPayrollReport(yearBE - 543, month, departmentId, selectedOrganizationId))).then(groups => groups.flat())
     const request = mode === 'monthly'
-      ? getMonthlyPayrollReport(yearBE - 543, month, selectedDepartmentId, selectedOrganizationId).then(data => { if (active) setMonthlyRows(data) })
+      ? monthlyRequest.then(data => { if (active) setMonthlyRows(data) })
       : getAnnualTaxReport(yearBE - 543, selectedDepartmentId, annualType).then(data => { if (active) setAnnualRows(data) })
     request.catch(error => { if (active) { if (mode === 'monthly') setMonthlyRows([]); else setAnnualRows([]); setLoadError(error instanceof Error ? error.message : 'ไม่สามารถโหลดรายงานได้') } }).finally(() => { if (active) setLoading(false) })
     return () => { active = false }
-  }, [mode, yearBE, month, selectedDepartmentId, selectedOrganizationId, annualType, dataVersion])
+  }, [mode, yearBE, month, selectedDepartmentId, selectedOrganizationId, annualType, dataVersion, monthlyDepartmentIds, activeReportDepartments.length])
 
   const departmentSummaries = useMemo(() => buildMonthlyDepartmentSummaries(monthlyRows), [monthlyRows])
   const annualMonthlyTotals = Array.from({ length: 12 }, (_, index) => annualRows.reduce((sum, row) => sum + (row.months[index] || 0), 0))
@@ -4853,7 +4879,7 @@ function CombinedReportsPage({ role, periods, departments, organizations, userDe
   const monthlyTotals = departmentSummaries.reduce((total, group) => ({ employees: total.employees + group.employeeIds.size, salary: total.salary + group.salary, earnings: total.earnings + group.totalEarnings, deductions: total.deductions + group.totalDeductions, net: total.net + group.net }), { employees: 0, salary: 0, earnings: 0, deductions: 0, net: 0 })
   const print = () => {
     const opened = mode === 'monthly'
-      ? printMonthlyPayrollReport(yearBE, month, departmentLabel, organizationLabel, monthlyRows)
+      ? printMonthlyPayrollReport(yearBE, month, monthlyDepartmentLabel, organizationLabel, monthlyRows)
       : printAnnualTaxReport(yearBE, departmentLabel, annualLabel, annualRows)
     if (!opened) showToast('ไม่สามารถเปิดหน้าต่างพิมพ์ได้ กรุณาลองใหม่', 'error')
   }
@@ -4867,13 +4893,13 @@ function CombinedReportsPage({ role, periods, departments, organizations, userDe
       {mode === 'annual' && <FormField label="ประเภทรายงาน"><AppSelect className="inp" style={{ width: 300 }} value={annualType} onChange={event => setAnnualType(event.target.value as AnnualReportType)}><option value="tax">รายการนำส่งภาษี</option><option value="income">รายงานสรุปรายได้ประจำปี</option><option value="social_security">รายงานสรุปเงินสมทบประกันสังคมประจำปี</option></AppSelect></FormField>}
       {mode === 'monthly' && <FormField label="เดือน"><AppSelect className="inp" style={{ width: 170 }} value={String(month)} onChange={event => setMonth(Number(event.target.value))}>{MONTH_TH.slice(1).map((label, index) => <option key={label} value={index + 1}>{label}</option>)}</AppSelect></FormField>}
       <FormField label="ปี (พ.ศ.)"><AppSelect className="inp" style={{ width: 160 }} value={String(yearBE)} onChange={event => setYearBE(Number(event.target.value))}>{(availableYears.length ? availableYears : [yearBE]).map(year => <option key={year} value={year}>{year}</option>)}</AppSelect></FormField>
-      <FormField label="ฝ่าย/กอง"><AppSelect className="inp" style={{ width: 230 }} value={departmentValue} onChange={event => setDepartmentValue(event.target.value)}><option value="">ทุกฝ่าย/กอง</option>{departments.filter(department => department.is_active).map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField>
+      {mode === 'monthly' ? <FormField label="ฝ่าย/กอง"><details className="multi-select-filter"><summary>{monthlyDepartmentLabel}</summary><div className="multi-select-options"><label><input type="checkbox" checked={monthlyDepartmentIds.length === activeReportDepartments.length} onChange={event => setMonthlyDepartmentIds(event.target.checked ? activeReportDepartments.map(department => department.id) : [])} /> ทั้งหมด</label>{activeReportDepartments.map(department => <label key={department.id}><input type="checkbox" checked={monthlyDepartmentIds.includes(department.id)} onChange={event => setMonthlyDepartmentIds(current => event.target.checked ? [...current, department.id] : current.filter(id => id !== department.id))} /> {department.name}</label>)}</div></details></FormField> : <FormField label="ฝ่าย/กอง"><AppSelect className="inp" style={{ width: 230 }} value={departmentValue} onChange={event => setDepartmentValue(event.target.value)}><option value="">ทุกฝ่าย/กอง</option>{activeReportDepartments.map(department => <option key={department.id} value={department.id}>{department.name}</option>)}</AppSelect></FormField>}
       <span style={{ fontSize: 12.5, color: 'var(--text-secondary)', paddingBottom: 10 }}>แสดงเฉพาะรอบเงินเดือนที่อนุมัติแล้ว</span>
     </div></div>
     {mode === 'monthly' ? <>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, marginBottom: 16 }}><KpiCard label="พนักงาน" value={String(monthlyTotals.employees)} unit="คน" icon="◉" accent="#8B5CF6" /><KpiCard label="รวมรายการรับ" value={thb(monthlyTotals.earnings)} unit="บาท" icon="▲" accent="#22C55E" /><KpiCard label="รวมรายการหัก" value={thb(monthlyTotals.deductions)} unit="บาท" icon="▼" accent="#EF4444" /><KpiCard label="ยอดรับสุทธิรวม" value={thb(monthlyTotals.net)} unit="บาท" icon="◈" accent="#3B82F6" /></div>
       <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 16 }}>
-        <div className="px-6 py-4" style={{ borderBottom: '1px solid rgba(0,0,0,.07)' }}><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 16 }}>1. สรุปเงินเดือนแยกตามฝ่าย / กอง</div><div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>{MONTH_TH[month]} พ.ศ. {yearBE} · {departmentLabel} · {organizationLabel}</div></div>
+        <div className="px-6 py-4" style={{ borderBottom: '1px solid rgba(0,0,0,.07)' }}><div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 16 }}>1. สรุปเงินเดือนแยกตามฝ่าย / กอง</div><div style={{ color: 'var(--text-secondary)', fontSize: 12.5, marginTop: 3 }}>{MONTH_TH[month]} พ.ศ. {yearBE} · {monthlyDepartmentLabel} · {organizationLabel}</div></div>
         <table className="tbl" style={{ minWidth: 1000 }}><thead><tr><th>ที่</th><th>ฝ่าย / กอง</th><th style={{ textAlign: 'center' }}>พนักงาน</th><th className="num">เงินเดือนรวม</th><th className="num">รวมรายการรับ</th><th className="num">รวมรายการหัก</th><th className="num">ยอดรับสุทธิรวม</th><th>สถานะ</th></tr></thead><tbody>{loading ? <tr><td colSpan={8} style={{ textAlign: 'center', padding: 28 }}>กำลังโหลดรายงาน…</td></tr> : loadError ? <tr><td colSpan={8} style={{ textAlign: 'center', padding: 28, color: '#B91C1C' }}>{loadError}</td></tr> : departmentSummaries.length === 0 ? <tr><td colSpan={8} style={{ textAlign: 'center', padding: 28, color: 'var(--text-secondary)' }}>ยังไม่มีข้อมูลจากรอบเงินเดือนที่อนุมัติแล้ว</td></tr> : departmentSummaries.map((group, index) => <tr key={group.departmentName}><td style={{ textAlign: 'center' }}>{index + 1}</td><td style={{ fontWeight: 600 }}>{group.departmentName}</td><td style={{ textAlign: 'center' }}>{group.employeeIds.size}</td><td className="num">{thb(group.salary)}</td><td className="num">{thb(group.totalEarnings)}</td><td className="num">{thb(group.totalDeductions)}</td><td className="num total">{thb(group.net)}</td><td><span className="badge badge-approved">อนุมัติแล้ว</span></td></tr>)}</tbody><tfoot>{!loading && !loadError && departmentSummaries.length > 0 && <tr><td colSpan={2} style={{ fontWeight: 700 }}>รวมทั้งสิ้น</td><td style={{ textAlign: 'center', fontWeight: 700 }}>{monthlyTotals.employees}</td><td className="num">{thb(monthlyTotals.salary)}</td><td className="num">{thb(monthlyTotals.earnings)}</td><td className="num">{thb(monthlyTotals.deductions)}</td><td className="num total">{thb(monthlyTotals.net)}</td><td>{departmentSummaries.length} ฝ่าย</td></tr>}</tfoot></table>
       </div>
       <div className="card" style={{ padding: 0, overflowX: 'auto', marginBottom: 16 }}>
@@ -4983,7 +5009,7 @@ function localDateInput(date: Date) {
 function AdminAuditLogs({ showToast }: { showToast: (msg: string, type?: 'success' | 'error' | 'info') => void }) {
   const today = new Date()
   const weekAgo = new Date(today); weekAgo.setDate(weekAgo.getDate() - 7)
-  const initialFilters: AuditLogFilters = { source: 'all', date_from: localDateInput(weekAgo), date_to: localDateInput(today), username: '', action: '', outcome: '' }
+  const initialFilters: AuditLogFilters = { source: 'all', date_from: localDateInput(weekAgo), date_to: localDateInput(today), username: '', action: '', outcome: '', ip_address: '' }
   const [draft, setDraft] = useState<AuditLogFilters>(initialFilters)
   const [filters, setFilters] = useState<AuditLogFilters>(initialFilters)
   const [rows, setRows] = useState<AuditLogRow[]>([])
@@ -5039,25 +5065,27 @@ function AdminAuditLogs({ showToast }: { showToast: (msg: string, type?: 'succes
         <FormField label="ประเภท"><select className="inp" value={draft.source} onChange={event => setDraft(current => ({ ...current, source: event.target.value as AuditLogFilters['source'] }))}><option value="all">ทั้งหมด</option><option value="audit">กิจกรรมผู้ใช้</option><option value="access">การเข้าใช้งาน</option></select></FormField>
         <FormField label="ผลลัพธ์"><select className="inp" value={draft.outcome} onChange={event => setDraft(current => ({ ...current, outcome: event.target.value as AuditLogFilters['outcome'] }))}><option value="">ทั้งหมด</option><option value="SUCCESS">สำเร็จ</option><option value="FAILED">ไม่สำเร็จ</option></select></FormField>
         <FormField label="ชื่อผู้ใช้"><input className="inp" value={draft.username} onChange={event => setDraft(current => ({ ...current, username: event.target.value }))} placeholder="ค้นหาชื่อผู้ใช้" /></FormField>
+        <FormField label="IP Address"><input className="inp" value={draft.ip_address} onChange={event => setDraft(current => ({ ...current, ip_address: event.target.value }))} placeholder="เช่น 192.168 หรือ 2001:" /></FormField>
         <FormField label="เหตุการณ์"><input className="inp" value={draft.action} onChange={event => setDraft(current => ({ ...current, action: event.target.value }))} placeholder="เช่น LOGIN หรือ SAVE" /></FormField>
       </div>
       <div className="flex justify-end gap-2" style={{ marginTop: 14 }}><button className="btn btn-ghost" onClick={resetFilters}>ล้างตัวกรอง</button><button className="btn btn-secondary" disabled={loading} onClick={applyFilters}>ค้นหา</button></div>
     </div>
     {error && <div className="card" style={{ padding: 16, marginBottom: 16, color: '#B91C1C', background: '#FFF7F7' }}>{error} <button className="btn btn-ghost btn-xs" onClick={() => void load()}>ลองใหม่</button></div>}
     <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-      <div className="table-scroll"><table className="tbl" style={{ minWidth: 1120 }}><thead><tr><th>วันเวลา</th><th>ประเภท</th><th>ผู้ใช้งาน</th><th>สิทธิ์</th><th>เหตุการณ์</th><th>ผลลัพธ์</th><th>IP Address</th><th>รายละเอียด</th></tr></thead><tbody>
-        {loading ? <tr><td colSpan={8} style={{ textAlign: 'center', padding: 30 }}><span className="btn-spinner" /> กำลังโหลด…</td></tr> : rows.length === 0 ? <tr><td colSpan={8} style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>ไม่พบบันทึกตามตัวกรอง</td></tr> : rows.map(row => <tr key={row.id}>
+      <div className="table-scroll"><table className="tbl" style={{ minWidth: 1350 }}><thead><tr><th>วันเวลา</th><th>ประเภท</th><th>ผู้ใช้งาน</th><th>สิทธิ์</th><th>เหตุการณ์</th><th>หน้า / ปุ่ม / ฟีเจอร์</th><th>ผลลัพธ์</th><th>IP Address</th><th>รายละเอียด</th></tr></thead><tbody>
+        {loading ? <tr><td colSpan={9} style={{ textAlign: 'center', padding: 30 }}><span className="btn-spinner" /> กำลังโหลด…</td></tr> : rows.length === 0 ? <tr><td colSpan={9} style={{ textAlign: 'center', padding: 30, color: 'var(--text-muted)' }}>ไม่พบบันทึกตามตัวกรอง</td></tr> : rows.map(row => <tr key={row.id}>
           <td style={{ whiteSpace: 'nowrap' }}>{new Date(row.occurred_at).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'medium' })}</td>
           <td><span className="badge" style={{ background: row.log_type === 'audit' ? '#F1ECFF' : '#EAF5FF', color: row.log_type === 'audit' ? '#6C45B8' : '#24658E' }}>{row.log_type === 'audit' ? 'กิจกรรม' : 'การเข้าใช้'}</span></td>
           <td style={{ fontWeight: 600 }}>{row.username || 'ไม่ทราบบัญชี'}</td><td>{roleLabel(row.role)}</td>
           <td style={{ maxWidth: 310, wordBreak: 'break-word' }}>{actionLabel(row)}</td>
+          <td style={{ minWidth: 230, maxWidth: 300, wordBreak: 'break-word', color: 'var(--text-secondary)' }}>{row.location || '–'}</td>
           <td><span className={`badge ${row.outcome === 'SUCCESS' ? 'badge-approved' : 'badge-rejected'}`}>{row.outcome === 'SUCCESS' ? 'สำเร็จ' : 'ไม่สำเร็จ'}</span></td>
           <td style={{ fontFamily: 'monospace' }}>{row.ip_address || '–'}</td>
           <td><button className="btn btn-ghost btn-xs" onClick={() => setSelected(row)}>ดูรายละเอียด</button></td>
         </tr>)}</tbody></table></div>
       <div className="flex items-center justify-between" style={{ padding: '12px 16px', borderTop: '1px solid var(--border)', fontSize: 12.5, color: 'var(--text-secondary)' }}><span>ทั้งหมด {total.toLocaleString('th-TH')} รายการ</span><div className="flex items-center gap-2"><button className="btn btn-ghost btn-xs" disabled={pageNumber <= 1 || loading} onClick={() => setPageNumber(current => current - 1)}>← ก่อนหน้า</button><span>หน้า {pageNumber}/{pages}</span><button className="btn btn-ghost btn-xs" disabled={pageNumber >= pages || loading} onClick={() => setPageNumber(current => current + 1)}>ถัดไป →</button></div></div>
     </div>
-    {selected && <Modal title="รายละเอียดบันทึกการใช้งาน" size="lg" onClose={() => setSelected(null)}><div style={{ display: 'grid', gridTemplateColumns: '130px minmax(0,1fr)', gap: '10px 16px', fontSize: 13 }}><span style={{ color: 'var(--text-secondary)' }}>เหตุการณ์</span><strong>{actionLabel(selected)}</strong><span style={{ color: 'var(--text-secondary)' }}>ทรัพยากร</span><span>{selected.resource_type}{selected.resource_id ? ` #${selected.resource_id}` : ''}</span><span style={{ color: 'var(--text-secondary)' }}>IP Address</span><strong style={{ fontFamily: 'monospace' }}>{selected.ip_address || '–'}</strong><span style={{ color: 'var(--text-secondary)' }}>Request ID</span><span style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{selected.request_id || '–'}</span><span style={{ color: 'var(--text-secondary)' }}>Browser / อุปกรณ์</span><span style={{ wordBreak: 'break-word' }}>{selected.user_agent || '–'}</span><span style={{ color: 'var(--text-secondary)' }}>ข้อมูลเพิ่มเติม</span><pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', padding: 12, borderRadius: 8, background: '#F7F7FA', fontSize: 12 }}>{JSON.stringify(selected.details || {}, null, 2)}</pre></div></Modal>}
+    {selected && <Modal title="รายละเอียดบันทึกการใช้งาน" size="lg" onClose={() => setSelected(null)}><div style={{ display: 'grid', gridTemplateColumns: '130px minmax(0,1fr)', gap: '10px 16px', fontSize: 13 }}><span style={{ color: 'var(--text-secondary)' }}>เหตุการณ์</span><strong>{actionLabel(selected)}</strong><span style={{ color: 'var(--text-secondary)' }}>หน้า / ฟีเจอร์</span><strong>{selected.location || '–'}</strong><span style={{ color: 'var(--text-secondary)' }}>ทรัพยากร</span><span>{selected.resource_type}{selected.resource_id ? ` #${selected.resource_id}` : ''}</span><span style={{ color: 'var(--text-secondary)' }}>IP Address</span><strong style={{ fontFamily: 'monospace' }}>{selected.ip_address || '–'}</strong><span style={{ color: 'var(--text-secondary)' }}>Request ID</span><span style={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>{selected.request_id || '–'}</span><span style={{ color: 'var(--text-secondary)' }}>Browser / อุปกรณ์</span><span style={{ wordBreak: 'break-word' }}>{selected.user_agent || '–'}</span><span style={{ color: 'var(--text-secondary)' }}>ข้อมูลเพิ่มเติม</span><pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word', padding: 12, borderRadius: 8, background: '#F7F7FA', fontSize: 12 }}>{JSON.stringify(selected.details || {}, null, 2)}</pre></div></Modal>}
   </div>
 }
 
@@ -5367,14 +5395,31 @@ function InvitePage({ token }: { token: string }) {
   const [saving, setSaving] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [invalidFields, setInvalidFields] = useState<Set<string>>(new Set())
   const [form, setForm] = useState<Record<string, string>>({ national_id: '', prefix: '', custom_prefix: '', first_name: '', last_name: '', department_id: '', position_name: '', organization_name: '', employee_type: 'CIVIL_SERVANT', employee_type_other: '', birth_date: '', start_date: '', end_date: '', email: '', phone: '', bank_name: '', bank_account_no: '', base_salary: '', username: '', password: '', confirm_password: '' })
   useEffect(() => { getInvite(token).then(data => { setInvite(data); setForm(current => ({ ...current, email: data.email })) }).catch(e => setError(e.message)) }, [token])
-  const set = (key: string, value: string) => setForm(current => ({ ...current, [key]: value }))
+  const set = (key: string, value: string) => {
+    setForm(current => ({ ...current, [key]: value }))
+    setInvalidFields(current => { const next = new Set(current); next.delete(key); return next })
+  }
   const uniqueDepartments = invite?.departments.filter((department, index, items) => items.findIndex(item => item.name.trim() === department.name.trim()) === index) ?? []
   const save = async (event: React.FormEvent) => {
     event.preventDefault(); setError('')
-    if (!form.birth_date) { setError('กรุณากรอกวันเดือนปีเกิดให้ครบถ้วน'); return }
-    if (form.password !== form.confirm_password) { setError('รหัสผ่านและยืนยันรหัสผ่านไม่ตรงกัน'); return }
+    const invalid = new Set<string>()
+    if (form.national_id.length !== 13) invalid.add('national_id')
+    if (!form.first_name.trim()) invalid.add('first_name')
+    if (!form.last_name.trim()) invalid.add('last_name')
+    if (!form.birth_date) invalid.add('birth_date')
+    if (!/^\S+@\S+\.\S+$/.test(form.email.trim())) invalid.add('email')
+    if (!form.department_id) invalid.add('department_id')
+    if (!form.base_salary) invalid.add('base_salary')
+    if (form.prefix === 'OTHER' && !form.custom_prefix.trim()) invalid.add('custom_prefix')
+    if (form.employee_type === 'OTHER' && !form.employee_type_other.trim()) invalid.add('employee_type_other')
+    if (form.username.trim().length < 3) invalid.add('username')
+    if (form.password.length < 8) invalid.add('password')
+    if (form.confirm_password !== form.password) invalid.add('confirm_password')
+    setInvalidFields(invalid)
+    if (invalid.size) { setError('กรุณาตรวจสอบช่องสีแดงและกรอกข้อมูลที่จำเป็นให้ถูกต้อง'); return }
     setSaving(true)
     try {
       await submitInvite(token, { username: form.username, password: form.password, employee: {
@@ -5386,14 +5431,14 @@ function InvitePage({ token }: { token: string }) {
       setSubmitted(true)
     } catch (e) { setError(e instanceof Error ? e.message : 'ส่งคำขอไม่สำเร็จ') } finally { setSaving(false) }
   }
-  const field = (key: string, label: string, type = 'text', required = false, extra?: React.InputHTMLAttributes<HTMLInputElement>) => <FormField label={required ? label : `${label} (ไม่บังคับ)`} required={required}><input required={required} className="inp" type={type} value={form[key]} onChange={e => set(key, e.target.value)} {...extra} /></FormField>
-  const passwordField = (key: 'password' | 'confirm_password', label: string, visible: boolean, setVisible: (visible: boolean) => void) => <FormField label={label} required><div style={{ position: 'relative' }}><input required minLength={8} className="inp" type={visible ? 'text' : 'password'} value={form[key]} onChange={e => set(key, e.target.value)} style={{ paddingRight: 44 }} /><button type="button" onClick={() => setVisible(!visible)} aria-label={visible ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'} title={visible ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', border: 0, background: 'transparent', cursor: 'pointer', color: '#6B6480', display: 'grid', placeItems: 'center', padding: 5 }}><EyeIcon off={visible} /></button></div></FormField>
+  const field = (key: string, label: string, type = 'text', required = false, extra?: React.InputHTMLAttributes<HTMLInputElement>) => <FormField label={required ? label : `${label} (ไม่บังคับ)`} required={required}><input required={required} aria-invalid={invalidFields.has(key)} className="inp" type={type} value={form[key]} onChange={e => set(key, e.target.value)} {...extra} /></FormField>
+  const passwordField = (key: 'password' | 'confirm_password', label: string, visible: boolean, setVisible: (visible: boolean) => void) => <FormField label={label} required><div style={{ position: 'relative' }}><input required minLength={8} aria-invalid={invalidFields.has(key)} className="inp" type={visible ? 'text' : 'password'} value={form[key]} onChange={e => set(key, e.target.value)} style={{ paddingRight: 44 }} /><button type="button" onClick={() => setVisible(!visible)} aria-label={visible ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'} title={visible ? 'ซ่อนรหัสผ่าน' : 'แสดงรหัสผ่าน'} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', border: 0, background: 'transparent', cursor: 'pointer', color: '#6B6480', display: 'grid', placeItems: 'center', padding: 5 }}><EyeIcon off={visible} /></button></div></FormField>
   const roleLabel = (role?: string) => role === 'hr' ? 'พนักงานฝ่ายธุรการ' : role === 'director' ? 'ผู้บริหาร' : 'แอดมิน'
   return <div className="invite-page" style={{ minHeight: '100vh', background: '#F7F6FC', padding: '48px 20px', color: '#202124' }}><div className="invite-card" style={{ maxWidth: 860, margin: 'auto', background: 'white', borderRadius: 20, padding: 32, boxShadow: '0 12px 36px rgba(78,57,138,.10)' }}>
     <div className="invite-header" style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 22 }}><img src={takhliLogo} style={{ width: 46, height: 46, borderRadius: '50%' }} /><div><strong style={{ fontSize: 22 }}>PayFlow</strong><div style={{ color: '#746D84', fontSize: 13 }}>ลงทะเบียนขอเข้าใช้งานระบบ</div></div></div>
-    {error && <div style={{ background: '#FFF0F0', color: '#C23B3B', padding: 12, borderRadius: 9, marginBottom: 16 }}>{error}</div>}
+    {error && <div className="form-error-banner" role="alert">{error}</div>}
     {!invite && !error && <div>กำลังตรวจสอบลิงก์คำเชิญ…</div>}
-    {submitted ? <div style={{ textAlign: 'center', padding: '40px 0' }}><div style={{ fontSize: 42 }}>✓</div><h2>ส่งคำขอเรียบร้อย</h2><p style={{ color: '#6B7280' }}>แอดมินจะตรวจสอบข้อมูลพนักงานและกำหนดสิทธิ์ก่อนเปิดใช้งานบัญชี</p></div> : invite && <form onSubmit={save}>
+    {submitted ? <div style={{ textAlign: 'center', padding: '40px 0' }}><div style={{ fontSize: 42 }}>✓</div><h2>ส่งคำขอเรียบร้อย</h2><p style={{ color: '#6B7280' }}>แอดมินจะตรวจสอบข้อมูลพนักงานและกำหนดสิทธิ์ก่อนเปิดใช้งานบัญชี</p></div> : invite && <form noValidate className={invalidFields.size ? 'validation-show-errors' : ''} onSubmit={save}>
       <div style={{ background: '#F0ECFF', padding: '12px 14px', borderRadius: 10, marginBottom: 22, fontSize: 14 }}>{invite.email ? <>อีเมลคำเชิญ: <strong>{invite.email}</strong> · </> : <>ลิงก์คำเชิญทั่วไป · </>}สิทธิ์การใช้งานที่ต้องการ: <strong>{roleLabel(invite.requested_role)}</strong></div>
       <p style={{ color: '#737080', fontSize: 13, marginBottom: 20 }}><span style={{ color: '#EF4444' }}>*</span> จำเป็นต้องกรอก · ช่องที่ระบุ “ไม่บังคับ” สามารถเว้นได้</p>
       <div style={{ fontFamily: 'var(--font-display)', fontWeight: 700, fontSize: 14, color: 'var(--purple-600)', marginBottom: 14 }}>ข้อมูลส่วนตัว</div>

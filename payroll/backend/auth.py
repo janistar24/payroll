@@ -16,6 +16,7 @@ from DBHelper import DBHelper
 TOKEN_ALGORITHM = "HS256"
 TOKEN_LIFETIME_HOURS = 8
 LOGIN_MAX_FAILURES = int(os.getenv("LOGIN_MAX_FAILURES", "3"))
+LOGIN_GLOBAL_MAX_FAILURES = int(os.getenv("LOGIN_GLOBAL_MAX_FAILURES", "12"))
 LOGIN_LOCK_MINUTES = int(os.getenv("LOGIN_LOCK_MINUTES", "5"))
 bearer_scheme = HTTPBearer(auto_error=False)
 _DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"payflow-timing-only", bcrypt.gensalt())
@@ -30,14 +31,20 @@ class AuthService:
 
     def ensure_login_allowed(self, username, ip_address):
         data, _ = self.db.fetch(
-            """SELECT COUNT(*), MAX(attempted_at)
+            """SELECT COUNT(*) FILTER (WHERE ip_address = %s),
+                      COUNT(*),
+                      MAX(attempted_at) FILTER (WHERE ip_address = %s),
+                      MAX(attempted_at)
                  FROM public.login_failures
                 WHERE LOWER(username) = LOWER(%s)
                   AND attempted_at > NOW() - (%s * INTERVAL '1 minute')""",
-            (username, LOGIN_LOCK_MINUTES),
+            (ip_address, ip_address, username, LOGIN_LOCK_MINUTES),
         )
-        count, last_attempt = data[0]
-        if count >= LOGIN_MAX_FAILURES and last_attempt is not None:
+        ip_count, global_count, ip_last_attempt, global_last_attempt = data[0]
+        locked_by_ip = ip_count >= LOGIN_MAX_FAILURES
+        locked_globally = global_count >= LOGIN_GLOBAL_MAX_FAILURES
+        last_attempt = ip_last_attempt if locked_by_ip else global_last_attempt
+        if (locked_by_ip or locked_globally) and last_attempt is not None:
             unlock_at = last_attempt + timedelta(minutes=LOGIN_LOCK_MINUTES)
             retry_after = max(1, int((unlock_at - datetime.now(timezone.utc)).total_seconds()))
             raise HTTPException(
@@ -74,7 +81,7 @@ class AuthService:
             JOIN public.roles roles ON roles.id = users.role_id
             LEFT JOIN public.employees employees ON employees.id = users.employee_id
             LEFT JOIN public.departments departments ON departments.id = employees.department_id
-            WHERE users.username = %s
+            WHERE LOWER(users.username) = LOWER(%s)
               AND users.is_active = TRUE
             """,
             (username,)

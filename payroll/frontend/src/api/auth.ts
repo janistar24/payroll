@@ -87,8 +87,9 @@ export async function loginWithDatabase(username: string, password: string): Pro
   const response = await postLoginWithWakeRetry(username, password)
 
   if (!response.ok) {
-    if (response.status === 401) throw new Error('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง')
-    if (response.status === 429) throw new Error('บัญชีถูกล็อกชั่วคราว กรุณารอ 5 นาทีแล้วลองใหม่')
+    const body = await response.json().catch(() => null)
+    if (response.status === 401) throw new Error(typeof body?.detail === 'string' ? body.detail : 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง')
+    if (response.status === 429) throw new Error(typeof body?.detail === 'string' ? body.detail : 'บัญชีถูกล็อกชั่วคราว กรุณารอสักครู่แล้วลองใหม่')
     throw new Error(`เข้าสู่ระบบไม่สำเร็จ: ${response.status}`)
   }
 

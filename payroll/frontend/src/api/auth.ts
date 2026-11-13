@@ -17,6 +17,24 @@ interface LoginResponse {
   data: { access_token: string; token_type: string; user: AuthUser }
 }
 
+export interface AuthSession {
+  session_id: string
+  device_label: string
+  ip_address: string
+  created_at: string
+  last_seen_at: string
+  is_current?: boolean
+}
+
+export class SessionLimitError extends Error {
+  sessions: AuthSession[]
+  constructor(message: string, sessions: AuthSession[]) {
+    super(message)
+    this.name = 'SessionLimitError'
+    this.sessions = sessions
+  }
+}
+
 export function getAccessToken(): string | null {
   return sessionStorage.getItem(TOKEN_KEY)
 }
@@ -59,7 +77,7 @@ export async function checkCurrentSession(): Promise<SessionStatus> {
 
 const wait = (milliseconds: number) => new Promise(resolve => window.setTimeout(resolve, milliseconds))
 
-async function postLoginWithWakeRetry(username: string, password: string): Promise<Response> {
+async function postLoginWithWakeRetry(username: string, password: string, replaceSessionId?: string): Promise<Response> {
   let lastResponse: Response | null = null
   let lastError: unknown
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -67,7 +85,7 @@ async function postLoginWithWakeRetry(username: string, password: string): Promi
       const response = await fetch(`${API_URL}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify({ username, password, replace_session_id: replaceSessionId || null }),
         cache: 'no-store',
       })
       // Never retry invalid credentials or validation errors. Retry only a
@@ -83,11 +101,14 @@ async function postLoginWithWakeRetry(username: string, password: string): Promi
   throw lastError instanceof Error ? lastError : new Error('ไม่สามารถเชื่อมต่อระบบได้')
 }
 
-export async function loginWithDatabase(username: string, password: string): Promise<AuthUser> {
-  const response = await postLoginWithWakeRetry(username, password)
+export async function loginWithDatabase(username: string, password: string, replaceSessionId?: string): Promise<AuthUser> {
+  const response = await postLoginWithWakeRetry(username, password, replaceSessionId)
 
   if (!response.ok) {
     const body = await response.json().catch(() => null)
+    if (response.status === 409 && body?.detail?.code === 'SESSION_LIMIT') {
+      throw new SessionLimitError(body.detail.message || 'บัญชีนี้เข้าสู่ระบบครบ 2 อุปกรณ์แล้ว', body.detail.sessions || [])
+    }
     if (response.status === 401) throw new Error(typeof body?.detail === 'string' ? body.detail : 'ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง')
     if (response.status === 429) throw new Error(typeof body?.detail === 'string' ? body.detail : 'บัญชีถูกล็อกชั่วคราว กรุณารอสักครู่แล้วลองใหม่')
     throw new Error(`เข้าสู่ระบบไม่สำเร็จ: ${response.status}`)
@@ -97,4 +118,17 @@ export async function loginWithDatabase(username: string, password: string): Pro
   if (!result.success || !result.data?.access_token) throw new Error('ระบบไม่สามารถออก token สำหรับเข้าสู่ระบบได้')
   sessionStorage.setItem(TOKEN_KEY, result.data.access_token)
   return result.data.user
+}
+
+export async function getAuthSessions(): Promise<AuthSession[]> {
+  const response = await fetch(`${API_URL}/auth/sessions`, { headers: authorizationHeaders(), cache: 'no-store' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : 'โหลดอุปกรณ์ที่เข้าสู่ระบบไม่สำเร็จ')
+  return body.data || []
+}
+
+export async function revokeAuthSession(sessionId: string): Promise<void> {
+  const response = await fetch(`${API_URL}/auth/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE', headers: authorizationHeaders(), cache: 'no-store' })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) throw new Error(typeof body?.detail === 'string' ? body.detail : 'นำอุปกรณ์ออกจากระบบไม่สำเร็จ')
 }

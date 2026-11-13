@@ -6,6 +6,7 @@ REQUIRED_COLUMNS = {
     "payslip_email_deliveries": {"payroll_item_id", "status", "updated_at"},
     "audit_logs": {"actor_username", "outcome", "ip_address", "request_id"},
     "access_logs": {"username", "ip_address", "path", "status_code", "request_id", "occurred_at"},
+    "user_sessions": {"session_id", "user_id", "ip_address", "user_agent", "device_label", "created_at", "last_seen_at", "revoked_at"},
 }
 
 

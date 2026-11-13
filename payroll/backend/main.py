@@ -30,7 +30,7 @@ from pay_item_types import PayItemTypes
 from payroll_workflow import PayrollWorkflow, StalePayrollVersionError
 from schema_checks import validate_required_schema
 from email_service import PayslipEmailService
-from auth import auth_service, get_current_user
+from auth import SessionLimitError, auth_service, get_current_user
 from audit import AuditLogger, request_audit_context
 
 app = FastAPI(
@@ -566,6 +566,7 @@ class EmployeeEmailUpdate(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=1, max_length=255)
+    replace_session_id: uuid.UUID | None = None
 
 
 def _validate_new_username(value: str) -> str:
@@ -892,9 +893,26 @@ def login(request: LoginRequest, http_request: Request):
         auth_service.ensure_login_allowed(username, client_ip)
         raise HTTPException(status_code=401, detail="ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง")
     auth_service.clear_login_failures(username, client_ip)
-    session_id = auth_service.start_session(user)
+    try:
+        session_id = auth_service.start_session(
+            user,
+            ip_address=client_ip,
+            user_agent=http_request.headers.get("user-agent", ""),
+            replace_session_id=str(request.replace_session_id) if request.replace_session_id else None,
+        )
+    except SessionLimitError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "SESSION_LIMIT",
+                "message": "บัญชีนี้เข้าสู่ระบบครบ 2 อุปกรณ์แล้ว กรุณาเลือกอุปกรณ์ที่ต้องการให้ออกจากระบบ",
+                "sessions": error.sessions,
+            },
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error))
     http_request.state.audit_actor = {"id": user["id"], "username": user["username"], "role": user["role"]}
-    audit_logger.log(user["id"], "LOGIN", "user", user["id"], {"client_ip": client_ip})
+    audit_logger.log(user["id"], "LOGIN", "user", user["id"], {"client_ip": client_ip, "replaced_session": bool(request.replace_session_id)})
     return {
         "success": True,
         "data": {
@@ -910,13 +928,23 @@ def auth_me(user=Depends(get_current_user)):
     return {"success": True, "data": user}
 
 
-@app.post("/api/auth/logout")
-def logout(http_request: Request, user=Depends(get_current_user)):
+@app.get("/api/auth/sessions")
+def auth_sessions(http_request: Request, user=Depends(get_current_user)):
     authorization = http_request.headers.get("authorization", "")
     claims = auth_service.decode_token(authorization.split(" ", 1)[1])
-    audit_logger.log(user["id"], "LOGOUT", "user", user["id"])
-    auth_service.end_session(user["id"], claims.get("sid"))
-    return {"success": True}
+    return {"success": True, "data": auth_service.list_sessions(user["id"], claims.get("sid"))}
+
+
+@app.delete("/api/auth/sessions/{session_id}")
+def revoke_auth_session(session_id: uuid.UUID, http_request: Request, user=Depends(get_current_user)):
+    authorization = http_request.headers.get("authorization", "")
+    claims = auth_service.decode_token(authorization.split(" ", 1)[1])
+    try:
+        auth_service.revoke_session(user["id"], str(session_id))
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error))
+    audit_logger.log(user["id"], "REVOKE_SESSION", "auth", str(session_id), {})
+    return {"success": True, "data": {"revoked_current": str(claims.get("sid")) == str(session_id)}}
 
 
 @app.post("/api/auth/logout")

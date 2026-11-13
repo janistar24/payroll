@@ -22,6 +22,12 @@ bearer_scheme = HTTPBearer(auto_error=False)
 _DUMMY_PASSWORD_HASH = bcrypt.hashpw(b"payflow-timing-only", bcrypt.gensalt())
 
 
+class SessionLimitError(Exception):
+    def __init__(self, sessions):
+        super().__init__("บัญชีนี้เข้าสู่ระบบครบ 2 อุปกรณ์แล้ว")
+        self.sessions = sessions
+
+
 class AuthService:
     def __init__(self):
         self.db = DBHelper()
@@ -96,13 +102,49 @@ class AuthService:
         user.pop("password_hash")
         return user
 
-    def start_session(self, user):
-        """Rotate the account session so only the newest login stays valid."""
+    @staticmethod
+    def device_label(user_agent):
+        value = (user_agent or "").lower()
+        browser = "Edge" if "edg/" in value else "Chrome" if "chrome" in value else "Safari" if "safari" in value else "Firefox" if "firefox" in value else "Browser"
+        device = "iPhone" if "iphone" in value else "iPad" if "ipad" in value else "Android" if "android" in value else "Mac" if "mac os" in value or "macintosh" in value else "Windows" if "windows" in value else "อุปกรณ์"
+        return f"{browser} บน {device}"
+
+    def start_session(self, user, ip_address=None, user_agent=None, replace_session_id=None):
+        """Create one of at most two active sessions, optionally replacing one."""
         session_id = str(uuid4())
-        self.db.execute(
-            "UPDATE public.users SET current_session_id = %s WHERE id = %s",
-            (session_id, user["id"]),
-        )
+        with self.db.transaction() as cursor:
+            cursor.execute("SELECT id FROM public.users WHERE id = %s FOR UPDATE", (user["id"],))
+            cursor.execute(
+                "UPDATE public.user_sessions SET revoked_at = NOW() WHERE user_id = %s AND revoked_at IS NULL AND created_at < NOW() - (%s * INTERVAL '1 hour')",
+                (user["id"], TOKEN_LIFETIME_HOURS),
+            )
+            if replace_session_id:
+                cursor.execute(
+                    "UPDATE public.user_sessions SET revoked_at = NOW() WHERE session_id = %s AND user_id = %s AND revoked_at IS NULL RETURNING session_id",
+                    (replace_session_id, user["id"]),
+                )
+                if cursor.fetchone() is None:
+                    raise ValueError("ไม่พบอุปกรณ์ที่เลือก หรืออุปกรณ์นั้นออกจากระบบแล้ว")
+            cursor.execute(
+                """SELECT session_id::text, device_label, ip_address, created_at, last_seen_at
+                     FROM public.user_sessions
+                    WHERE user_id = %s AND revoked_at IS NULL
+                    ORDER BY created_at DESC""",
+                (user["id"],),
+            )
+            active_sessions = cursor.fetchall()
+            if len(active_sessions) >= 2:
+                raise SessionLimitError([
+                    {"session_id": row[0], "device_label": row[1], "ip_address": str(row[2] or ""), "created_at": row[3].isoformat(), "last_seen_at": row[4].isoformat()}
+                    for row in active_sessions
+                ])
+            cursor.execute(
+                """INSERT INTO public.user_sessions
+                       (session_id, user_id, ip_address, user_agent, device_label)
+                     VALUES (%s, %s, %s, %s, %s)""",
+                (session_id, user["id"], ip_address, (user_agent or "")[:1000], self.device_label(user_agent)),
+            )
+            cursor.execute("UPDATE public.users SET current_session_id = %s WHERE id = %s", (session_id, user["id"]))
         return session_id
 
     def create_token(self, user, session_id):
@@ -119,10 +161,37 @@ class AuthService:
         return jwt.encode(payload, self.secret, algorithm=TOKEN_ALGORITHM)
 
     def end_session(self, user_id, session_id):
-        self.db.execute(
-            "UPDATE public.users SET current_session_id = NULL WHERE id = %s AND current_session_id = %s",
-            (user_id, session_id),
+        with self.db.transaction() as cursor:
+            cursor.execute("UPDATE public.user_sessions SET revoked_at = NOW() WHERE user_id = %s AND session_id = %s", (user_id, session_id))
+            cursor.execute("UPDATE public.users SET current_session_id = NULL WHERE id = %s AND current_session_id = %s", (user_id, session_id))
+
+    def list_sessions(self, user_id, current_session_id=None):
+        data, columns = self.db.fetch(
+            """SELECT session_id::text, device_label, ip_address, created_at, last_seen_at
+                 FROM public.user_sessions
+                WHERE user_id = %s AND revoked_at IS NULL
+                ORDER BY created_at DESC""",
+            (user_id,),
         )
+        return [
+            {
+                **dict(zip(columns, row)),
+                "ip_address": str(row[2] or ""),
+                "created_at": row[3].isoformat(),
+                "last_seen_at": row[4].isoformat(),
+                "is_current": str(row[0]) == str(current_session_id),
+            }
+            for row in data
+        ]
+
+    def revoke_session(self, user_id, session_id):
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                "UPDATE public.user_sessions SET revoked_at = NOW() WHERE user_id = %s AND session_id = %s AND revoked_at IS NULL RETURNING session_id",
+                (user_id, session_id),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("ไม่พบอุปกรณ์ที่เข้าสู่ระบบ")
 
     def decode_token(self, token):
         try:
@@ -143,7 +212,6 @@ class AuthService:
                 users.email,
                 roles.code AS role,
                 users.can_approve_payroll,
-                users.current_session_id,
                 employees.department_id,
                 departments.name AS department_name
             FROM public.users users
@@ -159,8 +227,11 @@ class AuthService:
             raise HTTPException(status_code=401, detail="ไม่พบบัญชีผู้ใช้ที่เปิดใช้งาน")
         user = dict(zip(columns, data[0]))
         token_session_id = str(claims.get("sid") or "")
-        current_session_id = str(user.pop("current_session_id") or "")
-        if not token_session_id or not current_session_id or not hmac.compare_digest(token_session_id, current_session_id):
+        session_rows, _ = self.db.fetch(
+            "SELECT session_id::text FROM public.user_sessions WHERE user_id = %s AND session_id = %s AND revoked_at IS NULL AND created_at > NOW() - (%s * INTERVAL '1 hour')",
+            (user["id"], token_session_id or None, TOKEN_LIFETIME_HOURS),
+        )
+        if not token_session_id or not session_rows or not hmac.compare_digest(token_session_id, str(session_rows[0][0])):
             raise HTTPException(
                 status_code=401,
                 detail={"code": "SESSION_REPLACED", "message": "บัญชีนี้เข้าสู่ระบบจากอุปกรณ์อื่นแล้ว"},

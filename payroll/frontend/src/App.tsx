@@ -16,7 +16,7 @@ import {
 } from './api/employees'
 import { createPosition, getPositions, type Position } from './api/positions'
 import { getAppData } from './api/bootstrap'
-import { checkCurrentSession, clearAccessToken, loginWithDatabase, logoutCurrentSession, type AuthUser } from './api/auth'
+import { checkCurrentSession, clearAccessToken, getAuthSessions, loginWithDatabase, logoutCurrentSession, revokeAuthSession, SessionLimitError, type AuthSession, type AuthUser } from './api/auth'
 import { activateSystemUser, approveAccessRequest, changeMyPassword, createSystemUser, createUserInvite, deactivateSystemUser, deleteSystemUser, getAccessRequests, getUsers, rejectAccessRequest, resetSystemUserPassword, updatePayrollApprovalPermission, type AccessRequest, type SystemUser } from './api/users'
 import { getInvite, submitInvite, type InviteData } from './api/invites'
 import { createPayrollPeriod, createPayrollRevision, deletePayrollPeriod, getPayrollBatchHistory, getPayrollBatchVersion, getPayrollChangeNotes, getPayrollSyncVersion, getPayslipPdf, payrollBatchAction, restorePayrollBatchVersion, savePayrollBatchItems, sendPayslipEmail, type PayrollBatchRecord, type PayrollChangeNote, type PayrollPeriodRecord } from './api/payroll'
@@ -1072,23 +1072,30 @@ function LoginPage({ onLogin, notice = '' }: { onLogin: (id: number, user: strin
   const [showPw, setShowPw] = useState(false)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [sessionChoices, setSessionChoices] = useState<AuthSession[]>([])
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const performLogin = async (replaceSessionId?: string) => {
     setError('')
     if (!username || !password) { setError('กรุณากรอกชื่อผู้ใช้และรหัสผ่าน'); return }
     setLoading(true)
     try {
-      const user: AuthUser = await loginWithDatabase(username.trim(), password)
+      const user: AuthUser = await loginWithDatabase(username.trim(), password, replaceSessionId)
       if (user.role !== 'hr' && user.role !== 'director' && user.role !== 'admin') {
         clearAccessToken()
         throw new Error('บัญชีนี้ยังไม่มีสิทธิ์ใช้งานในหน้าเว็บ Payroll')
       }
+      setSessionChoices([])
       onLogin(user.id, user.username, user.full_name || user.username, user.role, user.department_name, user.role === 'director' || (user.role === 'admin' && user.can_approve_payroll))
     } catch (loginError) {
-      setError(loginError instanceof Error ? loginError.message : 'เข้าสู่ระบบไม่สำเร็จ')
+      if (loginError instanceof SessionLimitError) setSessionChoices(loginError.sessions)
+      else setError(loginError instanceof Error ? loginError.message : 'เข้าสู่ระบบไม่สำเร็จ')
       setLoading(false)
     }
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    await performLogin()
   }
 
   return (
@@ -1140,6 +1147,7 @@ function LoginPage({ onLogin, notice = '' }: { onLogin: (id: number, user: strin
           ลืมรหัสผ่าน? กรุณาติดต่อผู้ดูแลระบบ
         </div>
       </div>
+      {sessionChoices.length > 0 && <Modal title="เลือกอุปกรณ์ที่จะออกจากระบบ" onClose={() => setSessionChoices([])}><div className="flex flex-col gap-3"><div style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.6 }}>บัญชีนี้ใช้งานครบ 2 อุปกรณ์แล้ว เลือกหนึ่งอุปกรณ์เพื่อออกจากระบบและเข้าใช้งานบนเครื่องนี้</div>{sessionChoices.map(session => <button key={session.session_id} type="button" className="btn btn-secondary" disabled={loading} onClick={() => void performLogin(session.session_id)} style={{ width: '100%', height: 'auto', padding: '12px 14px', justifyContent: 'space-between', textAlign: 'left' }}><span><strong style={{ display: 'block' }}>{session.device_label || 'อุปกรณ์ที่เข้าสู่ระบบ'}</strong><small style={{ color: 'var(--text-secondary)' }}>เข้าสู่ระบบ {new Date(session.created_at).toLocaleString('th-TH')} · IP {session.ip_address || 'ไม่ทราบ'}</small></span><span style={{ color: '#C2413A' }}>ให้ออกจากระบบ</span></button>)}</div></Modal>}
     </div>
   )
 }
@@ -5495,6 +5503,9 @@ export default function App() {
   const [announcementOpenSignal, setAnnouncementOpenSignal] = useState(0)
   const [maintenance, setMaintenance] = useState<{ announcement: SystemAnnouncement; releaseId: string } | null>(null)
   const [showMyInfo, setShowMyInfo] = useState(false)
+  const [showSessions, setShowSessions] = useState(false)
+  const [authSessions, setAuthSessions] = useState<AuthSession[]>([])
+  const [sessionsLoading, setSessionsLoading] = useState(false)
   const [showPasswordReset, setShowPasswordReset] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -5773,6 +5784,23 @@ export default function App() {
 
   const handleLogout = () => { void logoutCurrentSession(); clearAccessToken(); setProfileMenuOpen(false); setCurrentUserId(null); setCanApprovePayroll(false); setLoggedIn(false); setPage('login' as Page) }
 
+  const openSessions = async () => {
+    setProfileMenuOpen(false); setShowSessions(true); setSessionsLoading(true)
+    try { setAuthSessions(await getAuthSessions()) }
+    catch (error) { showToast(error instanceof Error ? error.message : 'โหลดอุปกรณ์ที่เข้าสู่ระบบไม่สำเร็จ', 'error') }
+    finally { setSessionsLoading(false) }
+  }
+
+  const removeSession = async (session: AuthSession) => {
+    if (!window.confirm(`ให้ออกจากระบบจาก ${session.device_label} ใช่หรือไม่?`)) return
+    try {
+      await revokeAuthSession(session.session_id)
+      if (session.is_current) { clearAccessToken(); setShowSessions(false); setLoggedIn(false); setPage('login' as Page); return }
+      setAuthSessions(current => current.filter(item => item.session_id !== session.session_id))
+      showToast('นำอุปกรณ์ออกจากระบบแล้ว', 'success')
+    } catch (error) { showToast(error instanceof Error ? error.message : 'นำอุปกรณ์ออกจากระบบไม่สำเร็จ', 'error') }
+  }
+
   useEffect(() => {
     if (!loggedIn) return
     let checking = false
@@ -5877,11 +5905,12 @@ export default function App() {
           <div className="flex items-center gap-3" style={{ position: 'relative' }}>
             <div style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>รอบปัจจุบัน: <strong style={{ color: '#1A1A1A' }}>{visiblePeriods[0] ? periodLabel(visiblePeriods[0]) : 'ยังไม่มีรอบเงินเดือน'}</strong></div>
             <button type="button" aria-label="เมนูผู้ใช้งาน" title="เมนูผู้ใช้งาน" onClick={() => setProfileMenuOpen(open => !open)} style={{ width: 34, height: 34, borderRadius: '50%', border: '1px solid #DCD7EC', background: '#FFFFFF', color: '#6C52D9', display: 'grid', placeItems: 'center', cursor: 'pointer', boxShadow: '0 1px 3px rgba(0,0,0,.05)' }}><PersonIcon /></button>
-            {profileMenuOpen && <div style={{ position: 'absolute', top: 43, right: 0, width: 218, background: '#FFFFFF', border: '1px solid rgba(89,68,140,.14)', borderRadius: 12, boxShadow: '0 12px 28px rgba(39,28,66,.16)', padding: 6, zIndex: 30 }}><div style={{ padding: '9px 11px 10px', borderBottom: '1px solid rgba(0,0,0,.06)', marginBottom: 4 }}><div style={{ fontWeight: 700, fontSize: 13 }}>{userName}</div><div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>{roleLabel[role]}</div></div><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setShowMyInfo(true) }}>ข้อมูลของฉัน</button><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setShowPasswordReset(true) }}>รีเซ็ตรหัสผ่าน</button>{role === 'admin' && <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setPage('dashboard'); setAnnouncementOpenSignal(value => value + 1) }}>ประกาศ</button>}<button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', color: '#C2413A', fontSize: 13 }} onClick={handleLogout}>ออกจากระบบ</button></div>}
+            {profileMenuOpen && <div style={{ position: 'absolute', top: 43, right: 0, width: 218, background: '#FFFFFF', border: '1px solid rgba(89,68,140,.14)', borderRadius: 12, boxShadow: '0 12px 28px rgba(39,28,66,.16)', padding: 6, zIndex: 30 }}><div style={{ padding: '9px 11px 10px', borderBottom: '1px solid rgba(0,0,0,.06)', marginBottom: 4 }}><div style={{ fontWeight: 700, fontSize: 13 }}>{userName}</div><div style={{ fontSize: 11.5, color: 'var(--text-muted)', marginTop: 2 }}>{roleLabel[role]}</div></div><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setShowMyInfo(true) }}>ข้อมูลของฉัน</button><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => void openSessions()}>อุปกรณ์ที่เข้าสู่ระบบ</button><button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setShowPasswordReset(true) }}>รีเซ็ตรหัสผ่าน</button>{role === 'admin' && <button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', fontSize: 13 }} onClick={() => { setProfileMenuOpen(false); setPage('dashboard'); setAnnouncementOpenSignal(value => value + 1) }}>ประกาศ</button>}<button className="btn btn-ghost" style={{ width: '100%', justifyContent: 'flex-start', color: '#C2413A', fontSize: 13 }} onClick={handleLogout}>ออกจากระบบ</button></div>}
           </div>
         </header>
 
         {showMyInfo && <Modal title="ข้อมูลของฉัน" onClose={() => setShowMyInfo(false)}><div className="flex flex-col gap-3"><div style={{ display: 'grid', gridTemplateColumns: '110px 1fr', gap: '10px 16px', fontSize: 14 }}><span style={{ color: 'var(--text-secondary)' }}>ชื่อ</span><strong>{userName}</strong><span style={{ color: 'var(--text-secondary)' }}>ชื่อผู้ใช้</span><strong style={{ fontFamily: 'monospace' }}>{accountUsername}</strong><span style={{ color: 'var(--text-secondary)' }}>สิทธิ์</span><strong>{roleLabel[role]}</strong>{userDepartment && <><span style={{ color: 'var(--text-secondary)' }}>ฝ่าย</span><strong>{userDepartment}</strong></>}</div><div className="flex justify-end"><button className="btn btn-secondary" onClick={() => setShowMyInfo(false)}>ปิด</button></div></div></Modal>}
+        {showSessions && <Modal title="อุปกรณ์ที่เข้าสู่ระบบ" onClose={() => setShowSessions(false)}><div className="flex flex-col gap-3"><div style={{ color: 'var(--text-secondary)', fontSize: 13 }}>บัญชีหนึ่งใช้งานพร้อมกันได้สูงสุด 2 อุปกรณ์</div>{sessionsLoading ? <div style={{ padding: 20, textAlign: 'center' }}><span className="btn-spinner" /> กำลังโหลด…</div> : authSessions.map(session => <div key={session.session_id} className="card" style={{ padding: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}><div><strong>{session.device_label}{session.is_current ? ' · เครื่องนี้' : ''}</strong><div style={{ marginTop: 4, color: 'var(--text-secondary)', fontSize: 12 }}>เข้าสู่ระบบ {new Date(session.created_at).toLocaleString('th-TH')} · IP {session.ip_address || 'ไม่ทราบ'}</div></div><button className="btn btn-danger btn-xs" onClick={() => void removeSession(session)}>ออกจากระบบ</button></div>)}</div></Modal>}
         {showPasswordReset && <Modal title="รีเซ็ตรหัสผ่าน" onClose={() => setShowPasswordReset(false)}><div className="flex flex-col gap-4"><FormField label="รหัสผ่านปัจจุบัน" required><input className="inp" type="password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} /></FormField><FormField label="รหัสผ่านใหม่" required><input className="inp" type="password" minLength={8} value={newPassword} onChange={event => setNewPassword(event.target.value)} /></FormField><FormField label="ยืนยันรหัสผ่านใหม่" required><input className="inp" type="password" minLength={8} value={confirmNewPassword} onChange={event => setConfirmNewPassword(event.target.value)} /></FormField><div className="flex justify-end gap-3"><button className="btn btn-secondary" disabled={passwordSaving} onClick={() => setShowPasswordReset(false)}>ยกเลิก</button><button className="btn btn-primary" aria-busy={passwordSaving} disabled={passwordSaving || !currentPassword || !newPassword || !confirmNewPassword} onClick={() => void saveMyPassword()}><BusyLabel busy={passwordSaving} label="กำลังบันทึก…">บันทึกรหัสผ่านใหม่</BusyLabel></button></div></div></Modal>}
 
         {/* Content */}

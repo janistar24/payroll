@@ -197,6 +197,7 @@ const EMPLOYEE_PREFIXES = [
 
 const EMPLOYEE_TYPE_OPTIONS: { value: DatabaseEmployee['employee_type']; label: string }[] = [
   { value: 'CIVIL_SERVANT', label: 'ข้าราชการ' },
+  { value: 'PERMANENT_WORKER', label: 'ลูกจ้างประจำ' },
   { value: 'GENERAL_EMPLOYEE', label: 'พนักงานจ้างทั่วไป' },
   { value: 'CONTRACT_EMPLOYEE', label: 'พนักงานจ้างเหมา' },
   { value: 'POLITICAL_OFFICIAL', label: 'ข้าราชการการเมือง' },
